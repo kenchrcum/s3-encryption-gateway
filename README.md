@@ -54,6 +54,32 @@ backend:
 
 encryption:
   password: "YOUR_ENCRYPTION_PASSWORD"
+  preferred_algorithm: "AES256-GCM"   # or "ChaCha20-Poly1305"
+  supported_algorithms:
+    - "AES256-GCM"
+    - "ChaCha20-Poly1305"
+
+compression:
+  enabled: false
+  min_size: 1024
+  content_types: ["text/", "application/json", "application/xml"]
+  algorithm: "gzip"
+  level: 6
+
+rate_limit:
+  enabled: false
+  limit: 100
+  window: "60s"
+
+cache:
+  enabled: false
+  max_size: 104857600     # 100MB
+  max_items: 1000
+  default_ttl: "5m"
+
+audit:
+  enabled: false
+  max_events: 10000
 ```
 
 Or use environment variables:
@@ -65,6 +91,27 @@ export BACKEND_REGION="us-east-1"
 export BACKEND_ACCESS_KEY="your-access-key"
 export BACKEND_SECRET_KEY="your-secret-key"
 export ENCRYPTION_PASSWORD="your-encryption-password"
+# Optional algorithm configuration
+export ENCRYPTION_PREFERRED_ALGORITHM="AES256-GCM"   # or "ChaCha20-Poly1305"
+export ENCRYPTION_SUPPORTED_ALGORITHMS="AES256-GCM,ChaCha20-Poly1305"
+# Compression
+export COMPRESSION_ENABLED=false
+export COMPRESSION_MIN_SIZE=1024
+export COMPRESSION_CONTENT_TYPES="text/,application/json,application/xml"
+export COMPRESSION_ALGORITHM=gzip
+export COMPRESSION_LEVEL=6
+# Rate limiting
+export RATE_LIMIT_ENABLED=false
+export RATE_LIMIT_REQUESTS=100
+export RATE_LIMIT_WINDOW="60s"
+# Cache
+export CACHE_ENABLED=false
+export CACHE_MAX_SIZE=104857600
+export CACHE_MAX_ITEMS=1000
+export CACHE_DEFAULT_TTL="5m"
+# Audit
+export AUDIT_ENABLED=false
+export AUDIT_MAX_EVENTS=10000
 ```
 
 ### Running
@@ -250,17 +297,17 @@ curl "http://localhost:8080/my-bucket?prefix=test"
 - [x] Docker and Kubernetes deployment
 - [x] Unit tests
 
-### Phase 2: Encryption Implementation (In Progress)
-- [ ] AES-256-GCM encryption engine
-- [ ] PBKDF2 key derivation
+### Phase 2: Encryption Implementation ?
+- [x] AES-256-GCM encryption engine
+- [x] PBKDF2 key derivation
 - [ ] Streaming encrypt/decrypt
-- [ ] Metadata handling
+- [x] Metadata handling
 
-### Phase 3: S3 API Compatibility (Planned)
-- [ ] Full S3 operation support
-- [ ] Multipart uploads
-- [ ] Range requests
-- [ ] Error translation
+### Phase 3: S3 API Compatibility (Ongoing)
+- [x] Core operations: PUT, GET, HEAD, DELETE, List
+- [ ] Multipart uploads (experimental; not recommended yet)
+- [ ] Range requests (post-decrypt only; may require full download)
+- [x] Error translation
 
 ### Phase 4: Production Features ?
 - [x] TLS/HTTPS support

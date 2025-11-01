@@ -142,17 +142,28 @@ data:
 **Core Configuration:**
 - **LISTEN_ADDR**: Server bind address (default ":8080")
 - **ENCRYPTION_PASSWORD**: Password for key derivation
+- **ENCRYPTION_PREFERRED_ALGORITHM**: Preferred AEAD ("AES256-GCM" or "ChaCha20-Poly1305")
+- **ENCRYPTION_SUPPORTED_ALGORITHMS**: Comma-separated list of allowed algorithms
 - **BACKEND_ENDPOINT**: S3 backend endpoint URL
 - **BACKEND_REGION**: AWS region for backend
 - **BACKEND_ACCESS_KEY**: Backend S3 access key
 - **BACKEND_SECRET_KEY**: Backend S3 secret key
 - **LOG_LEVEL**: Logging verbosity (debug, info, warn, error)
-- **MAX_CONNECTIONS**: Maximum concurrent connections
-- **REQUEST_TIMEOUT**: Request timeout duration
 - **COMPRESSION_ENABLED**: Enable/disable compression (default: false)
 - **COMPRESSION_MIN_SIZE**: Minimum object size to compress in bytes (default: 1024)
 - **COMPRESSION_ALGORITHM**: Compression algorithm (gzip, zstd, default: gzip)
 - **COMPRESSION_LEVEL**: Compression level 1-9 (default: 6)
+- **COMPRESSION_CONTENT_TYPES**: Comma-separated list of compressible content types/prefixes
+
+**Cache:**
+- **CACHE_ENABLED**: Enable in-memory cache (default: false)
+- **CACHE_MAX_SIZE**: Max total cache size in bytes (default: 104857600)
+- **CACHE_MAX_ITEMS**: Max number of items (default: 1000)
+- **CACHE_DEFAULT_TTL**: Default TTL (e.g., "5m")
+
+**Audit:**
+- **AUDIT_ENABLED**: Enable audit logging (default: false)
+- **AUDIT_MAX_EVENTS**: Max events to buffer in memory (default: 10000)
 
 ### Phase 4 Configuration Options
 

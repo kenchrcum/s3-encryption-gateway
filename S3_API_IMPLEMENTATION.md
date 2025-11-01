@@ -38,6 +38,7 @@ The S3 Encryption Gateway must maintain full compatibility with the Amazon S3 AP
   - Encrypt each part individually
   - Maintain part ordering and sizes
   - Store encryption metadata per part
+  - Note: Current implementation treats multipart as experimental; decryption of completed objects requires a segment manifest not yet finalized.
 
 #### PUT Object Copy
 - **Endpoint**: `PUT /{bucket}/{key}?x-amz-copy-source=...`
