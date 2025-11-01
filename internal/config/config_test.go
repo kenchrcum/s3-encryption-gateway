@@ -114,7 +114,7 @@ func TestConfig_Validate(t *testing.T) {
 					Password: "test-password",
 				},
 			},
-			wantErr: true,
+			wantErr: false, // Endpoint is optional - empty means AWS default
 		},
 		{
 			name: "missing encryption password",
