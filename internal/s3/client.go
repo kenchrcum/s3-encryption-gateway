@@ -94,6 +94,22 @@ type s3Client struct {
 
 // NewClient creates a new S3 backend client.
 func NewClient(cfg *config.BackendConfig) (Client, error) {
+	// Validate and normalize provider configuration
+	endpoint, region, err := ValidateProviderConfig(cfg.Endpoint, cfg.Provider, cfg.Region)
+	if err != nil {
+		return nil, fmt.Errorf("failed to validate provider config: %w", err)
+	}
+
+	// Validate endpoint URL
+	if err := ValidateEndpoint(endpoint); err != nil {
+		return nil, fmt.Errorf("invalid endpoint: %w", err)
+	}
+
+	// Use normalized region
+	if region != "" {
+		cfg.Region = region
+	}
+
 	awsCfg, err := awsconfig.LoadDefaultConfig(context.Background(),
 		awsconfig.WithRegion(cfg.Region),
 		awsconfig.WithCredentialsProvider(credentials.NewStaticCredentialsProvider(
@@ -106,13 +122,22 @@ func NewClient(cfg *config.BackendConfig) (Client, error) {
 		return nil, fmt.Errorf("failed to load AWS config: %w", err)
 	}
 
-	// Configure endpoint for non-AWS providers
+	// Configure endpoint and options for all providers
 	s3Options := []func(*s3.Options){}
-	if cfg.Endpoint != "" && cfg.Provider != "aws" {
+	
+	// Set endpoint for non-AWS providers or custom endpoints
+	if endpoint != "" && (cfg.Provider != "aws" || !strings.Contains(endpoint, "amazonaws.com")) {
 		s3Options = append(s3Options, func(o *s3.Options) {
-			o.BaseEndpoint = aws.String(cfg.Endpoint)
+			o.BaseEndpoint = aws.String(endpoint)
 		})
-		awsCfg.BaseEndpoint = aws.String(cfg.Endpoint)
+		awsCfg.BaseEndpoint = aws.String(endpoint)
+	}
+
+	// Configure path-style addressing if required by provider
+	if RequiresPathStyleAddressing(cfg.Provider) {
+		s3Options = append(s3Options, func(o *s3.Options) {
+			o.UsePathStyle = true
+		})
 	}
 
 	client := s3.NewFromConfig(awsCfg, s3Options...)

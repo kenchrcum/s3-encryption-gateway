@@ -6,7 +6,7 @@ backend:
   region: "us-east-1"
   access_key: ""  # Set via BACKEND_ACCESS_KEY env var
   secret_key: ""   # Set via BACKEND_SECRET_KEY env var
-  provider: "aws"  # Options: aws, wasabi, hetzner, minio
+  provider: "aws"  # Options: aws, wasabi, hetzner, minio, digitalocean, backblaze, cloudflare, linode, scaleway, oracle, idrive
   use_ssl: true
 
 encryption:

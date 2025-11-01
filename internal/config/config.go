@@ -26,7 +26,7 @@ type BackendConfig struct {
 	Region    string `yaml:"region" env:"BACKEND_REGION"`
 	AccessKey string `yaml:"access_key" env:"BACKEND_ACCESS_KEY"`
 	SecretKey string `yaml:"secret_key" env:"BACKEND_SECRET_KEY"`
-	Provider  string `yaml:"provider" env:"BACKEND_PROVIDER"` // aws, wasabi, hetzner, minio
+	Provider  string `yaml:"provider" env:"BACKEND_PROVIDER"` // aws, wasabi, hetzner, minio, digitalocean, backblaze, cloudflare, linode, scaleway, oracle, idrive
 	UseSSL    bool   `yaml:"use_ssl" env:"BACKEND_USE_SSL"`
 }
 
