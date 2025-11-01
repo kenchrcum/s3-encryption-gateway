@@ -1,0 +1,30 @@
+listen_addr: ":8080"
+log_level: "info"
+
+backend:
+  endpoint: "https://s3.amazonaws.com"
+  region: "us-east-1"
+  access_key: ""  # Set via BACKEND_ACCESS_KEY env var
+  secret_key: ""   # Set via BACKEND_SECRET_KEY env var
+  provider: "aws"  # Options: aws, wasabi, hetzner, minio
+  use_ssl: true
+
+encryption:
+  password: ""     # Set via ENCRYPTION_PASSWORD env var
+
+compression:
+  enabled: false
+  min_size: 1024
+  content_types:
+    - "text/plain"
+    - "application/json"
+    - "application/xml"
+  algorithm: "gzip"
+  level: 6
+
+server:
+  read_timeout: "15s"
+  write_timeout: "15s"
+  idle_timeout: "60s"
+  read_header_timeout: "10s"
+  max_header_bytes: 1048576
