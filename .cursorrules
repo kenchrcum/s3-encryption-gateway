@@ -6,7 +6,7 @@ You are building an S3 Encryption Gateway - a transparent proxy that provides cl
 ## Core Requirements
 - **Language**: Go 1.22+
 - **Architecture**: HTTP proxy with encryption middleware
-- **Security**: Client-side AES-256-GCM encryption only (no server-side encryption trust)
+- **Security**: Client-side AEAD encryption (AES-256-GCM default; ChaCha20-Poly1305 supported). No server-side encryption trust.
 - **Deployment**: Docker container for Kubernetes (Alpine 3.20+)
 - **Compatibility**: Support AWS S3, MinIO, Wasabi, Hetzner, and other S3-compatible providers
 - **Compression**: Optional configurable compression before encryption
@@ -28,7 +28,7 @@ You are building an S3 Encryption Gateway - a transparent proxy that provides cl
 - Use constant-time operations for cryptographic comparisons
 - Zero out sensitive data after use
 - Validate all inputs, especially cryptographic parameters
-- Use authenticated encryption (AES-GCM) only
+- Use authenticated encryption: AES-256-GCM (default) or ChaCha20-Poly1305
 - Implement proper key derivation (PBKDF2, not simple hashing)
 
 ### Error Handling
@@ -123,7 +123,7 @@ type S3Backend interface {
 ## Security Rules
 
 ### Cryptographic Operations
-- Use AES-256-GCM for authenticated encryption
+- Use AES-256-GCM (default) or ChaCha20-Poly1305 for authenticated encryption
 - Generate new random salt/IV for each encryption
 - Store salt/IV with encrypted data
 - Verify authentication tags on decryption

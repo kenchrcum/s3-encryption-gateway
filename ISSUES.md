@@ -1,7 +1,7 @@
 # S3 Encryption Gateway ? Findings, Bugs, and Roadmap (2025-11-01)
 
 ## Summary
-Deep project analysis identified several correctness bugs (notably Range on encrypted objects, header ordering, and multipart encryption), security hardening items (AAD, AES-only policy, key rotation metadata), and performance/operability improvements (streaming I/O, metrics cardinality, path-style config). This file tracks actionable issues and a prioritized roadmap.
+Deep project analysis identified several correctness bugs (notably Range on encrypted objects, header ordering, and multipart encryption), security hardening items (AAD, allowed algorithms policy, key rotation metadata), and performance/operability improvements (streaming I/O, metrics cardinality, path-style config). This file tracks actionable issues and a prioritized roadmap.
 
 ---
 
@@ -36,15 +36,15 @@ Deep project analysis identified several correctness bugs (notably Range on encr
 
 ## P1 ? Security hardening
 
+- Allowed algorithms policy (AES-256-GCM default; ChaCha20-Poly1305 supported)
+  - Problem: Documentation previously implied AES-only.
+  - Fix: Validate configured algorithms are within the approved set {AES-256-GCM, ChaCha20-Poly1305}; default to AES-256-GCM. Update docs to reflect support.
+  - Affected: `internal/config/config.go` (validation), docs
+
 - Bind critical metadata via AEAD AAD
   - Problem: AEAD additional data is nil; encryption metadata and selected headers can be tampered without detection.
   - Fix: Include algorithm, salt, key version, and critical headers (e.g., Content-Type, original size) as AAD in Seal/Open.
   - Affected: `internal/crypto/engine.go`, `internal/crypto/decrypt_reader.go`
-
-- Enforce AES-256-GCM only (policy alignment)
-  - Problem: ChaCha20-Poly1305 support is present; project rule mandates AES-GCM only.
-  - Fix: Remove ChaCha from supported list or gate behind explicit unsafe/experimental flag; validation rejects non-AES config.
-  - Affected: `internal/crypto/algorithms.go`, `internal/crypto/engine.go`, `internal/config/config.go`
 
 - Key rotation metadata and decryption strategy
   - Problem: `KeyManager` exists but key version not written to object metadata; engine derives from a single password.
@@ -113,7 +113,6 @@ Deep project analysis identified several correctness bugs (notably Range on encr
   - Use backend ETag in CopyObject responses.
 
 - P1 (next)
-  - Enforce AES-GCM-only in config validation; remove ChaCha unless explicitly allowed.
   - Add `MetaKeyVersion` on encrypt; on decrypt, try all versions from `KeyManager`.
   - Introduce AAD covering critical metadata.
   - Reduce metrics label cardinality.

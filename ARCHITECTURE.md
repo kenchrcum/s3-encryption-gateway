@@ -51,7 +51,7 @@ After analyzing multiple languages, Go was selected for this project due to:
 ### 3. Encryption Engine
 - **Purpose**: Provides client-side encryption/decryption
 - **Features**:
-  - AES-256-GCM encryption (authenticated encryption)
+  - AES-256-GCM (default) and ChaCha20-Poly1305 authenticated encryption
   - Configurable key derivation from password
   - Optional compression before encryption (configurable)
   - Support for future encryption algorithms
@@ -111,7 +111,7 @@ After analyzing multiple languages, Go was selected for this project due to:
 
 ### Encryption Strategy
 - **Client-side only**: Never trust server-side encryption
-- **Authenticated encryption**: Use AES-256-GCM for confidentiality and integrity
+- **Authenticated encryption**: Use AES-256-GCM (default) or ChaCha20-Poly1305 for confidentiality and integrity
 - **Key derivation**: PBKDF2 from user-provided password
 - **Metadata handling**: Preserve original metadata, add encryption markers
 

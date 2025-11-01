@@ -127,7 +127,7 @@ backendClient := s3.New(session.Must(session.NewSession(&aws.Config{
 
 ### Added Encryption Metadata
 - `x-amz-meta-encrypted`: "true"
-- `x-amz-meta-encryption-algorithm`: "AES256-GCM"
+- `x-amz-meta-encryption-algorithm`: "AES256-GCM" or "ChaCha20-Poly1305"
 - `x-amz-meta-encryption-key-salt`: base64-encoded salt
 - `x-amz-meta-original-content-length`: original size
 - `x-amz-meta-original-etag`: original ETag
@@ -142,7 +142,7 @@ backendClient := s3.New(session.Must(session.NewSession(&aws.Config{
 ```json
 {
   "encrypted": true,
-  "algorithm": "AES256-GCM",
+  "algorithm": "AES256-GCM" | "ChaCha20-Poly1305",
   "key_salt": "base64-encoded-salt",
   "original_size": 12345,
   "original_etag": "original-etag-value",

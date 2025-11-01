@@ -4,7 +4,12 @@
 
 The encryption system provides client-side encryption/decryption for all S3 objects passing through the gateway. It uses authenticated encryption to ensure both confidentiality and integrity of data.
 
-## Encryption Algorithm: AES-256-GCM
+## Encryption Algorithms
+
+- AES-256-GCM (default)
+- ChaCha20-Poly1305 (supported in later phases; selectable via configuration)
+
+### AES-256-GCM
 
 ### Why AES-256-GCM?
 - **Authenticated encryption**: Provides both confidentiality and integrity
@@ -13,7 +18,7 @@ The encryption system provides client-side encryption/decryption for all S3 obje
 - **No padding issues**: GCM handles variable-length data efficiently
 - **Nonce-based**: No counter state to maintain
 
-### Algorithm Details
+### AES-256-GCM Details
 - **Key size**: 256 bits (32 bytes)
 - **Block size**: 128 bits (16 bytes)
 - **Authentication tag**: 128 bits (16 bytes)
@@ -47,7 +52,7 @@ func deriveKey(password string, salt []byte) []byte {
 Encrypted Object = Salt + IV + Encrypted Data + Authentication Tag
 ```
 
-### Step-by-Step Encryption
+### Step-by-Step Encryption (AES-256-GCM)
 1. **Generate salt**: 32 bytes of random data
 2. **Derive key**: PBKDF2(password, salt, 100000, 32, SHA256)
 3. **Generate IV**: 12 bytes of random data
@@ -72,7 +77,7 @@ Encrypted Object = Salt + IV + Encrypted Data + Authentication Tag
 
 ## Decryption Process
 
-### Step-by-Step Decryption
+### Step-by-Step Decryption (AES-256-GCM)
 1. **Extract metadata**: Read encryption info from S3 metadata
 2. **Verify encryption**: Check "encrypted" flag
 3. **Derive key**: Same PBKDF2 process with stored salt

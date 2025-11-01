@@ -4,7 +4,7 @@ A transparent HTTP proxy that provides client-side encryption for S3-compatible 
 
 ## Features
 
-- **Transparent Encryption**: Automatically encrypts/decrypts S3 objects using AES-256-GCM
+- **Transparent Encryption**: Automatically encrypts/decrypts S3 objects using AES-256-GCM (default) or ChaCha20-Poly1305
 - **S3 API Compatible**: Full compatibility with Amazon S3 API and S3-compatible services
 - **Multi-Provider Support**: Works with AWS S3, MinIO, Wasabi, Hetzner, and other S3-compatible providers
 - **Client-Side Encryption**: Data is encrypted before being sent to backend storage
