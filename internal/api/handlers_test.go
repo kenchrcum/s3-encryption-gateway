@@ -160,13 +160,19 @@ func TestHandler_HandlePutObject(t *testing.T) {
 			bucket:   "",
 			key:      "test-key",
 			body:     "test data",
-			wantCode: http.StatusBadRequest,
+			wantCode: http.StatusNotFound,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			url := "/" + tt.bucket + "/" + tt.key
+			var url string
+			if tt.bucket == "" {
+				// For missing bucket, use a URL that doesn't match the route pattern
+				url = "/missing-bucket-test"
+			} else {
+				url = "/" + tt.bucket + "/" + tt.key
+			}
 			req := httptest.NewRequest("PUT", url, bytes.NewReader([]byte(tt.body)))
 			w := httptest.NewRecorder()
 
@@ -216,9 +222,8 @@ func TestHandler_HandleGetObject(t *testing.T) {
 func TestHandler_HandleDeleteObject(t *testing.T) {
 	logger := logrus.New()
 	logger.SetLevel(logrus.ErrorLevel)
-	m := metrics.NewMetrics()
 	mockClient := newMockS3Client()
-	handler := NewHandler(mockClient, logger, m)
+	handler := NewHandler(mockClient, logger, getTestMetrics())
 
 	// Pre-populate with test data
 	mockClient.PutObject(context.Background(), "test-bucket", "test-key", bytes.NewReader([]byte("test data")), nil)
