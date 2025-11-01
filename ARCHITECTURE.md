@@ -53,6 +53,7 @@ After analyzing multiple languages, Go was selected for this project due to:
 - **Features**:
   - AES-256-GCM encryption (authenticated encryption)
   - Configurable key derivation from password
+  - Optional compression before encryption (configurable)
   - Support for future encryption algorithms
   - Metadata preservation (content-type, etags, etc.)
 
@@ -154,6 +155,7 @@ type Config struct {
     ListenAddr      string
     EncryptionKey   string
     Backend         BackendConfig
+    Compression     CompressionConfig
     TLS             TLSConfig
     Logging         LoggingConfig
 }
@@ -165,6 +167,14 @@ type BackendConfig struct {
     SecretKey       string
     Bucket          string
     Provider        string // aws, wasabi, hetzner, minio
+}
+
+type CompressionConfig struct {
+    Enabled         bool
+    MinSize         int64
+    ContentTypes    []string
+    Algorithm       string
+    Level           int
 }
 ```
 

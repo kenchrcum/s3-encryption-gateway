@@ -9,11 +9,11 @@ This guide provides comprehensive instructions for developing the S3 Encryption 
 ### Prerequisites
 
 #### Required Software
-- **Go 1.21+**: Core programming language
-- **Docker**: Containerization platform
+- **Go 1.22+**: Core programming language (latest stable)
+- **Docker**: Containerization platform (latest stable)
 - **kubectl**: Kubernetes CLI (for deployment testing)
 - **MinIO**: Local S3-compatible server for testing
-- **git**: Version control
+- **git**: Version control (latest stable)
 - **make**: Build automation
 
 #### Installation Commands
@@ -53,11 +53,15 @@ cp config.example.yaml config.local.yaml
 
 #### Development Tools Setup
 ```bash
-# Install development tools
-go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest
-go install github.com/cosmtrek/air@latest  # Live reload
-go install github.com/go-delve/delve/cmd/dlv@latest  # Debugger
-go install github.com/securecodewarrior/govulncheck@latest  # Vulnerability scanner
+# Install development tools (specific versions)
+go install github.com/golangci/golangci-lint/cmd/golangci-lint@v1.55.2
+go install github.com/air-verse/air@v1.49.0  # Live reload
+go install github.com/go-delve/delve/cmd/dlv@v1.22.0  # Debugger
+go install golang.org/x/vuln/cmd/govulncheck@v1.0.4  # Vulnerability scanner
+
+# Optional: Install additional tools
+go install honnef.co/go/tools/cmd/staticcheck@v0.4.6  # Advanced static analysis
+go install github.com/uudashr/gopkgs/v2/cmd/gopkgs@v2.1.0  # Go packages listing
 ```
 
 ## Project Structure
@@ -401,10 +405,10 @@ jobs:
   test:
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v3
-    - uses: actions/setup-go@v4
+    - uses: actions/checkout@v4.1.1
+    - uses: actions/setup-go@v5.0.0
       with:
-        go-version: '1.21'
+        go-version: '1.22'
     - name: Run tests
       run: make test
     - name: Run linting

@@ -11,7 +11,7 @@ The S3 Encryption Gateway is designed for containerized deployment in Kubernetes
 #### Dockerfile Structure
 ```dockerfile
 # Build stage
-FROM golang:1.21-alpine AS builder
+FROM golang:1.22-alpine AS builder
 WORKDIR /app
 COPY go.mod go.sum ./
 RUN go mod download
@@ -19,7 +19,7 @@ COPY . .
 RUN CGO_ENABLED=0 GOOS=linux go build -a -installsuffix cgo -o s3-encryption-gateway ./cmd/server
 
 # Runtime stage
-FROM alpine:3.18
+FROM alpine:3.20
 RUN apk --no-cache add ca-certificates tzdata
 WORKDIR /root/
 COPY --from=builder /app/s3-encryption-gateway .
@@ -186,6 +186,10 @@ data:
   log-level: "info"
   max-connections: "100"
   request-timeout: "30s"
+  compression-enabled: "false"  # Set to "true" to enable compression
+  compression-min-size: "1024"  # Minimum object size to compress (bytes)
+  compression-algorithm: "gzip" # gzip, zstd, etc.
+  compression-level: "6"        # Compression level (1-9)
 ```
 
 ### Secret for Sensitive Data
@@ -211,6 +215,10 @@ data:
 - **LOG_LEVEL**: Logging verbosity (debug, info, warn, error)
 - **MAX_CONNECTIONS**: Maximum concurrent connections
 - **REQUEST_TIMEOUT**: Request timeout duration
+- **COMPRESSION_ENABLED**: Enable/disable compression (default: false)
+- **COMPRESSION_MIN_SIZE**: Minimum object size to compress in bytes (default: 1024)
+- **COMPRESSION_ALGORITHM**: Compression algorithm (gzip, zstd, default: gzip)
+- **COMPRESSION_LEVEL**: Compression level 1-9 (default: 6)
 
 ## Health Checks and Monitoring
 

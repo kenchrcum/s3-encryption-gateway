@@ -4,11 +4,12 @@
 You are building an S3 Encryption Gateway - a transparent proxy that provides client-side encryption for S3-compatible storage services. The gateway sits between S3 clients and backend storage providers, encrypting/decrypting data transparently while maintaining full S3 API compatibility.
 
 ## Core Requirements
-- **Language**: Go 1.21+
+- **Language**: Go 1.22+
 - **Architecture**: HTTP proxy with encryption middleware
 - **Security**: Client-side AES-256-GCM encryption only (no server-side encryption trust)
-- **Deployment**: Docker container for Kubernetes
+- **Deployment**: Docker container for Kubernetes (Alpine 3.20+)
 - **Compatibility**: Support AWS S3, MinIO, Wasabi, Hetzner, and other S3-compatible providers
+- **Compression**: Optional configurable compression before encryption
 
 ## Coding Standards
 
@@ -74,8 +75,9 @@ s3-encryption-gateway/
 ### Phase 2: Encryption Engine
 1. AES-256-GCM implementation
 2. PBKDF2 key derivation
-3. Streaming encrypt/decrypt
-4. Metadata handling
+3. Configurable compression (disabled by default for performance)
+4. Streaming encrypt/decrypt
+5. Metadata handling
 
 ### Phase 3: S3 API Compatibility
 1. Full S3 operation support

@@ -179,6 +179,9 @@ const (
     MetaOriginalSize       = "x-amz-meta-encryption-original-size"
     MetaOriginalETag       = "x-amz-meta-encryption-original-etag"
     MetaCompression        = "x-amz-meta-encryption-compression"
+    MetaCompressionEnabled = "x-amz-meta-compression-enabled"
+    MetaCompressionAlgorithm = "x-amz-meta-compression-algorithm"
+    MetaCompressionOriginalSize = "x-amz-meta-compression-original-size"
 )
 ```
 
@@ -189,17 +192,37 @@ const (
 
 ## Compression Integration
 
-### Pre-Encryption Compression
-- **Algorithm**: gzip (most compatible)
-- **When to compress**: Objects > 1KB, compressible content types
-- **Metadata tracking**: Store compression status
-- **Decompression**: Automatic on decryption
+### Pre-Encryption Compression (Optional)
+- **Configurable**: Can be enabled/disabled based on performance requirements
+- **Algorithm**: gzip (most compatible, good compression ratio)
+- **When to compress**: Objects > 1KB, compressible content types (text, JSON, XML, etc.)
+- **Metadata tracking**: Store compression status and algorithm
+- **Decompression**: Automatic on decryption when compression was used
+- **Performance trade-off**: ~2-3x slower but saves bandwidth/storage
+
+### Configuration
+```go
+type CompressionConfig struct {
+    Enabled         bool     `yaml:"enabled" env:"COMPRESSION_ENABLED"`
+    MinSize         int64    `yaml:"min_size" env:"COMPRESSION_MIN_SIZE"` // Minimum object size to compress
+    ContentTypes    []string `yaml:"content_types"` // Content types to compress
+    Algorithm       string   `yaml:"algorithm"`     // "gzip", "zstd", etc.
+    Level           int      `yaml:"level"`         // Compression level (1-9)
+}
+```
 
 ### Implementation
 ```go
 type CompressionEngine interface {
-    Compress(reader io.Reader) (io.Reader, string, error)
-    Decompress(reader io.Reader, algorithm string) (io.Reader, error)
+    Compress(reader io.Reader, contentType string) (io.Reader, *CompressionMetadata, error)
+    Decompress(reader io.Reader, metadata *CompressionMetadata) (io.Reader, error)
+    ShouldCompress(size int64, contentType string) bool
+}
+
+type CompressionMetadata struct {
+    Algorithm   string `json:"algorithm"`
+    OriginalSize int64  `json:"original_size"`
+    CompressedSize int64 `json:"compressed_size"`
 }
 ```
 
@@ -230,7 +253,7 @@ type CompressionEngine interface {
 - **Error cases**: Invalid passwords, corrupted data
 
 ### Integration Tests
-- **Round-trip encryption**: Encrypt → Decrypt → Verify identical
+- **Round-trip encryption**: Encrypt ? Decrypt ? Verify identical
 - **Large files**: Test with multi-gigabyte objects
 - **Concurrent operations**: Test multiple encryptions simultaneously
 - **Memory leaks**: Profile memory usage under load
