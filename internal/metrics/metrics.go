@@ -9,6 +9,11 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
+var (
+	// defaultRegistry is the default Prometheus registry
+	defaultRegistry = prometheus.DefaultRegisterer
+)
+
 // Metrics holds all application metrics.
 type Metrics struct {
 	httpRequestsTotal     *prometheus.CounterVec
@@ -21,15 +26,21 @@ type Metrics struct {
 
 // NewMetrics creates a new metrics instance.
 func NewMetrics() *Metrics {
+	return newMetricsWithRegistry(defaultRegistry)
+}
+
+// newMetricsWithRegistry creates a new metrics instance with a custom registry (for testing).
+func newMetricsWithRegistry(reg prometheus.Registerer) *Metrics {
+	factory := promauto.With(reg)
 	return &Metrics{
-		httpRequestsTotal: promauto.NewCounterVec(
+		httpRequestsTotal: factory.NewCounterVec(
 			prometheus.CounterOpts{
 				Name: "http_requests_total",
 				Help: "Total number of HTTP requests",
 			},
 			[]string{"method", "path", "status"},
 		),
-		httpRequestDuration: promauto.NewHistogramVec(
+		httpRequestDuration: factory.NewHistogramVec(
 			prometheus.HistogramOpts{
 				Name:    "http_request_duration_seconds",
 				Help:    "HTTP request duration in seconds",
@@ -37,21 +48,21 @@ func NewMetrics() *Metrics {
 			},
 			[]string{"method", "path", "status"},
 		),
-		httpRequestBytes: promauto.NewCounterVec(
+		httpRequestBytes: factory.NewCounterVec(
 			prometheus.CounterOpts{
 				Name: "http_request_bytes_total",
 				Help: "Total bytes transferred in HTTP requests",
 			},
 			[]string{"method", "path"},
 		),
-		s3OperationsTotal: promauto.NewCounterVec(
+		s3OperationsTotal: factory.NewCounterVec(
 			prometheus.CounterOpts{
 				Name: "s3_operations_total",
 				Help: "Total number of S3 operations",
 			},
 			[]string{"operation", "bucket"},
 		),
-		s3OperationDuration: promauto.NewHistogramVec(
+		s3OperationDuration: factory.NewHistogramVec(
 			prometheus.HistogramOpts{
 				Name:    "s3_operation_duration_seconds",
 				Help:    "S3 operation duration in seconds",
@@ -59,7 +70,7 @@ func NewMetrics() *Metrics {
 			},
 			[]string{"operation", "bucket"},
 		),
-		s3OperationErrors: promauto.NewCounterVec(
+		s3OperationErrors: factory.NewCounterVec(
 			prometheus.CounterOpts{
 				Name: "s3_operation_errors_total",
 				Help: "Total number of S3 operation errors",
