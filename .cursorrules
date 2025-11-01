@@ -100,6 +100,13 @@ type EncryptionEngine interface {
     Decrypt(reader io.Reader, metadata map[string]string) (io.Reader, map[string]string, error)
     IsEncrypted(metadata map[string]string) bool
 }
+
+// CompressionEngine (optional, integrated with EncryptionEngine)
+type CompressionEngine interface {
+    Compress(reader io.Reader, contentType string, size int64) (io.Reader, map[string]string, error)
+    Decompress(reader io.Reader, metadata map[string]string) (io.Reader, error)
+    ShouldCompress(size int64, contentType string) bool
+}
 ```
 
 ### S3Backend
@@ -143,9 +150,9 @@ type S3Backend interface {
 - Monitor memory usage
 
 ### CPU Optimization
-- ✅ Leverage AES-NI hardware acceleration (automatic via Go's crypto, with detection)
+- Leverage AES-NI hardware acceleration
 - Parallel processing where safe
-- Efficient key derivation (PBKDF2 with 100k iterations)
+- Efficient key derivation
 - Profile hot paths
 
 ### I/O Optimization
