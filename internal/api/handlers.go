@@ -128,11 +128,11 @@ func (h *Handler) handleGetObject(w http.ResponseWriter, r *http.Request) {
 		versionID = &vid
 	}
 
-	// Get range header if present
-	var rangeHeader *string
-	if rg := r.Header.Get("Range"); rg != "" {
-		rangeHeader = &rg
-	}
+    // Get range header if present
+    var rangeHeader *string
+    if rg := r.Header.Get("Range"); rg != "" {
+        rangeHeader = &rg
+    }
 
 	// Check cache first if enabled and no range request
 	if h.cache != nil && rangeHeader == nil && versionID == nil {
@@ -151,7 +151,18 @@ func (h *Handler) handleGetObject(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	reader, metadata, err := h.s3Client.GetObject(ctx, bucket, key, versionID, rangeHeader)
+    // If Range is requested, avoid requesting a ranged ciphertext when object is encrypted.
+    // Determine encryption via HEAD first to decide whether to forward Range to backend.
+    backendRange := rangeHeader
+    if rangeHeader != nil {
+        headMeta, headErr := h.s3Client.HeadObject(ctx, bucket, key, versionID)
+        if headErr == nil && h.encryptionEngine.IsEncrypted(headMeta) {
+            backendRange = nil
+        }
+        // On HEAD error, fall back to forwarding Range (best effort)
+    }
+
+    reader, metadata, err := h.s3Client.GetObject(ctx, bucket, key, versionID, backendRange)
 	if err != nil {
 		s3Err := TranslateError(err, bucket, key)
 		s3Err.WriteXML(w)
@@ -235,39 +246,46 @@ func (h *Handler) handleGetObject(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Apply range request if present (after decryption)
-	outputData := decryptedData
-	if rangeHeader != nil && *rangeHeader != "" {
-		outputData, err = applyRangeRequest(decryptedData, *rangeHeader)
-		if err != nil {
-			s3Err := &S3Error{
-				Code:       "InvalidRange",
-				Message:    fmt.Sprintf("Invalid range request: %v", err),
-				Resource:   r.URL.Path,
-				HTTPStatus: http.StatusRequestedRangeNotSatisfiable,
-			}
-			s3Err.WriteXML(w)
-			h.metrics.RecordHTTPRequest("GET", r.URL.Path, s3Err.HTTPStatus, time.Since(start), 0)
-			return
-		}
-		w.Header().Set("Content-Range", fmt.Sprintf("bytes %d-%d/%d", 0, len(outputData)-1, len(decryptedData)))
-		w.WriteHeader(http.StatusPartialContent)
-	} else {
-		w.WriteHeader(http.StatusOK)
-	}
-
-	// Set headers from decrypted metadata (encryption metadata filtered out)
-	for k, v := range decMetadata {
-		// Only set metadata headers that aren't encryption-related
-		if !isEncryptionMetadata(k) {
-			w.Header().Set(k, v)
-		}
-	}
-	
-	// Preserve version ID in response if present
-	if versionID != nil && *versionID != "" {
-		w.Header().Set("x-amz-version-id", *versionID)
-	}
+    // Apply range request if present (after decryption) and set headers BEFORE WriteHeader
+    outputData := decryptedData
+    if rangeHeader != nil && *rangeHeader != "" {
+        outputData, err = applyRangeRequest(decryptedData, *rangeHeader)
+        if err != nil {
+            s3Err := &S3Error{
+                Code:       "InvalidRange",
+                Message:    fmt.Sprintf("Invalid range request: %v", err),
+                Resource:   r.URL.Path,
+                HTTPStatus: http.StatusRequestedRangeNotSatisfiable,
+            }
+            s3Err.WriteXML(w)
+            h.metrics.RecordHTTPRequest("GET", r.URL.Path, s3Err.HTTPStatus, time.Since(start), 0)
+            return
+        }
+        // Set decrypted metadata headers
+        for k, v := range decMetadata {
+            if !isEncryptionMetadata(k) {
+                w.Header().Set(k, v)
+            }
+        }
+        if versionID != nil && *versionID != "" {
+            w.Header().Set("x-amz-version-id", *versionID)
+        }
+        w.Header().Set("Content-Range", fmt.Sprintf("bytes %d-%d/%d", 0, len(outputData)-1, len(decryptedData)))
+        w.Header().Set("Content-Length", fmt.Sprintf("%d", len(outputData)))
+        w.WriteHeader(http.StatusPartialContent)
+    } else {
+        // Set decrypted metadata headers
+        for k, v := range decMetadata {
+            if !isEncryptionMetadata(k) {
+                w.Header().Set(k, v)
+            }
+        }
+        if versionID != nil && *versionID != "" {
+            w.Header().Set("x-amz-version-id", *versionID)
+        }
+        w.Header().Set("Content-Length", fmt.Sprintf("%d", len(outputData)))
+        w.WriteHeader(http.StatusOK)
+    }
 
 	// Copy decrypted object data to response
 	n, err := w.Write(outputData)
@@ -692,6 +710,15 @@ func generateListObjectsXML(bucket, prefix, delimiter string, objects []s3.Objec
 
 // handleCreateMultipartUpload handles multipart upload initiation.
 func (h *Handler) handleCreateMultipartUpload(w http.ResponseWriter, r *http.Request) {
+    // Temporary: multipart uploads are not supported yet with encryption
+    s3Err := &S3Error{
+        Code:       "NotImplemented",
+        Message:    "Multipart uploads are not supported",
+        Resource:   r.URL.Path,
+        HTTPStatus: http.StatusNotImplemented,
+    }
+    s3Err.WriteXML(w)
+    return
 	start := time.Now()
 	vars := mux.Vars(r)
 	bucket := vars["bucket"]
@@ -754,6 +781,14 @@ func (h *Handler) handleCreateMultipartUpload(w http.ResponseWriter, r *http.Req
 
 // handleUploadPart handles uploading a part in a multipart upload.
 func (h *Handler) handleUploadPart(w http.ResponseWriter, r *http.Request) {
+    s3Err := &S3Error{
+        Code:       "NotImplemented",
+        Message:    "Multipart uploads are not supported",
+        Resource:   r.URL.Path,
+        HTTPStatus: http.StatusNotImplemented,
+    }
+    s3Err.WriteXML(w)
+    return
 	start := time.Now()
 	vars := mux.Vars(r)
 	bucket := vars["bucket"]
@@ -823,6 +858,14 @@ func (h *Handler) handleUploadPart(w http.ResponseWriter, r *http.Request) {
 
 // handleCompleteMultipartUpload handles completing a multipart upload.
 func (h *Handler) handleCompleteMultipartUpload(w http.ResponseWriter, r *http.Request) {
+    s3Err := &S3Error{
+        Code:       "NotImplemented",
+        Message:    "Multipart uploads are not supported",
+        Resource:   r.URL.Path,
+        HTTPStatus: http.StatusNotImplemented,
+    }
+    s3Err.WriteXML(w)
+    return
 	start := time.Now()
 	vars := mux.Vars(r)
 	bucket := vars["bucket"]
@@ -911,6 +954,14 @@ func (h *Handler) handleCompleteMultipartUpload(w http.ResponseWriter, r *http.R
 
 // handleAbortMultipartUpload handles aborting a multipart upload.
 func (h *Handler) handleAbortMultipartUpload(w http.ResponseWriter, r *http.Request) {
+    s3Err := &S3Error{
+        Code:       "NotImplemented",
+        Message:    "Multipart uploads are not supported",
+        Resource:   r.URL.Path,
+        HTTPStatus: http.StatusNotImplemented,
+    }
+    s3Err.WriteXML(w)
+    return
 	start := time.Now()
 	vars := mux.Vars(r)
 	bucket := vars["bucket"]
@@ -948,6 +999,14 @@ func (h *Handler) handleAbortMultipartUpload(w http.ResponseWriter, r *http.Requ
 
 // handleListParts handles listing parts of a multipart upload.
 func (h *Handler) handleListParts(w http.ResponseWriter, r *http.Request) {
+    s3Err := &S3Error{
+        Code:       "NotImplemented",
+        Message:    "Multipart uploads are not supported",
+        Resource:   r.URL.Path,
+        HTTPStatus: http.StatusNotImplemented,
+    }
+    s3Err.WriteXML(w)
+    return
 	start := time.Now()
 	vars := mux.Vars(r)
 	bucket := vars["bucket"]
@@ -1138,8 +1197,8 @@ func (h *Handler) handleCopyObject(w http.ResponseWriter, r *http.Request, dstBu
 		return
 	}
 
-	// Upload encrypted copy
-	err = h.s3Client.PutObject(ctx, dstBucket, dstKey, bytes.NewReader(encryptedData), encMetadata)
+    // Upload encrypted copy
+    err = h.s3Client.PutObject(ctx, dstBucket, dstKey, bytes.NewReader(encryptedData), encMetadata)
 	if err != nil {
 		s3Err := TranslateError(err, dstBucket, dstKey)
 		s3Err.WriteXML(w)
@@ -1154,7 +1213,11 @@ func (h *Handler) handleCopyObject(w http.ResponseWriter, r *http.Request, dstBu
 		return
 	}
 
-	// Return CopyObjectResult XML
+    // Fetch ETag via HEAD to return accurate ETag
+    headMeta, _ := h.s3Client.HeadObject(ctx, dstBucket, dstKey, nil)
+    etag := headMeta["ETag"]
+
+    // Return CopyObjectResult XML
 	type CopyObjectResult struct {
 		XMLName      xml.Name `xml:"CopyObjectResult"`
 		ETag         string   `xml:"ETag"`
@@ -1162,7 +1225,7 @@ func (h *Handler) handleCopyObject(w http.ResponseWriter, r *http.Request, dstBu
 	}
 
 	result := CopyObjectResult{
-		ETag:         fmt.Sprintf("\"%s\"", "copied-etag"), // Simplified
+        ETag:         etag,
 		LastModified: time.Now().UTC().Format("2006-01-02T15:04:05.000Z"),
 	}
 
