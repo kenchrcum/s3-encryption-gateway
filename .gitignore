@@ -39,4 +39,4 @@ config.local.yaml
 
 # Logs
 *.log
-logs/
+logs/server

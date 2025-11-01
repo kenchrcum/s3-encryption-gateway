@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/gorilla/mux"
+	"github.com/kenneth/s3-encryption-gateway/internal/crypto"
 	"github.com/kenneth/s3-encryption-gateway/internal/metrics"
 	"github.com/kenneth/s3-encryption-gateway/internal/s3"
 	"github.com/sirupsen/logrus"
@@ -118,7 +119,8 @@ func getTestMetrics() *metrics.Metrics {
 func TestHandler_HandleHealth(t *testing.T) {
 	logger := logrus.New()
 	logger.SetLevel(logrus.ErrorLevel)
-	handler := NewHandler(newMockS3Client(), logger, getTestMetrics())
+	mockEngine, _ := crypto.NewEngine("test-password-123456")
+	handler := NewHandler(newMockS3Client(), mockEngine, logger, getTestMetrics())
 
 	req := httptest.NewRequest("GET", "/health", nil)
 	w := httptest.NewRecorder()
@@ -136,7 +138,8 @@ func TestHandler_HandlePutObject(t *testing.T) {
 	logger := logrus.New()
 	logger.SetLevel(logrus.ErrorLevel)
 	mockClient := newMockS3Client()
-	handler := NewHandler(mockClient, logger, getTestMetrics())
+	mockEngine, _ := crypto.NewEngine("test-password-123456")
+	handler := NewHandler(mockClient, mockEngine, logger, getTestMetrics())
 
 	router := mux.NewRouter()
 	handler.RegisterRoutes(router)
@@ -197,7 +200,8 @@ func TestHandler_HandleGetObject(t *testing.T) {
 	logger := logrus.New()
 	logger.SetLevel(logrus.ErrorLevel)
 	mockClient := newMockS3Client()
-	handler := NewHandler(mockClient, logger, getTestMetrics())
+	mockEngine, _ := crypto.NewEngine("test-password-123456")
+	handler := NewHandler(mockClient, mockEngine, logger, getTestMetrics())
 
 	// Pre-populate with test data
 	mockClient.PutObject(context.Background(), "test-bucket", "test-key", bytes.NewReader([]byte("test data")), nil)
@@ -223,7 +227,8 @@ func TestHandler_HandleDeleteObject(t *testing.T) {
 	logger := logrus.New()
 	logger.SetLevel(logrus.ErrorLevel)
 	mockClient := newMockS3Client()
-	handler := NewHandler(mockClient, logger, getTestMetrics())
+	mockEngine, _ := crypto.NewEngine("test-password-123456")
+	handler := NewHandler(mockClient, mockEngine, logger, getTestMetrics())
 
 	// Pre-populate with test data
 	mockClient.PutObject(context.Background(), "test-bucket", "test-key", bytes.NewReader([]byte("test data")), nil)
@@ -251,7 +256,8 @@ func TestHandler_HandleHeadObject(t *testing.T) {
 	logger := logrus.New()
 	logger.SetLevel(logrus.ErrorLevel)
 	mockClient := newMockS3Client()
-	handler := NewHandler(mockClient, logger, getTestMetrics())
+	mockEngine, _ := crypto.NewEngine("test-password-123456")
+	handler := NewHandler(mockClient, mockEngine, logger, getTestMetrics())
 
 	metadata := map[string]string{"content-type": "text/plain"}
 	mockClient.PutObject(context.Background(), "test-bucket", "test-key", bytes.NewReader([]byte("test")), metadata)
@@ -273,7 +279,8 @@ func TestHandler_HandleListObjects(t *testing.T) {
 	logger := logrus.New()
 	logger.SetLevel(logrus.ErrorLevel)
 	mockClient := newMockS3Client()
-	handler := NewHandler(mockClient, logger, getTestMetrics())
+	mockEngine, _ := crypto.NewEngine("test-password-123456")
+	handler := NewHandler(mockClient, mockEngine, logger, getTestMetrics())
 
 	// Pre-populate with test data
 	mockClient.PutObject(context.Background(), "test-bucket", "key1", bytes.NewReader([]byte("data1")), nil)

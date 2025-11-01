@@ -11,6 +11,7 @@ import (
 	"github.com/gorilla/mux"
 	"github.com/kenneth/s3-encryption-gateway/internal/api"
 	"github.com/kenneth/s3-encryption-gateway/internal/config"
+	"github.com/kenneth/s3-encryption-gateway/internal/crypto"
 	"github.com/kenneth/s3-encryption-gateway/internal/metrics"
 	"github.com/kenneth/s3-encryption-gateway/internal/middleware"
 	"github.com/kenneth/s3-encryption-gateway/internal/s3"
@@ -62,8 +63,52 @@ func main() {
 		logger.WithError(err).Fatal("Failed to create S3 client")
 	}
 
+	// Load encryption password
+	encryptionPassword := cfg.Encryption.Password
+	if encryptionPassword == "" && cfg.Encryption.KeyFile != "" {
+		keyData, err := os.ReadFile(cfg.Encryption.KeyFile)
+		if err != nil {
+			logger.WithError(err).Fatal("Failed to read encryption key file")
+		}
+		encryptionPassword = string(keyData)
+	}
+
+	if encryptionPassword == "" {
+		logger.Fatal("Encryption password is required")
+	}
+
+	// Initialize compression engine if enabled
+	var compressionEngine crypto.CompressionEngine
+	if cfg.Compression.Enabled {
+		compressionEngine = crypto.NewCompressionEngine(
+			cfg.Compression.Enabled,
+			cfg.Compression.MinSize,
+			cfg.Compression.ContentTypes,
+			cfg.Compression.Algorithm,
+			cfg.Compression.Level,
+		)
+		logger.WithFields(logrus.Fields{
+			"enabled":   cfg.Compression.Enabled,
+			"algorithm": cfg.Compression.Algorithm,
+			"min_size":  cfg.Compression.MinSize,
+		}).Info("Compression enabled")
+	}
+
+	// Log hardware acceleration info
+	hwInfo := crypto.GetHardwareAccelerationInfo()
+	logger.WithFields(logrus.Fields{
+		"aes_hardware_support": hwInfo["aes_hardware_support"],
+		"architecture":         hwInfo["architecture"],
+	}).Info("Hardware acceleration status")
+
+	// Initialize encryption engine with compression support
+	encryptionEngine, err := crypto.NewEngineWithCompression(encryptionPassword, compressionEngine)
+	if err != nil {
+		logger.WithError(err).Fatal("Failed to create encryption engine")
+	}
+
 	// Initialize API handler
-	handler := api.NewHandler(s3Client, logger, m)
+	handler := api.NewHandler(s3Client, encryptionEngine, logger, m)
 
 	// Setup router
 	router := mux.NewRouter()

@@ -143,9 +143,9 @@ type S3Backend interface {
 - Monitor memory usage
 
 ### CPU Optimization
-- Leverage AES-NI hardware acceleration
+- ✅ Leverage AES-NI hardware acceleration (automatic via Go's crypto, with detection)
 - Parallel processing where safe
-- Efficient key derivation
+- Efficient key derivation (PBKDF2 with 100k iterations)
 - Profile hot paths
 
 ### I/O Optimization

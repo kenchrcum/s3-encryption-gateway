@@ -16,12 +16,16 @@ var (
 
 // Metrics holds all application metrics.
 type Metrics struct {
-	httpRequestsTotal     *prometheus.CounterVec
-	httpRequestDuration   *prometheus.HistogramVec
-	httpRequestBytes      *prometheus.CounterVec
-	s3OperationsTotal     *prometheus.CounterVec
-	s3OperationDuration   *prometheus.HistogramVec
+	httpRequestsTotal      *prometheus.CounterVec
+	httpRequestDuration    *prometheus.HistogramVec
+	httpRequestBytes       *prometheus.CounterVec
+	s3OperationsTotal      *prometheus.CounterVec
+	s3OperationDuration    *prometheus.HistogramVec
 	s3OperationErrors      *prometheus.CounterVec
+	encryptionOperations   *prometheus.CounterVec
+	encryptionDuration     *prometheus.HistogramVec
+	encryptionErrors        *prometheus.CounterVec
+	encryptionBytes         *prometheus.CounterVec
 }
 
 // NewMetrics creates a new metrics instance.
@@ -77,6 +81,35 @@ func newMetricsWithRegistry(reg prometheus.Registerer) *Metrics {
 			},
 			[]string{"operation", "bucket", "error_type"},
 		),
+		encryptionOperations: factory.NewCounterVec(
+			prometheus.CounterOpts{
+				Name: "encryption_operations_total",
+				Help: "Total number of encryption/decryption operations",
+			},
+			[]string{"operation"}, // "encrypt" or "decrypt"
+		),
+		encryptionDuration: factory.NewHistogramVec(
+			prometheus.HistogramOpts{
+				Name:    "encryption_duration_seconds",
+				Help:    "Encryption/decryption operation duration in seconds",
+				Buckets: []float64{0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0},
+			},
+			[]string{"operation"},
+		),
+		encryptionErrors: factory.NewCounterVec(
+			prometheus.CounterOpts{
+				Name: "encryption_errors_total",
+				Help: "Total number of encryption/decryption errors",
+			},
+			[]string{"operation", "error_type"},
+		),
+		encryptionBytes: factory.NewCounterVec(
+			prometheus.CounterOpts{
+				Name: "encryption_bytes_total",
+				Help: "Total bytes encrypted/decrypted",
+			},
+			[]string{"operation"},
+		),
 	}
 }
 
@@ -96,6 +129,18 @@ func (m *Metrics) RecordS3Operation(operation, bucket string, duration time.Dura
 // RecordS3Error records an S3 operation error.
 func (m *Metrics) RecordS3Error(operation, bucket, errorType string) {
 	m.s3OperationErrors.WithLabelValues(operation, bucket, errorType).Inc()
+}
+
+// RecordEncryptionOperation records an encryption operation metric.
+func (m *Metrics) RecordEncryptionOperation(operation string, duration time.Duration, bytes int64) {
+	m.encryptionOperations.WithLabelValues(operation).Inc()
+	m.encryptionDuration.WithLabelValues(operation).Observe(duration.Seconds())
+	m.encryptionBytes.WithLabelValues(operation).Add(float64(bytes))
+}
+
+// RecordEncryptionError records an encryption operation error.
+func (m *Metrics) RecordEncryptionError(operation, errorType string) {
+	m.encryptionErrors.WithLabelValues(operation, errorType).Inc()
 }
 
 // Handler returns the HTTP handler for metrics endpoint.
