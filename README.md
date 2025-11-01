@@ -51,6 +51,7 @@ backend:
   access_key: "YOUR_ACCESS_KEY"
   secret_key: "YOUR_SECRET_KEY"
   provider: "aws"
+  use_path_style: false  # set true for some S3-compatible providers
 
 encryption:
   password: "YOUR_ENCRYPTION_PASSWORD"
@@ -90,6 +91,7 @@ export BACKEND_ENDPOINT="https://s3.amazonaws.com"
 export BACKEND_REGION="us-east-1"
 export BACKEND_ACCESS_KEY="your-access-key"
 export BACKEND_SECRET_KEY="your-secret-key"
+export BACKEND_USE_PATH_STYLE=false
 export ENCRYPTION_PASSWORD="your-encryption-password"
 # Optional algorithm configuration
 export ENCRYPTION_PREFERRED_ALGORITHM="AES256-GCM"   # or "ChaCha20-Poly1305"
@@ -243,7 +245,7 @@ The gateway provides health check endpoints:
 
 ### Metrics
 
-The gateway exports comprehensive Prometheus metrics:
+The gateway exports comprehensive Prometheus metrics (with reduced label cardinality on HTTP paths):
 
 - **HTTP Metrics**: Request counts, durations, bytes transferred
 - **S3 Operations**: Operation counts, durations, error rates
@@ -305,9 +307,14 @@ curl "http://localhost:8080/my-bucket?prefix=test"
 
 ### Phase 3: S3 API Compatibility (Ongoing)
 - [x] Core operations: PUT, GET, HEAD, DELETE, List
-- [ ] Multipart uploads (experimental; not recommended yet)
-- [ ] Range requests (post-decrypt only; may require full download)
+- [ ] Multipart uploads (temporarily disabled; returns 501 Not Implemented)
+- [ ] Range requests (applied after decrypt; may require full download)
 - [x] Error translation
+
+### Known limitations
+- Range requests are applied after decryption; the gateway may need to download and decrypt the full object to serve a range.
+- Multipart uploads are currently disabled to avoid creating undecryptable objects; a segmented format will re-enable this in a future release.
+- Streaming encryption is not yet available end-to-end (the engine buffers plaintext); uploads are streamed from the gateway to S3 once encrypted data is produced.
 
 ### Phase 4: Production Features ?
 - [x] TLS/HTTPS support
