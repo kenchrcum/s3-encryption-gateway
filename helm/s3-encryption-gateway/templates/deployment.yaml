@@ -22,7 +22,11 @@ spec:
       imagePullSecrets:
         {{- toYaml . | nindent 8 }}
       {{- end }}
-      serviceAccountName: {{ include "s3-encryption-gateway.fullname" . }}
+      {{- if .Values.serviceAccount.create }}
+      serviceAccountName: {{ default (include "s3-encryption-gateway.fullname" .) .Values.serviceAccount.name }}
+      {{- else if .Values.serviceAccount.name }}
+      serviceAccountName: {{ .Values.serviceAccount.name }}
+      {{- end }}
       securityContext:
         {{- toYaml .Values.podSecurityContext | nindent 8 }}
       containers:
