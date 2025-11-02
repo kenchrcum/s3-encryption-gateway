@@ -21,7 +21,7 @@ RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build \
     ./cmd/server
 
 # Runtime stage
-FROM alpine:3.20
+FROM alpine:3.22
 
 # Install CA certificates for TLS
 RUN apk --no-cache add ca-certificates tzdata
