@@ -1,0 +1,70 @@
+name: Test Helm Chart
+
+on:
+  push:
+    branches:
+      - main
+      - master
+    paths:
+      - 'helm/**'
+  pull_request:
+    branches:
+      - main
+      - master
+    paths:
+      - 'helm/**'
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Set up Helm
+        uses: azure/setup-helm@v4
+        with:
+          version: v3.14.0
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.14'
+
+      - name: Install dependencies
+        run: |
+          pip install pyyaml
+
+      - name: Validate chart values
+        run: |
+          cd helm/s3-encryption-gateway
+          python -c "
+          import yaml
+          import sys
+          try:
+              with open('values.yaml', 'r') as f:
+                  yaml.safe_load(f)
+              print('values.yaml is valid YAML')
+          except yaml.YAMLError as e:
+              print(f'Error in values.yaml: {e}')
+              sys.exit(1)
+          "
+
+      - name: Run helm lint
+        run: |
+          cd helm/s3-encryption-gateway
+          helm lint .
+
+      - name: Run helm template
+        run: |
+          cd helm/s3-encryption-gateway
+          helm template test-release . --dry-run=server --debug
+
+      - name: Package chart
+        run: |
+          cd helm
+          helm package s3-encryption-gateway
+          ls -la *.tgz
