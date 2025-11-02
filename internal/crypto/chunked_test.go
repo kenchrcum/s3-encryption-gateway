@@ -80,11 +80,12 @@ func TestChunkedEncryptDecrypt_LargeData(t *testing.T) {
 		t.Error("Expected chunked format marker")
 	}
 
-	// Check chunk count (should be multiple chunks)
-	chunkCount := metadata[MetaChunkCount]
-	if chunkCount == "" {
-		t.Error("Expected chunk count in metadata")
-	}
+	// Note: MetaChunkCount is not set during encryption because it's 0 at that point
+	// (chunks are counted during encryption). It can be calculated during decryption
+	// from the encrypted object size and chunk size. Some S3 implementations also
+	// reject metadata with value "0", so we omit it.
+	// The manifest itself contains ChunkCount but it's also 0 initially and only
+	// gets updated during encryption (which happens as the reader is consumed).
 
 	// Read encrypted data in streaming fashion
 	buffer := make([]byte, 1024)

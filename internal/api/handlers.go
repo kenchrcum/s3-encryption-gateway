@@ -540,6 +540,31 @@ func (h *Handler) handlePutObject(w http.ResponseWriter, r *http.Request) {
     // Record encryption metrics using original bytes
     h.metrics.RecordEncryptionOperation("encrypt", encryptDuration, originalBytes)
 
+    // Debug logging for metadata before upload
+    h.logger.WithFields(logrus.Fields{
+        "bucket": bucket,
+        "key":    key,
+        "metadata_keys": len(encMetadata),
+    }).Debug("Uploading encrypted object with metadata")
+    
+    // Log all metadata keys for debugging (don't log values for security)
+    metadataKeys := make([]string, 0, len(encMetadata))
+    for k := range encMetadata {
+        metadataKeys = append(metadataKeys, k)
+        // Check for potentially problematic values
+        if v, ok := encMetadata[k]; ok && v == "0" {
+            h.logger.WithFields(logrus.Fields{
+                "metadata_key": k,
+                "value": v,
+            }).Warn("Metadata contains zero value - may cause S3 rejection")
+        }
+    }
+    h.logger.WithFields(logrus.Fields{
+        "bucket":       bucket,
+        "key":          key,
+        "metadata_keys": metadataKeys,
+    }).Debug("Metadata keys being sent to S3")
+
     // Upload encrypted object with encryption metadata (streaming)
     err = h.s3Client.PutObject(ctx, bucket, key, encryptedReader, encMetadata)
 	if err != nil {
@@ -548,6 +573,7 @@ func (h *Handler) handlePutObject(w http.ResponseWriter, r *http.Request) {
 		h.logger.WithError(err).WithFields(logrus.Fields{
 			"bucket": bucket,
 			"key":    key,
+			"metadata_keys": metadataKeys,
 		}).Error("Failed to put object")
 		h.metrics.RecordS3Error("PutObject", bucket, s3Err.Code)
 		h.metrics.RecordHTTPRequest("PUT", r.URL.Path, s3Err.HTTPStatus, time.Since(start), 0)

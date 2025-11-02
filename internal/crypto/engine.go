@@ -582,7 +582,10 @@ func (e *engine) encryptChunked(reader io.Reader, metadata map[string]string) (i
 	encMetadata[MetaIV] = encodeBase64(baseIV)
 	encMetadata[MetaChunkSize] = fmt.Sprintf("%d", e.chunkSize)
 	encMetadata[MetaManifest] = manifestEncoded
-	encMetadata[MetaChunkCount] = fmt.Sprintf("%d", manifest.ChunkCount)
+	// Note: MetaChunkCount is NOT set here because manifest.ChunkCount is 0 at this point
+	// (it only gets incremented during encryption). ChunkCount can be calculated during
+	// decryption from the encrypted object size and chunk size, or from the manifest if needed.
+	// Some S3 implementations reject metadata with value "0", so we omit it.
 	// Preserve key version if provided
 	if kv, ok := metadata[MetaKeyVersion]; ok && kv != "" {
 		encMetadata[MetaKeyVersion] = kv
