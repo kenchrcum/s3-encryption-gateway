@@ -163,9 +163,11 @@ func (h *Handler) handleGetObject(w http.ResponseWriter, r *http.Request) {
 	}
 
     // If Range is requested, optimize for chunked encryption format
-    // For chunked encryption: calculate which chunks we need and fetch only those encrypted chunks
+    // For chunked encryption: calculate encrypted byte range and fetch only needed chunks
     // For legacy/buffered encryption: fetch full object, decrypt, then apply range
     var backendRange *string
+    var useRangeOptimization bool
+    var plaintextStart, plaintextEnd int64
     
     if rangeHeader != nil {
         // Check if object is encrypted and uses chunked format
@@ -173,10 +175,38 @@ func (h *Handler) handleGetObject(w http.ResponseWriter, r *http.Request) {
         if headErr == nil && h.encryptionEngine.IsEncrypted(headMeta) {
             // Check if chunked format - if so, we can optimize by fetching only needed chunks
             if crypto.IsChunkedFormat(headMeta) {
-                // For chunked format, we'll calculate encrypted byte ranges for needed chunks
-                // For now, still fetch full object (optimization can be added later)
-                // The chunked decrypt reader will efficiently skip unneeded chunks during decryption
-                backendRange = nil // Fetch full for now, but chunked decryption is efficient
+                // Get plaintext size for range parsing
+                plaintextSize, err := crypto.GetPlaintextSizeFromMetadata(headMeta)
+                if err == nil {
+                    // Parse range header to get plaintext byte range
+                    start, end, err := crypto.ParseHTTPRangeHeader(*rangeHeader, plaintextSize)
+                    if err == nil {
+                        plaintextStart, plaintextEnd = start, end
+                       	// Calculate encrypted byte range for needed chunks
+                       	encryptedStart, encryptedEnd, err := crypto.CalculateEncryptedRangeForPlaintextRange(headMeta, start, end)
+                       	if err == nil {
+                           	// Format as HTTP Range header
+                           	encryptedRange := fmt.Sprintf("bytes=%d-%d", encryptedStart, encryptedEnd)
+                           	backendRange = &encryptedRange
+                           	useRangeOptimization = true
+                           	h.logger.WithFields(logrus.Fields{
+                           		"bucket":         bucket,
+                           		"key":            key,
+                           		"plaintext_range": fmt.Sprintf("%d-%d", start, end),
+                           		"encrypted_range": encryptedRange,
+                           	}).Debug("Using optimized range request for chunked encryption")
+                       	} else {
+                           	h.logger.WithError(err).Warn("Failed to calculate encrypted range, falling back to full fetch")
+                           	backendRange = nil
+                       	}
+                    } else {
+                       	h.logger.WithError(err).Warn("Failed to parse range header, falling back to full fetch")
+                       	backendRange = nil
+                    }
+                } else {
+                   	h.logger.WithError(err).Warn("Failed to get plaintext size, falling back to full fetch")
+                   	backendRange = nil
+                }
             } else {
                 // Legacy format: must fetch full object
                 backendRange = nil
@@ -203,7 +233,33 @@ func (h *Handler) handleGetObject(w http.ResponseWriter, r *http.Request) {
 
 	// Decrypt if encrypted
 	decryptStart := time.Now()
-	decryptedReader, decMetadata, err := h.encryptionEngine.Decrypt(reader, metadata)
+	var decryptedReader io.Reader
+	var decMetadata map[string]string
+	
+	if useRangeOptimization && h.encryptionEngine.IsEncrypted(metadata) {
+		// Use range-optimized decryption (only decrypts needed chunks)
+		// Access the concrete engine type for DecryptRange method
+		// This is safe because we know it's chunked format
+		if eng, ok := h.encryptionEngine.(interface {
+			DecryptRange(reader io.Reader, metadata map[string]string, plaintextStart, plaintextEnd int64) (io.Reader, map[string]string, error)
+		}); ok {
+			decryptedReader, decMetadata, err = eng.DecryptRange(reader, metadata, plaintextStart, plaintextEnd)
+			if err != nil {
+				h.logger.WithError(err).Warn("Range optimization failed, falling back to full decrypt")
+				// Fall back to full decryption
+				decryptedReader, decMetadata, err = h.encryptionEngine.Decrypt(reader, metadata)
+				useRangeOptimization = false
+			}
+		} else {
+			// Engine doesn't support DecryptRange, fall back
+			h.logger.Warn("Engine doesn't support DecryptRange, falling back to full decrypt")
+			decryptedReader, decMetadata, err = h.encryptionEngine.Decrypt(reader, metadata)
+			useRangeOptimization = false
+		}
+	} else {
+		// Standard decryption (full object)
+		decryptedReader, decMetadata, err = h.encryptionEngine.Decrypt(reader, metadata)
+	}
 	decryptDuration := time.Since(decryptStart)
 	if err != nil {
 		h.logger.WithError(err).WithFields(logrus.Fields{
@@ -222,11 +278,12 @@ func (h *Handler) handleGetObject(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-    // Decide streaming vs buffering based on Range
+    // For range optimization, we already have the exact range in decryptedReader
+    // For non-optimized ranges, we need to buffer and apply range
     var decryptedData []byte
     var decryptedSize int64
-    if rangeHeader != nil && *rangeHeader != "" {
-        // Buffer for range processing
+    if rangeHeader != nil && *rangeHeader != "" && !useRangeOptimization {
+        // Buffer for range processing (only if not using optimization)
         dd, err := io.ReadAll(decryptedReader)
         if err != nil {
             h.logger.WithError(err).Error("Failed to read decrypted data")
@@ -249,6 +306,10 @@ func (h *Handler) handleGetObject(w http.ResponseWriter, r *http.Request) {
         }
         decryptedData = dd
         decryptedSize = int64(len(decryptedData))
+    } else if useRangeOptimization {
+        // For optimized range, the reader already contains only the range
+        // But we still need to read it to send it
+        decryptedSize = plaintextEnd - plaintextStart + 1
     }
     h.metrics.RecordEncryptionOperation("decrypt", decryptDuration, decryptedSize)
 
@@ -280,30 +341,69 @@ func (h *Handler) handleGetObject(w http.ResponseWriter, r *http.Request) {
     // Apply range request if present (after decryption) and set headers BEFORE WriteHeader
     outputData := decryptedData
     if rangeHeader != nil && *rangeHeader != "" {
-        outputData, err = applyRangeRequest(decryptedData, *rangeHeader)
-        if err != nil {
-            s3Err := &S3Error{
-                Code:       "InvalidRange",
-                Message:    fmt.Sprintf("Invalid range request: %v", err),
-                Resource:   r.URL.Path,
-                HTTPStatus: http.StatusRequestedRangeNotSatisfiable,
+        if useRangeOptimization {
+            // Optimized range: decryptedReader already contains only the range
+            // Read it into outputData
+            outputData, err = io.ReadAll(decryptedReader)
+            if err != nil {
+                h.logger.WithError(err).Error("Failed to read optimized range data")
+                s3Err := &S3Error{
+                    Code:       "InternalError",
+                    Message:    "Failed to read range data",
+                    Resource:   r.URL.Path,
+                    HTTPStatus: http.StatusInternalServerError,
+                }
+                s3Err.WriteXML(w)
+                h.metrics.RecordHTTPRequest("GET", r.URL.Path, s3Err.HTTPStatus, time.Since(start), 0)
+                return
             }
-            s3Err.WriteXML(w)
-            h.metrics.RecordHTTPRequest("GET", r.URL.Path, s3Err.HTTPStatus, time.Since(start), 0)
-            return
-        }
-        // Set decrypted metadata headers
-        for k, v := range decMetadata {
-            if !isEncryptionMetadata(k) {
-                w.Header().Set(k, v)
+            
+            // Get total size for Content-Range header
+            totalSize, _ := crypto.GetPlaintextSizeFromMetadata(metadata)
+            if totalSize == 0 {
+                // Fallback to approximate from decryptedData if available
+                totalSize = int64(len(decryptedData))
             }
+            
+            // Set decrypted metadata headers
+            for k, v := range decMetadata {
+                if !isEncryptionMetadata(k) {
+                    w.Header().Set(k, v)
+                }
+            }
+            if versionID != nil && *versionID != "" {
+                w.Header().Set("x-amz-version-id", *versionID)
+            }
+            w.Header().Set("Content-Range", fmt.Sprintf("bytes %d-%d/%d", plaintextStart, plaintextEnd, totalSize))
+            w.Header().Set("Content-Length", fmt.Sprintf("%d", len(outputData)))
+            w.WriteHeader(http.StatusPartialContent)
+        } else {
+            // Non-optimized: apply range to buffered data
+            outputData, err = applyRangeRequest(decryptedData, *rangeHeader)
+            if err != nil {
+                s3Err := &S3Error{
+                    Code:       "InvalidRange",
+                    Message:    fmt.Sprintf("Invalid range request: %v", err),
+                    Resource:   r.URL.Path,
+                    HTTPStatus: http.StatusRequestedRangeNotSatisfiable,
+                }
+                s3Err.WriteXML(w)
+                h.metrics.RecordHTTPRequest("GET", r.URL.Path, s3Err.HTTPStatus, time.Since(start), 0)
+                return
+            }
+            // Set decrypted metadata headers
+            for k, v := range decMetadata {
+                if !isEncryptionMetadata(k) {
+                    w.Header().Set(k, v)
+                }
+            }
+            if versionID != nil && *versionID != "" {
+                w.Header().Set("x-amz-version-id", *versionID)
+            }
+            w.Header().Set("Content-Range", fmt.Sprintf("bytes %d-%d/%d", 0, len(outputData)-1, len(decryptedData)))
+            w.Header().Set("Content-Length", fmt.Sprintf("%d", len(outputData)))
+            w.WriteHeader(http.StatusPartialContent)
         }
-        if versionID != nil && *versionID != "" {
-            w.Header().Set("x-amz-version-id", *versionID)
-        }
-        w.Header().Set("Content-Range", fmt.Sprintf("bytes %d-%d/%d", 0, len(outputData)-1, len(decryptedData)))
-        w.Header().Set("Content-Length", fmt.Sprintf("%d", len(outputData)))
-        w.WriteHeader(http.StatusPartialContent)
     } else {
         // Set decrypted metadata headers and stream body
         for k, v := range decMetadata {

@@ -678,6 +678,97 @@ func (e *engine) decryptChunked(reader io.Reader, metadata map[string]string) (i
 	return chunkedReader, decMetadata, nil
 }
 
+// DecryptRange decrypts only the chunks needed for a specific plaintext range.
+// This optimizes range requests by decrypting only necessary chunks.
+func (e *engine) DecryptRange(reader io.Reader, metadata map[string]string, plaintextStart, plaintextEnd int64) (io.Reader, map[string]string, error) {
+	if !e.IsEncrypted(metadata) {
+		return nil, nil, fmt.Errorf("object is not encrypted")
+	}
+
+	// Only supports chunked format for range optimization
+	if !isChunkedFormat(metadata) {
+		return nil, nil, fmt.Errorf("range optimization only supported for chunked format")
+	}
+
+	// Load manifest
+	manifest, err := loadManifestFromMetadata(metadata)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to load manifest: %w", err)
+	}
+
+	// Extract encryption parameters
+	salt, err := decodeBase64(metadata[MetaKeySalt])
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to decode salt: %w", err)
+	}
+
+	baseIV, err := decodeBase64(metadata[MetaIV])
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to decode base IV: %w", err)
+	}
+
+	// Get algorithm from metadata
+	algorithm := metadata[MetaAlgorithm]
+	if algorithm == "" {
+		algorithm = AlgorithmAES256GCM
+	}
+
+	// Verify algorithm is supported
+	if !isAlgorithmSupported(algorithm, e.supportedAlgorithms) {
+		return nil, nil, fmt.Errorf("unsupported algorithm %s", algorithm)
+	}
+
+	// Derive key from password and salt
+	key, err := e.deriveKey(salt)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to derive key: %w", err)
+	}
+	defer zeroBytes(key)
+
+	// Adjust key size for algorithm
+	keySize := aesKeySize
+	if algorithm == AlgorithmChaCha20Poly1305 {
+		keySize = chacha20KeySize
+	}
+	if len(key) != keySize {
+		adjustedKey := make([]byte, keySize)
+		copy(adjustedKey, key)
+		if len(key) < keySize {
+			copy(adjustedKey[len(key):], key[:keySize-len(key)])
+		}
+		zeroBytes(key)
+		key = adjustedKey
+	}
+
+	// Create cipher
+	aeadCipher, err := createAEADCipher(algorithm, key)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to create cipher: %w", err)
+	}
+	aead := aeadCipher.(cipher.AEAD)
+
+	// Create range-aware decrypt reader
+	rangeReader, err := newRangeDecryptReader(reader, aead, manifest, baseIV, plaintextStart, plaintextEnd)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to create range reader: %w", err)
+	}
+
+	// Prepare decrypted metadata
+	decMetadata := make(map[string]string)
+	for k, v := range metadata {
+		if isEncryptionMetadata(k) {
+			continue
+		}
+		decMetadata[k] = v
+	}
+
+	// Set Content-Length to the range size
+	rangeSize := plaintextEnd - plaintextStart + 1
+	decMetadata["Content-Length"] = fmt.Sprintf("%d", rangeSize)
+
+	return rangeReader, decMetadata, nil
+}
+
 // IsEncrypted checks if the metadata indicates the object is encrypted.
 func (e *engine) IsEncrypted(metadata map[string]string) bool {
 	if metadata == nil {

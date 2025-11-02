@@ -308,11 +308,11 @@ curl "http://localhost:8080/my-bucket?prefix=test"
 ### Phase 3: S3 API Compatibility (Ongoing)
 - [x] Core operations: PUT, GET, HEAD, DELETE, List
 - [x] Multipart uploads (enabled with chunked encryption)
-- [ ] Range requests (applied after decrypt; may require full download)
+- [x] Range requests (optimized for chunked encryption: fetches only needed encrypted chunks)
 - [x] Error translation
 
 ### Known limitations
-- Range requests: For chunked encryption, range requests fetch the full encrypted object but efficiently skip unneeded chunks during decryption. Future optimization could fetch only needed encrypted chunks from S3. Legacy encrypted objects require full fetch + decrypt.
+- Range requests: Optimized for chunked encryption format (fetches only needed encrypted chunks from S3). Legacy encrypted objects still require full fetch + decrypt (backward compatible).
 - Streaming encryption uses chunked format with per-chunk IVs; this adds ~5-20% processing overhead but enables true streaming, multipart uploads, and optimized range requests.
 
 ### Phase 4: Production Features ?
