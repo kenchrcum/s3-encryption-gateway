@@ -2,6 +2,7 @@ package middleware
 
 import (
 	"net/http"
+	"strconv"
 	"time"
 
 	"github.com/sirupsen/logrus"
@@ -13,6 +14,16 @@ func LoggingMiddleware(logger *logrus.Logger) func(http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			start := time.Now()
 
+			// Get request body size from Content-Length header for PUT/POST requests
+			var requestBytes int64
+			if r.Method == "PUT" || r.Method == "POST" {
+				if contentLength := r.Header.Get("Content-Length"); contentLength != "" {
+					if size, err := strconv.ParseInt(contentLength, 10, 64); err == nil {
+						requestBytes = size
+					}
+				}
+			}
+
 			// Wrap response writer to capture status code
 			rw := &responseWriter{
 				ResponseWriter: w,
@@ -23,6 +34,12 @@ func LoggingMiddleware(logger *logrus.Logger) func(http.Handler) http.Handler {
 
 			duration := time.Since(start)
 
+			// For PUT/POST, log request bytes; for GET/HEAD, log response bytes
+			bytesLogged := rw.bytesWritten
+			if requestBytes > 0 {
+				bytesLogged = requestBytes
+			}
+
 			logger.WithFields(logrus.Fields{
 				"method":      r.Method,
 				"path":        r.URL.Path,
@@ -31,7 +48,7 @@ func LoggingMiddleware(logger *logrus.Logger) func(http.Handler) http.Handler {
 				"user_agent":  r.UserAgent(),
 				"status":      rw.statusCode,
 				"duration_ms": duration.Milliseconds(),
-				"bytes":       rw.bytesWritten,
+				"bytes":       bytesLogged,
 			}).Info("HTTP request")
 		})
 	}
