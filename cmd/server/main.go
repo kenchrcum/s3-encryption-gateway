@@ -135,8 +135,21 @@ func main() {
 		"architecture":         hwInfo["architecture"],
 	}).Info("Hardware acceleration status")
 
-    // Initialize encryption engine with compression, algorithm support, and key resolver (if KMS mode)
+    // Initialize encryption engine with compression, algorithm support, chunked mode, and key resolver (if KMS mode)
     var encryptionEngine crypto.EncryptionEngine
+    
+    // Default to chunked mode enabled unless explicitly disabled
+    chunkedMode := cfg.Encryption.ChunkedMode
+    if !cfg.Encryption.ChunkedMode && cfg.Encryption.ChunkSize == 0 {
+        // If neither is set, default to enabled for new installations
+        chunkedMode = true
+    }
+    
+    chunkSize := cfg.Encryption.ChunkSize
+    if chunkSize == 0 {
+        chunkSize = crypto.DefaultChunkSize
+    }
+    
     if cfg.Encryption.KeyManager.Enabled {
         resolver := func(version int) (string, bool) {
             if keyManager == nil {
@@ -148,31 +161,38 @@ func main() {
             }
             return pass, true
         }
-        encryptionEngine, err = crypto.NewEngineWithResolver(
+        // Create engine with chunking, then set resolver
+        encryptionEngine, err = crypto.NewEngineWithChunking(
             activePassword,
             compressionEngine,
             cfg.Encryption.PreferredAlgorithm,
             cfg.Encryption.SupportedAlgorithms,
-            resolver,
+            chunkedMode,
+            chunkSize,
         )
+        if err == nil {
+            crypto.SetKeyResolver(encryptionEngine, resolver)
+        }
     } else {
-        encryptionEngine, err = crypto.NewEngineWithOptions(
+        encryptionEngine, err = crypto.NewEngineWithChunking(
             activePassword,
             compressionEngine,
             cfg.Encryption.PreferredAlgorithm,
             cfg.Encryption.SupportedAlgorithms,
+            chunkedMode,
+            chunkSize,
         )
     }
 	if err != nil {
 		logger.WithError(err).Fatal("Failed to create encryption engine")
 	}
 
-	if cfg.Encryption.PreferredAlgorithm != "" {
-		logger.WithFields(logrus.Fields{
-			"preferred_algorithm": cfg.Encryption.PreferredAlgorithm,
-			"supported_algorithms": cfg.Encryption.SupportedAlgorithms,
-		}).Info("Encryption algorithm configuration")
-	}
+	logger.WithFields(logrus.Fields{
+		"preferred_algorithm": cfg.Encryption.PreferredAlgorithm,
+		"supported_algorithms": cfg.Encryption.SupportedAlgorithms,
+		"chunked_mode": chunkedMode,
+		"chunk_size": chunkSize,
+	}).Info("Encryption configuration")
 
 	// Initialize cache if enabled (Phase 5 feature)
 	var objectCache cache.Cache

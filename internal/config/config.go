@@ -42,6 +42,8 @@ type EncryptionConfig struct {
 	PreferredAlgorithm string   `yaml:"preferred_algorithm" env:"ENCRYPTION_PREFERRED_ALGORITHM"`
 	SupportedAlgorithms []string `yaml:"supported_algorithms" env:"ENCRYPTION_SUPPORTED_ALGORITHMS"`
 	KeyManager         KeyManagerConfig `yaml:"key_manager"`
+	ChunkedMode        bool     `yaml:"chunked_mode" env:"ENCRYPTION_CHUNKED_MODE"` // Enable chunked/streaming encryption
+	ChunkSize          int      `yaml:"chunk_size" env:"ENCRYPTION_CHUNK_SIZE"`     // Size of each encryption chunk in bytes
 }
 
 // KeyManagerConfig holds key manager (KMS) configuration.

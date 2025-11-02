@@ -20,12 +20,13 @@ Deep project analysis identified several correctness bugs (notably Range on encr
   - Fix: Set headers before any `WriteHeader`/write calls. Ensure Content-Length/Content-Range are consistent.
   - Affected: `internal/api/handlers.go`
 
-- Multipart encryption is not decryptable post-complete
-  - Problem: Each part is encrypted independently; per-object salt/IV and algorithm metadata aren?t persisted at object level in a way S3 returns after completion. Completed object lacks required metadata to decrypt.
-  - Options:
-    - Short-term: Disable multipart upload endpoints for encrypted objects or transparently fall back to single PUT for supported sizes.
-    - Mid-term: Define a segmented format with a manifest (nonce/key derivation/segment size) and store manifest in object metadata or prefixed header.
-  - Affected: `internal/api/handlers.go`, `internal/s3/client.go`, `internal/crypto/*`
+- ~~Multipart encryption is not decryptable post-complete~~ ? FIXED
+  - ~~Problem: Each part is encrypted independently; per-object salt/IV and algorithm metadata aren?t persisted at object level in a way S3 returns after completion. Completed object lacks required metadata to decrypt.~~
+  - ~~Options:~~
+    - ~~Short-term: Disable multipart upload endpoints for encrypted objects or transparently fall back to single PUT for supported sizes.~~
+    - ~~Mid-term: Define a segmented format with a manifest (nonce/key derivation/segment size) and store manifest in object metadata or prefixed header.~~
+  - **Solution**: Implemented chunked encryption format with per-chunk IVs and manifest storage in metadata. Multipart uploads now enabled with chunked encryption.
+  - **Affected**: `internal/api/handlers.go`, `internal/s3/client.go`, `internal/crypto/*`
 
 - CopyObject returns placeholder ETag
   - Problem: Uses a hardcoded ETag instead of backend-provided value.
@@ -119,8 +120,8 @@ Deep project analysis identified several correctness bugs (notably Range on encr
   - Add `use_path_style` config.
 
 - P2 (later)
-  - Implement streaming AEAD and update S3 client/handlers to stream.
-  - Design and implement segmented encryption format supporting Range and multipart.
+  - ~~Implement streaming AEAD and update S3 client/handlers to stream.~~ ? DONE
+  - ~~Design and implement segmented encryption format supporting Range and multipart.~~ ? DONE (multipart supported; Range still requires full download)
   - Broaden metadata preservation and refine compression policy.
 
 ---

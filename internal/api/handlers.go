@@ -745,15 +745,7 @@ func generateListObjectsXML(bucket, prefix, delimiter string, objects []s3.Objec
 
 // handleCreateMultipartUpload handles multipart upload initiation.
 func (h *Handler) handleCreateMultipartUpload(w http.ResponseWriter, r *http.Request) {
-    // Temporary: multipart uploads are not supported yet with encryption
-    s3Err := &S3Error{
-        Code:       "NotImplemented",
-        Message:    "Multipart uploads are not supported",
-        Resource:   r.URL.Path,
-        HTTPStatus: http.StatusNotImplemented,
-    }
-    s3Err.WriteXML(w)
-    return
+    // Multipart uploads are now supported with chunked encryption
 	start := time.Now()
 	vars := mux.Vars(r)
 	bucket := vars["bucket"]
@@ -893,14 +885,7 @@ func (h *Handler) handleUploadPart(w http.ResponseWriter, r *http.Request) {
 
 // handleCompleteMultipartUpload handles completing a multipart upload.
 func (h *Handler) handleCompleteMultipartUpload(w http.ResponseWriter, r *http.Request) {
-    s3Err := &S3Error{
-        Code:       "NotImplemented",
-        Message:    "Multipart uploads are not supported",
-        Resource:   r.URL.Path,
-        HTTPStatus: http.StatusNotImplemented,
-    }
-    s3Err.WriteXML(w)
-    return
+    // Multipart uploads are now supported with chunked encryption
 	start := time.Now()
 	vars := mux.Vars(r)
 	bucket := vars["bucket"]
@@ -1034,14 +1019,7 @@ func (h *Handler) handleAbortMultipartUpload(w http.ResponseWriter, r *http.Requ
 
 // handleListParts handles listing parts of a multipart upload.
 func (h *Handler) handleListParts(w http.ResponseWriter, r *http.Request) {
-    s3Err := &S3Error{
-        Code:       "NotImplemented",
-        Message:    "Multipart uploads are not supported",
-        Resource:   r.URL.Path,
-        HTTPStatus: http.StatusNotImplemented,
-    }
-    s3Err.WriteXML(w)
-    return
+    // Multipart uploads are now supported
 	start := time.Now()
 	vars := mux.Vars(r)
 	bucket := vars["bucket"]

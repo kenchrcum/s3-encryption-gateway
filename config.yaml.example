@@ -17,6 +17,8 @@ encryption:
   supported_algorithms:
     - "AES256-GCM"
     - "ChaCha20-Poly1305"
+  chunked_mode: true  # Enable chunked/streaming encryption (default: true)
+  chunk_size: 65536   # Chunk size in bytes (default: 65536 = 64KB). Range: 16KB-1MB
   key_manager:
     enabled: false  # Set to true to enable key rotation/KMS mode (default: single password mode)
 

@@ -58,6 +58,9 @@ type engine struct {
 	supportedAlgorithms []string
     // keyResolver resolves a password by key version for decryption of older objects
     keyResolver       func(version int) (string, bool)
+	// Chunked encryption settings
+	chunkedMode bool // Enable chunked/streaming encryption mode
+	chunkSize    int  // Size of each encryption chunk (default: DefaultChunkSize)
 }
 
 // NewEngine creates a new encryption engine with the given password.
@@ -75,6 +78,11 @@ func NewEngineWithCompression(password string, compressionEngine CompressionEngi
 
 // NewEngineWithOptions creates a new encryption engine with full options.
 func NewEngineWithOptions(password string, compressionEngine CompressionEngine, preferredAlgorithm string, supportedAlgorithms []string) (EncryptionEngine, error) {
+	return NewEngineWithChunking(password, compressionEngine, preferredAlgorithm, supportedAlgorithms, true, DefaultChunkSize)
+}
+
+// NewEngineWithChunking creates a new encryption engine with chunked mode support.
+func NewEngineWithChunking(password string, compressionEngine CompressionEngine, preferredAlgorithm string, supportedAlgorithms []string, chunkedMode bool, chunkSize int) (EncryptionEngine, error) {
 	if password == "" {
 		return nil, fmt.Errorf("encryption password cannot be empty")
 	}
@@ -97,6 +105,17 @@ func NewEngineWithOptions(password string, compressionEngine CompressionEngine, 
 		return nil, fmt.Errorf("preferred algorithm %s is not in supported algorithms list", preferredAlgorithm)
 	}
 
+	// Validate and set chunk size
+	if chunkSize == 0 {
+		chunkSize = DefaultChunkSize
+	}
+	if chunkSize < MinChunkSize {
+		chunkSize = MinChunkSize
+	}
+	if chunkSize > MaxChunkSize {
+		chunkSize = MaxChunkSize
+	}
+
 	// Log hardware acceleration info
 	if HasAESHardwareSupport() {
 		// Hardware acceleration is available (Go's crypto automatically uses it)
@@ -108,6 +127,8 @@ func NewEngineWithOptions(password string, compressionEngine CompressionEngine, 
 		compressionEngine:  compressionEngine,
 		preferredAlgorithm: preferredAlgorithm,
 		supportedAlgorithms: supportedAlgorithms,
+		chunkedMode:         chunkedMode,
+		chunkSize:            chunkSize,
 	}, nil
 }
 
@@ -188,6 +209,12 @@ func (e *engine) createCipher(key []byte) (cipher.AEAD, error) {
 // Encrypt encrypts data from the reader and returns an encrypted reader
 // along with encryption metadata.
 func (e *engine) Encrypt(reader io.Reader, metadata map[string]string) (io.Reader, map[string]string, error) {
+	// If chunked mode is enabled, use streaming chunked encryption
+	if e.chunkedMode {
+		return e.encryptChunked(reader, metadata)
+	}
+
+	// Legacy buffered mode for backward compatibility
 	// Read the plaintext first to get size and content type (needed for compression decision)
 	plaintext, err := io.ReadAll(reader)
 	if err != nil {
@@ -329,6 +356,13 @@ func (e *engine) Decrypt(reader io.Reader, metadata map[string]string) (io.Reade
 		// Not encrypted, return as-is
 		return reader, metadata, nil
 	}
+
+	// Check if this is chunked format
+	if isChunkedFormat(metadata) {
+		return e.decryptChunked(reader, metadata)
+	}
+
+	// Legacy buffered mode for backward compatibility
 
 	// Extract encryption parameters from metadata
 	salt, err := decodeBase64(metadata[MetaKeySalt])
@@ -477,6 +511,173 @@ func (e *engine) Decrypt(reader io.Reader, metadata map[string]string) (io.Reade
 	return finalReader, decMetadata, nil
 }
 
+// encryptChunked implements streaming chunked encryption.
+func (e *engine) encryptChunked(reader io.Reader, metadata map[string]string) (io.Reader, map[string]string, error) {
+	// Determine algorithm to use
+	algorithm := e.preferredAlgorithm
+
+	// Generate salt and base IV for this encryption
+	salt, err := e.generateSalt()
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to generate salt: %w", err)
+	}
+
+	baseIV, err := e.generateNonceForAlgorithm(algorithm)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to generate base IV: %w", err)
+	}
+
+	// Derive key from password and salt
+	key, err := e.deriveKey(salt)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to derive key: %w", err)
+	}
+	defer zeroBytes(key)
+
+	// Use appropriate key size for algorithm
+	keySize := aesKeySize
+	if algorithm == AlgorithmChaCha20Poly1305 {
+		keySize = chacha20KeySize
+	}
+	if len(key) != keySize {
+		adjustedKey := make([]byte, keySize)
+		copy(adjustedKey, key)
+		if len(key) < keySize {
+			copy(adjustedKey[len(key):], key[:keySize-len(key)])
+		}
+		zeroBytes(key)
+		key = adjustedKey
+	}
+
+	// Create cipher using selected algorithm
+	aeadCipher, err := createAEADCipher(algorithm, key)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to create cipher for algorithm %s: %w", algorithm, err)
+	}
+	aead := aeadCipher.(cipher.AEAD)
+
+	// Create chunked encrypt reader
+	chunkedReader, manifest := newChunkedEncryptReader(reader, aead, baseIV, e.chunkSize)
+
+	// Encode manifest for storage
+	manifestEncoded, err := encodeManifest(manifest)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to encode manifest: %w", err)
+	}
+
+	// Prepare encryption metadata
+	encMetadata := make(map[string]string)
+	if metadata != nil {
+		// Copy original metadata
+		for k, v := range metadata {
+			encMetadata[k] = v
+		}
+	}
+
+	// Add chunked encryption markers
+	encMetadata[MetaEncrypted] = "true"
+	encMetadata[MetaChunkedFormat] = "true"
+	encMetadata[MetaAlgorithm] = algorithm
+	encMetadata[MetaKeySalt] = encodeBase64(salt)
+	encMetadata[MetaIV] = encodeBase64(baseIV)
+	encMetadata[MetaChunkSize] = fmt.Sprintf("%d", e.chunkSize)
+	encMetadata[MetaManifest] = manifestEncoded
+	encMetadata[MetaChunkCount] = fmt.Sprintf("%d", manifest.ChunkCount)
+	// Preserve key version if provided
+	if kv, ok := metadata[MetaKeyVersion]; ok && kv != "" {
+		encMetadata[MetaKeyVersion] = kv
+	}
+
+	return chunkedReader, encMetadata, nil
+}
+
+// decryptChunked implements streaming chunked decryption.
+func (e *engine) decryptChunked(reader io.Reader, metadata map[string]string) (io.Reader, map[string]string, error) {
+	// Load manifest from metadata
+	manifest, err := loadManifestFromMetadata(metadata)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to load manifest: %w", err)
+	}
+
+	// Extract encryption parameters from metadata
+	salt, err := decodeBase64(metadata[MetaKeySalt])
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to decode salt: %w", err)
+	}
+
+	// Get algorithm from metadata (default to AES-GCM for backward compatibility)
+	algorithm := metadata[MetaAlgorithm]
+	if algorithm == "" {
+		algorithm = AlgorithmAES256GCM
+	}
+
+	// Verify algorithm is supported
+	if !isAlgorithmSupported(algorithm, e.supportedAlgorithms) {
+		return nil, nil, fmt.Errorf("unsupported algorithm %s (not in supported list)", algorithm)
+	}
+
+	// Derive key from password and salt
+	key, err := e.deriveKey(salt)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to derive key: %w", err)
+	}
+	defer zeroBytes(key)
+
+	// Adjust key size for algorithm
+	keySize := aesKeySize
+	if algorithm == AlgorithmChaCha20Poly1305 {
+		keySize = chacha20KeySize
+	}
+	if len(key) != keySize {
+		adjustedKey := make([]byte, keySize)
+		copy(adjustedKey, key)
+		if len(key) < keySize {
+			copy(adjustedKey[len(key):], key[:keySize-len(key)])
+		}
+		zeroBytes(key)
+		key = adjustedKey
+	}
+
+	// Create cipher using algorithm from metadata
+	aeadCipher, err := createAEADCipher(algorithm, key)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to create cipher for algorithm %s: %w", algorithm, err)
+	}
+	aead := aeadCipher.(cipher.AEAD)
+
+	// Create chunked decrypt reader
+	chunkedReader, err := newChunkedDecryptReader(reader, aead, manifest)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to create chunked decrypt reader: %w", err)
+	}
+
+	// Prepare decrypted metadata (remove encryption markers)
+	decMetadata := make(map[string]string)
+	for k, v := range metadata {
+		// Skip encryption-related metadata
+		if isEncryptionMetadata(k) {
+			continue
+		}
+		decMetadata[k] = v
+	}
+
+	// Restore original size if available
+	if chunkCount, ok := metadata[MetaChunkCount]; ok {
+		if chunkSize, ok2 := metadata[MetaChunkSize]; ok2 {
+			var count, size int
+			if _, err1 := fmt.Sscanf(chunkCount, "%d", &count); err1 == nil {
+				if _, err2 := fmt.Sscanf(chunkSize, "%d", &size); err2 == nil {
+					// Approximate original size (last chunk might be smaller)
+					approxSize := int64((count - 1) * size + size)
+					decMetadata["Content-Length"] = fmt.Sprintf("%d", approxSize)
+				}
+			}
+		}
+	}
+
+	return chunkedReader, decMetadata, nil
+}
+
 // IsEncrypted checks if the metadata indicates the object is encrypted.
 func (e *engine) IsEncrypted(metadata map[string]string) bool {
 	if metadata == nil {
@@ -502,7 +703,12 @@ func isEncryptionMetadata(key string) bool {
 		key == MetaIV ||
 		key == MetaAuthTag ||
 		key == MetaOriginalSize ||
-		key == MetaOriginalETag
+		key == MetaOriginalETag ||
+		key == MetaChunkedFormat ||
+		key == MetaChunkSize ||
+		key == MetaChunkCount ||
+		key == MetaManifest ||
+		key == MetaKeyVersion
 }
 
 // isCompressionMetadata checks if a metadata key is related to compression.
