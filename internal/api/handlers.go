@@ -1052,14 +1052,6 @@ func (h *Handler) handleCreateMultipartUpload(w http.ResponseWriter, r *http.Req
 
 // handleUploadPart handles uploading a part in a multipart upload.
 func (h *Handler) handleUploadPart(w http.ResponseWriter, r *http.Request) {
-    s3Err := &S3Error{
-        Code:       "NotImplemented",
-        Message:    "Multipart uploads are not supported",
-        Resource:   r.URL.Path,
-        HTTPStatus: http.StatusNotImplemented,
-    }
-    s3Err.WriteXML(w)
-    return
 	start := time.Now()
 	vars := mux.Vars(r)
 	bucket := vars["bucket"]
@@ -1218,14 +1210,6 @@ func (h *Handler) handleCompleteMultipartUpload(w http.ResponseWriter, r *http.R
 
 // handleAbortMultipartUpload handles aborting a multipart upload.
 func (h *Handler) handleAbortMultipartUpload(w http.ResponseWriter, r *http.Request) {
-    s3Err := &S3Error{
-        Code:       "NotImplemented",
-        Message:    "Multipart uploads are not supported",
-        Resource:   r.URL.Path,
-        HTTPStatus: http.StatusNotImplemented,
-    }
-    s3Err.WriteXML(w)
-    return
 	start := time.Now()
 	vars := mux.Vars(r)
 	bucket := vars["bucket"]
