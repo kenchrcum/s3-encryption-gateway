@@ -1,0 +1,116 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "s3-encryption-gateway.fullname" . }}
+  labels:
+    {{- include "s3-encryption-gateway.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "s3-encryption-gateway.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      annotations:
+        {{- with .Values.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      labels:
+        {{- include "s3-encryption-gateway.selectorLabels" . | nindent 8 }}
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      serviceAccountName: {{ include "s3-encryption-gateway.fullname" . }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+      - name: gateway
+        securityContext:
+          {{- toYaml .Values.securityContext | nindent 10 }}
+        image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+        imagePullPolicy: {{ .Values.image.pullPolicy }}
+        ports:
+        - name: http
+          containerPort: 8080
+          protocol: TCP
+        env:
+        {{- include "s3-encryption-gateway.envVar" (dict "name" "LISTEN_ADDR" "value" .Values.config.listenAddr.value "valueFrom" .Values.config.listenAddr.valueFrom) | nindent 8 }}
+        {{- include "s3-encryption-gateway.envVar" (dict "name" "LOG_LEVEL" "value" .Values.config.logLevel.value "valueFrom" .Values.config.logLevel.valueFrom) | nindent 8 }}
+        {{- if and .Values.config.proxiedBucket (or .Values.config.proxiedBucket.value .Values.config.proxiedBucket.valueFrom) }}
+        {{- include "s3-encryption-gateway.envVar" (dict "name" "PROXIED_BUCKET" "value" (default "" .Values.config.proxiedBucket.value) "valueFrom" .Values.config.proxiedBucket.valueFrom) | nindent 8 }}
+        {{- end }}
+        {{- include "s3-encryption-gateway.envVar" (dict "name" "BACKEND_ENDPOINT" "value" .Values.config.backend.endpoint.value "valueFrom" .Values.config.backend.endpoint.valueFrom) | nindent 8 }}
+        {{- include "s3-encryption-gateway.envVar" (dict "name" "BACKEND_REGION" "value" .Values.config.backend.region.value "valueFrom" .Values.config.backend.region.valueFrom) | nindent 8 }}
+        {{- include "s3-encryption-gateway.envVar" (dict "name" "BACKEND_ACCESS_KEY" "value" .Values.config.backend.accessKey.value "valueFrom" .Values.config.backend.accessKey.valueFrom) | nindent 8 }}
+        {{- include "s3-encryption-gateway.envVar" (dict "name" "BACKEND_SECRET_KEY" "value" .Values.config.backend.secretKey.value "valueFrom" .Values.config.backend.secretKey.valueFrom) | nindent 8 }}
+        {{- if or .Values.config.backend.provider.value .Values.config.backend.provider.valueFrom }}
+        {{- include "s3-encryption-gateway.envVar" (dict "name" "BACKEND_PROVIDER" "value" .Values.config.backend.provider.value "valueFrom" .Values.config.backend.provider.valueFrom) | nindent 8 }}
+        {{- end }}
+        {{- include "s3-encryption-gateway.envVar" (dict "name" "BACKEND_USE_SSL" "value" .Values.config.backend.useSSL.value "valueFrom" .Values.config.backend.useSSL.valueFrom) | nindent 8 }}
+        {{- include "s3-encryption-gateway.envVar" (dict "name" "BACKEND_USE_PATH_STYLE" "value" .Values.config.backend.usePathStyle.value "valueFrom" .Values.config.backend.usePathStyle.valueFrom) | nindent 8 }}
+        {{- include "s3-encryption-gateway.envVar" (dict "name" "ENCRYPTION_PASSWORD" "value" .Values.config.encryption.password.value "valueFrom" .Values.config.encryption.password.valueFrom) | nindent 8 }}
+        {{- if or .Values.config.encryption.keyFile.value .Values.config.encryption.keyFile.valueFrom }}
+        {{- include "s3-encryption-gateway.envVar" (dict "name" "ENCRYPTION_KEY_FILE" "value" .Values.config.encryption.keyFile.value "valueFrom" .Values.config.encryption.keyFile.valueFrom) | nindent 8 }}
+        {{- end }}
+        {{- include "s3-encryption-gateway.envVar" (dict "name" "ENCRYPTION_PREFERRED_ALGORITHM" "value" .Values.config.encryption.preferredAlgorithm.value "valueFrom" .Values.config.encryption.preferredAlgorithm.valueFrom) | nindent 8 }}
+        {{- if or .Values.config.encryption.supportedAlgorithms.value .Values.config.encryption.supportedAlgorithms.valueFrom }}
+        {{- include "s3-encryption-gateway.envVar" (dict "name" "ENCRYPTION_SUPPORTED_ALGORITHMS" "value" .Values.config.encryption.supportedAlgorithms.value "valueFrom" .Values.config.encryption.supportedAlgorithms.valueFrom) | nindent 8 }}
+        {{- end }}
+        {{- include "s3-encryption-gateway.envVar" (dict "name" "KEY_MANAGER_ENABLED" "value" .Values.config.encryption.keyManager.enabled.value "valueFrom" .Values.config.encryption.keyManager.enabled.valueFrom) | nindent 8 }}
+        {{- include "s3-encryption-gateway.envVar" (dict "name" "COMPRESSION_ENABLED" "value" .Values.config.compression.enabled.value "valueFrom" .Values.config.compression.enabled.valueFrom) | nindent 8 }}
+        {{- if .Values.config.compression.enabled.value }}
+        {{- include "s3-encryption-gateway.envVar" (dict "name" "COMPRESSION_MIN_SIZE" "value" .Values.config.compression.minSize.value "valueFrom" .Values.config.compression.minSize.valueFrom) | nindent 8 }}
+        {{- include "s3-encryption-gateway.envVar" (dict "name" "COMPRESSION_CONTENT_TYPES" "value" .Values.config.compression.contentTypes.value "valueFrom" .Values.config.compression.contentTypes.valueFrom) | nindent 8 }}
+        {{- include "s3-encryption-gateway.envVar" (dict "name" "COMPRESSION_ALGORITHM" "value" .Values.config.compression.algorithm.value "valueFrom" .Values.config.compression.algorithm.valueFrom) | nindent 8 }}
+        {{- include "s3-encryption-gateway.envVar" (dict "name" "COMPRESSION_LEVEL" "value" .Values.config.compression.level.value "valueFrom" .Values.config.compression.level.valueFrom) | nindent 8 }}
+        {{- end }}
+        {{- include "s3-encryption-gateway.envVar" (dict "name" "SERVER_READ_TIMEOUT" "value" .Values.config.server.readTimeout.value "valueFrom" .Values.config.server.readTimeout.valueFrom) | nindent 8 }}
+        {{- include "s3-encryption-gateway.envVar" (dict "name" "SERVER_WRITE_TIMEOUT" "value" .Values.config.server.writeTimeout.value "valueFrom" .Values.config.server.writeTimeout.valueFrom) | nindent 8 }}
+        {{- include "s3-encryption-gateway.envVar" (dict "name" "SERVER_IDLE_TIMEOUT" "value" .Values.config.server.idleTimeout.value "valueFrom" .Values.config.server.idleTimeout.valueFrom) | nindent 8 }}
+        {{- include "s3-encryption-gateway.envVar" (dict "name" "SERVER_READ_HEADER_TIMEOUT" "value" .Values.config.server.readHeaderTimeout.value "valueFrom" .Values.config.server.readHeaderTimeout.valueFrom) | nindent 8 }}
+        {{- include "s3-encryption-gateway.envVar" (dict "name" "SERVER_MAX_HEADER_BYTES" "value" .Values.config.server.maxHeaderBytes.value "valueFrom" .Values.config.server.maxHeaderBytes.valueFrom) | nindent 8 }}
+        {{- include "s3-encryption-gateway.envVar" (dict "name" "TLS_ENABLED" "value" .Values.config.tls.enabled.value "valueFrom" .Values.config.tls.enabled.valueFrom) | nindent 8 }}
+        {{- if or (eq .Values.config.tls.enabled.value "true") (eq .Values.config.tls.enabled.value "1") }}
+        {{- if or .Values.config.tls.certFile.value .Values.config.tls.certFile.valueFrom }}
+        {{- include "s3-encryption-gateway.envVar" (dict "name" "TLS_CERT_FILE" "value" .Values.config.tls.certFile.value "valueFrom" .Values.config.tls.certFile.valueFrom) | nindent 8 }}
+        {{- end }}
+        {{- if or .Values.config.tls.keyFile.value .Values.config.tls.keyFile.valueFrom }}
+        {{- include "s3-encryption-gateway.envVar" (dict "name" "TLS_KEY_FILE" "value" .Values.config.tls.keyFile.value "valueFrom" .Values.config.tls.keyFile.valueFrom) | nindent 8 }}
+        {{- end }}
+        {{- end }}
+        {{- include "s3-encryption-gateway.envVar" (dict "name" "RATE_LIMIT_ENABLED" "value" .Values.config.rateLimit.enabled.value "valueFrom" .Values.config.rateLimit.enabled.valueFrom) | nindent 8 }}
+        {{- if or (eq .Values.config.rateLimit.enabled.value "true") (eq .Values.config.rateLimit.enabled.value "1") }}
+        {{- include "s3-encryption-gateway.envVar" (dict "name" "RATE_LIMIT_REQUESTS" "value" .Values.config.rateLimit.limit.value "valueFrom" .Values.config.rateLimit.limit.valueFrom) | nindent 8 }}
+        {{- include "s3-encryption-gateway.envVar" (dict "name" "RATE_LIMIT_WINDOW" "value" .Values.config.rateLimit.window.value "valueFrom" .Values.config.rateLimit.window.valueFrom) | nindent 8 }}
+        {{- end }}
+        {{- include "s3-encryption-gateway.envVar" (dict "name" "CACHE_ENABLED" "value" .Values.config.cache.enabled.value "valueFrom" .Values.config.cache.enabled.valueFrom) | nindent 8 }}
+        {{- if or (eq .Values.config.cache.enabled.value "true") (eq .Values.config.cache.enabled.value "1") }}
+        {{- include "s3-encryption-gateway.envVar" (dict "name" "CACHE_MAX_SIZE" "value" .Values.config.cache.maxSize.value "valueFrom" .Values.config.cache.maxSize.valueFrom) | nindent 8 }}
+        {{- include "s3-encryption-gateway.envVar" (dict "name" "CACHE_MAX_ITEMS" "value" .Values.config.cache.maxItems.value "valueFrom" .Values.config.cache.maxItems.valueFrom) | nindent 8 }}
+        {{- include "s3-encryption-gateway.envVar" (dict "name" "CACHE_DEFAULT_TTL" "value" .Values.config.cache.defaultTTL.value "valueFrom" .Values.config.cache.defaultTTL.valueFrom) | nindent 8 }}
+        {{- end }}
+        {{- include "s3-encryption-gateway.envVar" (dict "name" "AUDIT_ENABLED" "value" .Values.config.audit.enabled.value "valueFrom" .Values.config.audit.enabled.valueFrom) | nindent 8 }}
+        {{- if or (eq .Values.config.audit.enabled.value "true") (eq .Values.config.audit.enabled.value "1") }}
+        {{- include "s3-encryption-gateway.envVar" (dict "name" "AUDIT_MAX_EVENTS" "value" .Values.config.audit.maxEvents.value "valueFrom" .Values.config.audit.maxEvents.valueFrom) | nindent 8 }}
+        {{- end }}
+        livenessProbe:
+          {{- toYaml .Values.livenessProbe | nindent 10 }}
+        readinessProbe:
+          {{- toYaml .Values.readinessProbe | nindent 10 }}
+        resources:
+          {{- toYaml .Values.resources | nindent 10 }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+

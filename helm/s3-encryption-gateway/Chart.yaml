@@ -1,0 +1,17 @@
+apiVersion: v2
+name: s3-encryption-gateway
+description: A Helm chart for S3 Encryption Gateway - a transparent proxy providing client-side encryption for S3-compatible storage services
+keywords:
+  - s3
+  - encryption
+  - gateway
+  - storage
+home: https://github.com/kenchrcum/s3-encryption-gateway
+sources:
+  - https://github.com/kenchrcum/s3-encryption-gateway
+maintainers:
+  - name: kenchrcum
+    url: https://github.com/kenchrcum
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
