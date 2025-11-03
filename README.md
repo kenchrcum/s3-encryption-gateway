@@ -110,6 +110,13 @@ config:
 | `config.backend.provider` | Provider name (optional) | `""` |
 | `config.backend.useSSL` | Use SSL for backend | `"true"` |
 | `config.backend.usePathStyle` | Use path-style bucket addressing | `"false"` |
+| `config.backend.useClientCredentials` | Use credentials from client requests | `"false"` |
+
+**Note on `useClientCredentials`**: When set to `"true"`, the gateway extracts credentials from client requests (query parameters or Authorization header) instead of using configured backend credentials. In this mode:
+- `config.backend.accessKey` and `config.backend.secretKey` are **NOT required** and will be excluded from the deployment
+- Clients must provide credentials in every request
+- Requests without valid credentials will fail with `AccessDenied`
+- Useful for providers like Hetzner that don't support per-bucket access keys
 
 #### Encryption Configuration
 
@@ -177,9 +184,9 @@ config:
 
 | Parameter | Description | Default |
 |-----------|-------------|---------|
-| `replicaCount` | Number of replicas | `2` |
-| `image.repository` | Image repository | `s3-encryption-gateway` |
-| `image.tag` | Image tag | `"latest"` |
+| `replicaCount` | Number of replicas | `1` |
+| `image.repository` | Image repository | `kenchrcum/s3-encryption-gateway` |
+| `image.tag` | Image tag | `"0.3.0"` |
 | `image.pullPolicy` | Image pull policy | `IfNotPresent` |
 | `service.type` | Service type | `ClusterIP` |
 | `service.port` | Service port | `80` |
@@ -187,6 +194,20 @@ config:
 | `resources` | Resource requests/limits | See values.yaml |
 | `autoscaling.enabled` | Enable HPA | `false` |
 | `serviceMonitor.enabled` | Enable ServiceMonitor | `false` |
+
+#### Service Account
+
+| Parameter | Description | Default |
+|-----------|-------------|---------|
+| `serviceAccount.create` | Create a ServiceAccount | `true` |
+| `serviceAccount.name` | Use existing ServiceAccount name (when create=false uses this; when create=true overrides generated name) | `""` |
+
+#### Network Policy
+
+| Parameter | Description | Default |
+|-----------|-------------|---------|
+| `networkPolicy.enabled` | Create a NetworkPolicy | `false` |
+| `networkPolicy.policyTypes` | List of policy types | `[Ingress, Egress]` |
 
 ## Examples
 
@@ -234,6 +255,36 @@ config:
           name: s3-encryption-gateway-secrets
           key: encryption-password
 ```
+
+### Client Credentials Mode
+
+Enable credential passthrough to use client-provided credentials (e.g., for Hetzner):
+
+```yaml
+config:
+  proxiedBucket:
+    value: "my-bucket"  # Still useful to restrict to single bucket
+  backend:
+    endpoint:
+      value: "https://your-bucket.your-region.your-objectstorage.com"
+    region:
+      value: "nbg1"
+    useClientCredentials:
+      value: "true"
+    # accessKey and secretKey are NOT required when useClientCredentials is true
+  encryption:
+    password:
+      valueFrom:
+        secretKeyRef:
+          name: s3-encryption-gateway-secrets
+          key: encryption-password
+```
+
+In this mode, clients must include credentials in requests:
+- Query parameters: `?AWSAccessKeyId=...&AWSSecretAccessKey=...`
+- Or via Authorization header (Signature V4)
+
+Requests without valid credentials will be rejected with `AccessDenied`.
 
 ### Custom Configuration with ConfigMap
 
@@ -362,5 +413,5 @@ For issues, feature requests, or questions:
 
 ## License
 
-See the main project repository for license information.
+MIT License - see the main project repository [LICENSE](https://github.com/kenneth/s3-encryption-gateway/blob/main/LICENSE) file for details.
 
