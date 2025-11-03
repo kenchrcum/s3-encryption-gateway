@@ -186,7 +186,7 @@ config:
 |-----------|-------------|---------|
 | `replicaCount` | Number of replicas | `1` |
 | `image.repository` | Image repository | `kenchrcum/s3-encryption-gateway` |
-| `image.tag` | Image tag | `"0.3.0"` |
+| `image.tag` | Image tag | `"0.3.1"` |
 | `image.pullPolicy` | Image pull policy | `IfNotPresent` |
 | `service.type` | Service type | `ClusterIP` |
 | `service.port` | Service port | `80` |
