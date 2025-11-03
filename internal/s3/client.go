@@ -268,6 +268,26 @@ func (c *s3Client) GetObject(ctx context.Context, bucket, key string, versionID 
 	if result.VersionId != nil {
 		metadata["x-amz-version-id"] = *result.VersionId
 	}
+	
+	// Extract standard S3 response headers (same as HeadObject)
+	if result.ContentLength != nil {
+		metadata["Content-Length"] = fmt.Sprintf("%d", *result.ContentLength)
+	}
+	if result.ContentType != nil {
+		metadata["Content-Type"] = *result.ContentType
+	}
+	if result.ETag != nil {
+		metadata["ETag"] = *result.ETag
+	}
+	if result.LastModified != nil {
+		metadata["Last-Modified"] = result.LastModified.Format("Mon, 02 Jan 2006 15:04:05 GMT")
+	}
+	if result.AcceptRanges != nil {
+		metadata["Accept-Ranges"] = *result.AcceptRanges
+	}
+	if result.ContentEncoding != nil {
+		metadata["Content-Encoding"] = *result.ContentEncoding
+	}
 
 	return result.Body, metadata, nil
 }

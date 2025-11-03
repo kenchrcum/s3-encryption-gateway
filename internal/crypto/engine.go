@@ -661,11 +661,19 @@ func (e *engine) decryptChunked(reader io.Reader, metadata map[string]string) (i
 		if isEncryptionMetadata(k) {
 			continue
 		}
+		// For chunked encryption, skip ETag and Content-Length from GetObject
+		// (they're for the encrypted object, not the plaintext)
+		// We'll restore them below from original values
+		if k == "ETag" || k == "Content-Length" {
+			continue
+		}
 		decMetadata[k] = v
 	}
 
-	// Restore original size if available
-	if chunkCount, ok := metadata[MetaChunkCount]; ok {
+	// Restore original size if available (prefer MetaOriginalSize, fallback to calculation)
+	if originalSize, ok := metadata[MetaOriginalSize]; ok {
+		decMetadata["Content-Length"] = originalSize
+	} else if chunkCount, ok := metadata[MetaChunkCount]; ok {
 		if chunkSize, ok2 := metadata[MetaChunkSize]; ok2 {
 			var count, size int
 			if _, err1 := fmt.Sscanf(chunkCount, "%d", &count); err1 == nil {
@@ -676,6 +684,11 @@ func (e *engine) decryptChunked(reader io.Reader, metadata map[string]string) (i
 				}
 			}
 		}
+	}
+
+	// Restore original ETag if available (only restore if we have it, otherwise don't include ETag)
+	if originalETag, ok := metadata[MetaOriginalETag]; ok && originalETag != "" {
+		decMetadata["ETag"] = originalETag
 	}
 
 	return chunkedReader, decMetadata, nil

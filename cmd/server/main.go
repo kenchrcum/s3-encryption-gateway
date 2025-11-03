@@ -62,10 +62,17 @@ func main() {
 	// Start system metrics collector
 	m.StartSystemMetricsCollector()
 
-	// Initialize S3 client
-	s3Client, err := s3.NewClient(&cfg.Backend)
-	if err != nil {
-		logger.WithError(err).Fatal("Failed to create S3 client")
+	// Initialize S3 client (only if useClientCredentials is not enabled)
+	// When useClientCredentials is enabled, clients are created per-request from client credentials
+	var s3Client s3.Client
+	if !cfg.Backend.UseClientCredentials {
+		s3Client, err = s3.NewClient(&cfg.Backend)
+		if err != nil {
+			logger.WithError(err).Fatal("Failed to create S3 client")
+		}
+		logger.Info("S3 backend client initialized with configured credentials")
+	} else {
+		logger.Info("Client credential passthrough enabled - S3 clients will be created per-request from client credentials")
 	}
 
 	// Load encryption password (required for both single password and KMS modes)

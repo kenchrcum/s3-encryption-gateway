@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -103,22 +104,55 @@ func (h *Handler) RegisterRoutes(r *mux.Router) {
 
 // writeS3ClientError writes an appropriate S3 error response for client initialization failures.
 func (h *Handler) writeS3ClientError(w http.ResponseWriter, r *http.Request, err error, method string, start time.Time) {
-	// When use_client_credentials is enabled and credentials are missing, return AccessDenied
+	errMsg := ""
+	if err != nil {
+		errMsg = err.Error()
+	}
+
+	// When use_client_credentials is enabled, provide specific error messages
 	if h.config != nil && h.config.Backend.UseClientCredentials {
-		s3Err := &S3Error{
-			Code:       "AccessDenied",
-			Message:    "Missing or invalid credentials in request",
-			Resource:   r.URL.Path,
-			HTTPStatus: http.StatusForbidden,
+		var s3Err *S3Error
+		
+		// Check if this is a Signature V4 limitation
+		if strings.Contains(errMsg, "Signature V4") {
+			s3Err = &S3Error{
+				Code:       "SignatureDoesNotMatch",
+				Message:    "Signature V4 authentication is not supported when use_client_credentials is enabled. " +
+					"The signature includes the Host header, which prevents forwarding requests to the backend. " +
+					"Please use query parameter authentication (AWSAccessKeyId and AWSSecretAccessKey in URL) instead. " +
+					"For AWS CLI, you may need to use a custom client that supports query parameter authentication.",
+				Resource:   r.URL.Path,
+				HTTPStatus: http.StatusForbidden,
+			}
+		} else if strings.Contains(errMsg, "failed to extract credentials") || strings.Contains(errMsg, "incomplete") {
+			// Missing or incomplete credentials
+			s3Err = &S3Error{
+				Code:       "AccessDenied",
+				Message:    "Missing or invalid credentials in request. " +
+					"When use_client_credentials is enabled, credentials must be provided via query parameters " +
+					"(AWSAccessKeyId and AWSSecretAccessKey) or Authorization header.",
+				Resource:   r.URL.Path,
+				HTTPStatus: http.StatusForbidden,
+			}
+		} else {
+			// Generic credential error
+			s3Err = &S3Error{
+				Code:       "AccessDenied",
+				Message:    "Failed to authenticate request: " + errMsg,
+				Resource:   r.URL.Path,
+				HTTPStatus: http.StatusForbidden,
+			}
 		}
+		
 		s3Err.WriteXML(w)
 		h.metrics.RecordHTTPRequest(method, r.URL.Path, s3Err.HTTPStatus, time.Since(start), 0)
 		return
 	}
-	// Otherwise return InternalError
+	
+	// Otherwise return InternalError (when use_client_credentials is not enabled)
 	s3Err := &S3Error{
 		Code:       "InternalError",
-		Message:    "Failed to initialize S3 client",
+		Message:    "Failed to initialize S3 client: " + errMsg,
 		Resource:   r.URL.Path,
 		HTTPStatus: http.StatusInternalServerError,
 	}
@@ -126,8 +160,232 @@ func (h *Handler) writeS3ClientError(w http.ResponseWriter, r *http.Request, err
 	h.metrics.RecordHTTPRequest(method, r.URL.Path, s3Err.HTTPStatus, time.Since(start), 0)
 }
 
+// forwardSignatureV4Request forwards a Signature V4 request directly to the backend,
+// preserving the original Authorization header and other headers.
+func (h *Handler) forwardSignatureV4Request(w http.ResponseWriter, r *http.Request, method, bucket, key string, start time.Time) {
+	if h.config == nil || h.config.Backend.Endpoint == "" {
+		s3Err := &S3Error{
+			Code:       "InternalError",
+			Message:    "Backend endpoint not configured",
+			Resource:   r.URL.Path,
+			HTTPStatus: http.StatusInternalServerError,
+		}
+		s3Err.WriteXML(w)
+		h.metrics.RecordHTTPRequest(method, r.URL.Path, s3Err.HTTPStatus, time.Since(start), 0)
+		return
+	}
+
+	// Build backend URL
+	backendEndpoint := h.config.Backend.Endpoint
+	if !strings.HasPrefix(backendEndpoint, "http://") && !strings.HasPrefix(backendEndpoint, "https://") {
+		if h.config.Backend.UseSSL {
+			backendEndpoint = "https://" + backendEndpoint
+		} else {
+			backendEndpoint = "http://" + backendEndpoint
+		}
+	}
+	backendEndpoint = strings.TrimSuffix(backendEndpoint, "/")
+
+	// For Signature V4 forwarding, always use path-style addressing
+	// This is more compatible when forwarding signed requests because:
+	// 1. The Host header can remain as the gateway's hostname (for signature validation)
+	// 2. The backend endpoint hostname is used for the actual connection
+	// 3. Path-style is more forgiving with Host header mismatches
+	backendPath := fmt.Sprintf("/%s", bucket)
+	if key != "" {
+		backendPath = fmt.Sprintf("/%s/%s", bucket, key)
+	}
+	backendURL := backendEndpoint + backendPath
+
+	if r.URL.RawQuery != "" {
+		if strings.Contains(backendURL, "?") {
+			backendURL += "&" + r.URL.RawQuery
+		} else {
+			backendURL += "?" + r.URL.RawQuery
+		}
+	}
+
+	// Create request to backend
+	backendReq, err := http.NewRequestWithContext(r.Context(), method, backendURL, r.Body)
+	if err != nil {
+		h.logger.WithError(err).Error("Failed to create backend request")
+		s3Err := &S3Error{
+			Code:       "InternalError",
+			Message:    "Failed to forward request",
+			Resource:   r.URL.Path,
+			HTTPStatus: http.StatusInternalServerError,
+		}
+		s3Err.WriteXML(w)
+		h.metrics.RecordHTTPRequest(method, r.URL.Path, s3Err.HTTPStatus, time.Since(start), 0)
+		return
+	}
+
+	// Extract backend hostname from URL
+	backendURLParsed, err := url.Parse(backendURL)
+	if err == nil {
+		backendHostname := backendURLParsed.Host
+		
+		// For Signature V4, the signature includes the Host header
+		// We need to use the backend's hostname, but this may cause signature validation to fail
+		// Some S3-compatible backends are lenient and will accept it
+		// Copy all headers from original request (including Authorization)
+		for k, v := range r.Header {
+			// Skip Host - we'll set it to backend hostname
+			if strings.EqualFold(k, "Host") {
+				continue
+			}
+			backendReq.Header[k] = v
+		}
+		
+		// Set Host to backend hostname (without port if default)
+		backendReq.Host = backendHostname
+		h.logger.WithFields(logrus.Fields{
+			"original_host": r.Host,
+			"backend_host":  backendHostname,
+		}).Debug("Setting Host header to backend hostname for Signature V4 forwarding")
+	} else {
+		// Fallback: preserve original Host if URL parsing fails
+		originalHost := r.Host
+		if originalHost == "" {
+			originalHost = r.Header.Get("Host")
+		}
+		for k, v := range r.Header {
+			backendReq.Header[k] = v
+		}
+		backendReq.Host = originalHost
+	}
+
+	// Set Content-Length if present
+	if r.ContentLength > 0 {
+		backendReq.ContentLength = r.ContentLength
+	}
+
+	// Log forwarding details for debugging
+	originalHost := r.Host
+	if originalHost == "" {
+		originalHost = r.Header.Get("Host")
+	}
+	h.logger.WithFields(logrus.Fields{
+		"backend_url":  backendURL,
+		"original_host": originalHost,
+		"backend_host": backendReq.Host,
+		"method":       method,
+	}).Debug("Forwarding Signature V4 request to backend")
+
+	// Make request to backend
+	httpClient := &http.Client{
+		Timeout: 30 * time.Second,
+	}
+	backendResp, err := httpClient.Do(backendReq)
+	if err != nil {
+		h.logger.WithError(err).Error("Failed to forward request to backend")
+		s3Err := &S3Error{
+			Code:       "InternalError",
+			Message:    "Failed to connect to backend",
+			Resource:   r.URL.Path,
+			HTTPStatus: http.StatusBadGateway,
+		}
+		s3Err.WriteXML(w)
+		h.metrics.RecordHTTPRequest(method, r.URL.Path, s3Err.HTTPStatus, time.Since(start), 0)
+		return
+	}
+	defer backendResp.Body.Close()
+
+	// Log backend response for debugging
+	h.logger.WithFields(logrus.Fields{
+		"status_code": backendResp.StatusCode,
+		"backend_url": backendURL,
+	}).Debug("Backend response received")
+
+	// If backend returned an error, log the response body
+	if backendResp.StatusCode >= 400 {
+		bodyBytes, _ := io.ReadAll(backendResp.Body)
+		backendResp.Body = io.NopCloser(bytes.NewReader(bodyBytes))
+		h.logger.WithFields(logrus.Fields{
+			"status_code": backendResp.StatusCode,
+			"response":   string(bodyBytes),
+		}).Warn("Backend returned error response")
+	}
+
+	// Check if response is encrypted (before copying headers)
+	metadata := make(map[string]string)
+	if backendResp.StatusCode >= 200 && backendResp.StatusCode < 300 && method == "GET" {
+		for k, v := range backendResp.Header {
+			if len(v) > 0 {
+				// Convert header names to lowercase for metadata check
+				metadata[strings.ToLower(k)] = v[0]
+			}
+		}
+	}
+
+	isEncrypted := h.encryptionEngine.IsEncrypted(metadata)
+	var decMetadata map[string]string
+	var decryptedReader io.Reader
+
+	if isEncrypted && backendResp.StatusCode >= 200 && backendResp.StatusCode < 300 && method == "GET" {
+		// Try to decrypt - read body first, then decrypt
+		bodyBytes, err := io.ReadAll(backendResp.Body)
+		if err == nil {
+			decryptedReader, decMetadata, err = h.encryptionEngine.Decrypt(bytes.NewReader(bodyBytes), metadata)
+			if err != nil {
+				h.logger.WithError(err).Warn("Failed to decrypt forwarded response, returning as-is")
+				isEncrypted = false // Fall back to forwarding encrypted
+				backendResp.Body = io.NopCloser(bytes.NewReader(bodyBytes))
+			} else {
+				backendResp.Body = io.NopCloser(bytes.NewReader(bodyBytes))
+			}
+		} else {
+			isEncrypted = false
+		}
+	}
+
+	// Copy response headers (before WriteHeader)
+	for k, v := range backendResp.Header {
+		// Skip headers that shouldn't be forwarded
+		if strings.EqualFold(k, "Connection") || strings.EqualFold(k, "Transfer-Encoding") {
+			continue
+		}
+		// Remove encryption metadata if we decrypted
+		if isEncrypted && strings.HasPrefix(strings.ToLower(k), "x-amz-meta-") {
+			continue
+		}
+		w.Header()[k] = v
+	}
+
+	// Update headers if we decrypted
+	if isEncrypted && decMetadata != nil {
+		if cl, ok := decMetadata["Content-Length"]; ok {
+			w.Header().Set("Content-Length", cl)
+		}
+		// Add decrypted metadata
+		for k, v := range decMetadata {
+			if strings.HasPrefix(k, "x-amz-meta-") {
+				w.Header().Set(k, v)
+			}
+		}
+	}
+
+	// Write status code
+	w.WriteHeader(backendResp.StatusCode)
+
+	// Write response body
+	if isEncrypted && decryptedReader != nil {
+		io.Copy(w, decryptedReader)
+	} else {
+		io.Copy(w, backendResp.Body)
+	}
+
+	// Record metrics - use 0 if ContentLength is unknown (-1)
+	contentLength := backendResp.ContentLength
+	if contentLength < 0 {
+		contentLength = 0
+	}
+	h.metrics.RecordHTTPRequest(method, r.URL.Path, backendResp.StatusCode, time.Since(start), contentLength)
+}
+
 // getS3Client returns the appropriate S3 client for the request.
 // If use_client_credentials is enabled, extracts credentials from request and creates a client.
+// For Signature V4 requests, returns nil to indicate request should be forwarded directly.
 // Otherwise, returns the default configured client.
 func (h *Handler) getS3Client(r *http.Request) (s3.Client, error) {
 	// If credential passthrough is not enabled, use default client
@@ -141,15 +399,31 @@ func (h *Handler) getS3Client(r *http.Request) (s3.Client, error) {
 		return nil, fmt.Errorf("no S3 client available")
 	}
 
-	// When use_client_credentials is enabled, we MUST extract credentials from the request
-	// No fallback to configured credentials - fail if extraction fails
+	// When use_client_credentials is enabled, check for Signature V4
+	// Signature V4 requests include the Host header in the signature, so forwarding doesn't work
+	// because the signature was created for the gateway's hostname, not the backend's
+	if IsSignatureV4Request(r) {
+		clientCreds, err := ExtractCredentials(r)
+		if err == nil && clientCreds.AccessKey != "" {
+			// Return a helpful error explaining the limitation
+			h.logger.WithFields(logrus.Fields{
+				"access_key": clientCreds.AccessKey,
+			}).Warn("Signature V4 requests cannot be forwarded - signature validation will fail")
+			return nil, fmt.Errorf("Signature V4 requests are not supported when use_client_credentials is enabled. " +
+				"The signature includes the Host header, so forwarding to the backend fails validation. " +
+				"Please use query parameter authentication (AWSAccessKeyId and AWSSecretAccessKey in URL) instead, " +
+				"or configure the client to use query parameters rather than Signature V4")
+		}
+	}
+
+	// Try to extract credentials (for query parameters or other methods)
 	clientCreds, err := ExtractCredentials(r)
 	if err != nil {
 		h.logger.WithError(err).Warn("Failed to extract client credentials from request")
 		return nil, fmt.Errorf("failed to extract credentials from request: %w", err)
 	}
 
-	// Both access key and secret key are required
+	// Both access key and secret key are required for non-Signature V4 requests
 	if clientCreds.AccessKey == "" {
 		h.logger.Warn("Client credentials incomplete: missing access key")
 		return nil, fmt.Errorf("client credentials incomplete: missing access key")
@@ -259,10 +533,26 @@ func (h *Handler) handleGetObject(w http.ResponseWriter, r *http.Request) {
     var plaintextStart, plaintextEnd int64
     
     // Get S3 client (may use client credentials if enabled)
+    // For Signature V4 requests, s3Client may be nil - we'll forward the request directly
     s3Client, err := h.getS3Client(r)
     if err != nil {
         h.logger.WithError(err).Error("Failed to get S3 client")
         h.writeS3ClientError(w, r, err, "GET", start)
+        return
+    }
+
+    // If s3Client is nil, this indicates Signature V4 was detected and can't be handled
+    if s3Client == nil && err == nil {
+        // This shouldn't happen - getS3Client should return an error for Signature V4
+        // But handle it gracefully just in case
+        s3Err := &S3Error{
+            Code:       "NotImplemented",
+            Message:    "Signature V4 requests are not supported. Please use query parameter authentication instead.",
+            Resource:   r.URL.Path,
+            HTTPStatus: http.StatusNotImplemented,
+        }
+        s3Err.WriteXML(w)
+        h.metrics.RecordHTTPRequest("GET", r.URL.Path, s3Err.HTTPStatus, time.Since(start), 0)
         return
     }
 

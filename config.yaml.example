@@ -15,9 +15,13 @@ backend:
   #                           # Set via BACKEND_FILTER_METADATA_KEYS env var
   # use_client_credentials: false  # Optional: If true, extract and use credentials from client requests
   #                                 # When enabled, the gateway will use the client's credentials for backend access,
-  #                                 # respecting their access rights. REQUIRES credentials in every request (query params or headers).
+  #                                 # respecting their access rights. REQUIRES credentials in every request.
   #                                 # Backend access_key and secret_key are NOT required when this is enabled.
-  #                                 # Supports query parameters (AWSAccessKeyId, AWSSecretAccessKey) and Authorization header.
+  #                                 # 
+  #                                 # SUPPORTED: Query parameters (AWSAccessKeyId, AWSSecretAccessKey in URL)
+  #                                 # NOT SUPPORTED: AWS Signature V4 (Authorization header) - signature validation fails
+  #                                 #   because the signature includes the Host header, and forwarding changes it.
+  #                                 # 
   #                                 # If credentials cannot be extracted, the request will fail (no fallback).
   #                                 # Set via BACKEND_USE_CLIENT_CREDENTIALS env var
 
