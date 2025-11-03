@@ -4,15 +4,17 @@
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 [![Artifact Hub](https://img.shields.io/endpoint?url=https://artifacthub.io/badge/repository/s3-encryption-gateway)](https://artifacthub.io/packages/search?repo=s3-encryption-gateway)
 
-A transparent HTTP proxy that provides client-side encryption for S3-compatible storage services. The gateway sits between S3 clients and backend storage providers, encrypting/decrypting data transparently while maintaining full S3 API compatibility.
+A production-ready HTTP proxy that provides transparent client-side encryption for S3-compatible storage services. The gateway sits between S3 clients and backend storage providers, automatically encrypting and decrypting data while maintaining full S3 API compatibility.
 
 ## Features
 
-- **Transparent Encryption**: Automatically encrypts/decrypts S3 objects using AES-256-GCM (default) or ChaCha20-Poly1305
-- **S3 API Compatible**: Full compatibility with Amazon S3 API and S3-compatible services
-- **Multi-Provider Support**: Works with AWS S3, MinIO, Wasabi, Hetzner, and other S3-compatible providers
-- **Client-Side Encryption**: Data is encrypted before being sent to backend storage
-- **Production Ready**: Health checks, metrics, logging, and Kubernetes deployment support
+- **Transparent Encryption**: Automatically encrypts/decrypts S3 objects using AES-256-GCM (default) or ChaCha20-Poly1305 with authenticated encryption
+- **Full S3 API Compatibility**: Supports all core operations including PUT, GET, HEAD, DELETE, List, multipart uploads, and range requests
+- **Multi-Provider Support**: Works seamlessly with AWS S3, MinIO, Wasabi, Hetzner, and any S3-compatible provider
+- **Client-Side Encryption**: Data is encrypted before transmission to backend storage, ensuring end-to-end security
+- **Production Features**: Comprehensive monitoring, health checks, metrics, TLS/HTTPS, rate limiting, and Kubernetes-ready deployment
+- **Streaming Support**: Efficient chunked encryption for large files with optimized range request handling
+- **Optional Compression**: Configurable compression before encryption to reduce storage costs
 
 ## Architecture
 
@@ -58,11 +60,24 @@ sequenceDiagram
 
 ### Prerequisites
 
-- Go 1.22 or later
-- Docker (optional, for containerized deployment)
-- Kubernetes (optional, for K8s deployment)
+- Docker (recommended), or
+- Go 1.22+ for local builds
 
-### Building
+### Docker (Recommended)
+
+The easiest way to run the gateway is using Docker:
+
+```bash
+docker run -p 8080:8080 \
+  -e BACKEND_ENDPOINT="https://s3.amazonaws.com" \
+  -e BACKEND_REGION="us-east-1" \
+  -e BACKEND_ACCESS_KEY="your-key" \
+  -e BACKEND_SECRET_KEY="your-secret" \
+  -e ENCRYPTION_PASSWORD="your-password" \
+  s3-encryption-gateway:latest
+```
+
+### Building from Source
 
 ```bash
 # Build the binary
@@ -161,64 +176,6 @@ make run
 ./bin/s3-encryption-gateway
 ```
 
-### Testing
-
-```bash
-# Run all tests
-make test
-
-# Run tests with coverage
-make test-coverage
-
-# View coverage report
-open coverage.html
-```
-
-## Development
-
-### Project Structure
-
-```
-s3-encryption-gateway/
-??? cmd/server/          # Main application entrypoint
-??? internal/
-?   ??? api/            # HTTP handlers and routing
-?   ??? config/         # Configuration management
-?   ??? crypto/         # Encryption/decryption logic (Phase 2)
-?   ??? s3/             # S3 client implementations
-?   ??? middleware/      # HTTP middleware
-?   ??? metrics/        # Monitoring and metrics
-??? k8s/                # Kubernetes manifests
-??? docker/              # Docker-related files
-??? test/                # Test utilities
-```
-
-### Development Tools
-
-Install development tools:
-
-```bash
-make install-tools
-```
-
-Format code:
-
-```bash
-make fmt
-```
-
-Run linter:
-
-```bash
-make lint
-```
-
-Security scan:
-
-```bash
-make security-scan
-```
-
 ## Docker Deployment
 
 ### Build Docker Image
@@ -227,28 +184,13 @@ make security-scan
 make docker-build
 ```
 
-### Run Docker Container
-
-```bash
-docker run -p 8080:8080 \
-  -e BACKEND_ENDPOINT="https://s3.amazonaws.com" \
-  -e BACKEND_REGION="us-east-1" \
-  -e BACKEND_ACCESS_KEY="your-key" \
-  -e BACKEND_SECRET_KEY="your-secret" \
-  -e ENCRYPTION_PASSWORD="your-password" \
-  s3-encryption-gateway:latest
-```
-
 ## Kubernetes Deployment
 
-### Prerequisites
+The gateway includes Helm charts for easy Kubernetes deployment. See the [Helm chart documentation](helm/s3-encryption-gateway/README.md) for detailed deployment instructions.
 
-- Kubernetes cluster
-- kubectl configured
+### Quick Deploy
 
-### Deploy
-
-1. Create secrets (use `k8s/secrets.yaml.example` as template):
+1. Create secrets:
 
 ```bash
 kubectl create secret generic s3-encryption-gateway-secrets \
@@ -257,17 +199,63 @@ kubectl create secret generic s3-encryption-gateway-secrets \
   --from-literal=encryption-password=YOUR_PASSWORD
 ```
 
-2. Apply ConfigMap:
+2. Deploy using Helm:
 
 ```bash
-kubectl apply -f k8s/configmap.yaml
+helm install s3-encryption-gateway ./helm/s3-encryption-gateway
 ```
 
-3. Apply Deployment:
+Or apply manifests directly:
 
 ```bash
-kubectl apply -f k8s/deployment.yaml
+kubectl apply -f k8s/
 ```
+
+## API Usage
+
+The gateway is fully compatible with the S3 API. Use any S3 client or SDK:
+
+### Using AWS CLI
+
+```bash
+# Configure endpoint
+aws configure set s3.endpoint_url http://localhost:8080
+
+# Upload file
+aws s3 cp file.txt s3://my-bucket/my-key
+
+# Download file
+aws s3 cp s3://my-bucket/my-key file.txt
+
+# List objects
+aws s3 ls s3://my-bucket/ --endpoint-url http://localhost:8080
+```
+
+### Using curl
+
+```bash
+# Upload object
+curl -X PUT http://localhost:8080/my-bucket/my-key \
+  -H "Content-Type: text/plain" \
+  --data "Hello, World!"
+
+# Download object
+curl http://localhost:8080/my-bucket/my-key
+
+# Delete object
+curl -X DELETE http://localhost:8080/my-bucket/my-key
+
+# List objects
+curl "http://localhost:8080/my-bucket?prefix=test"
+```
+
+### Supported Operations
+
+- **Core Operations**: PUT, GET, HEAD, DELETE, List Objects
+- **Advanced Features**: Multipart uploads, range requests, presigned URLs
+- **Compatibility**: Works with all standard S3 clients and SDKs
+
+## Monitoring & Observability
 
 ### Health Checks
 
@@ -280,86 +268,24 @@ The gateway provides health check endpoints:
 
 ### Metrics
 
-The gateway exports comprehensive Prometheus metrics (with reduced label cardinality on HTTP paths):
+Comprehensive Prometheus metrics are exported with reduced label cardinality:
 
 - **HTTP Metrics**: Request counts, durations, bytes transferred
 - **S3 Operations**: Operation counts, durations, error rates
 - **Encryption**: Encryption/decryption counts, durations, throughput
 - **System Metrics**: Active connections, goroutines, memory usage
 
-Example metrics:
+Key metrics:
 - `http_requests_total` - Total HTTP requests
 - `encryption_operations_total` - Total encryption operations
 - `active_connections` - Current active connections
 - `goroutines_total` - Number of goroutines
 - `memory_alloc_bytes` - Memory allocated
 
-## API Usage
-
-### Upload Object (PUT)
-
-```bash
-curl -X PUT http://localhost:8080/my-bucket/my-key \
-  -H "Content-Type: text/plain" \
-  --data "Hello, World!"
-```
-
-### Download Object (GET)
-
-```bash
-curl http://localhost:8080/my-bucket/my-key
-```
-
-### Delete Object (DELETE)
-
-```bash
-curl -X DELETE http://localhost:8080/my-bucket/my-key
-```
-
-### List Objects (GET)
-
-```bash
-curl "http://localhost:8080/my-bucket?prefix=test"
-```
-
-## Implementation Status
-
-### Phase 1: Core Infrastructure ?
-- [x] Project structure and Go modules
-- [x] HTTP server with routing
-- [x] S3 backend client
-- [x] Configuration management
-- [x] Health checks and middleware
-- [x] Logging and error handling
-- [x] Docker and Kubernetes deployment
-- [x] Unit tests
-
-### Phase 2: Encryption Implementation ?
-- [x] AES-256-GCM encryption engine
-- [x] PBKDF2 key derivation
-- [x] Streaming encrypt/decrypt (chunked encryption mode)
-- [x] Metadata handling
-
-### Phase 3: S3 API Compatibility (Ongoing)
-- [x] Core operations: PUT, GET, HEAD, DELETE, List
-- [x] Multipart uploads (enabled with chunked encryption)
-- [x] Range requests (optimized for chunked encryption: fetches only needed encrypted chunks)
-- [x] Error translation
-
-### Known limitations
-- Range requests: Optimized for chunked encryption format (fetches only needed encrypted chunks from S3). Legacy encrypted objects still require full fetch + decrypt (backward compatible).
-- Streaming encryption uses chunked format with per-chunk IVs; this adds ~5-20% processing overhead but enables true streaming, multipart uploads, and optimized range requests.
-
-### Phase 4: Production Features ?
-- [x] TLS/HTTPS support
-- [x] Advanced monitoring and metrics (goroutines, memory usage, active connections)
-- [x] Performance benchmarks
-- [x] Security hardening (security headers, rate limiting)
-- [x] Load testing utilities
-
 ## Security Features
 
 ### TLS/HTTPS Support
+
 The gateway supports TLS/HTTPS encryption. Enable it in configuration:
 
 ```yaml
@@ -397,21 +323,29 @@ rate_limit:
 
 ## Security Considerations
 
-- **Encryption Password**: Store encryption passwords securely (use secrets management)
-- **Backend Credentials**: Use IAM roles or secure credential storage
-- **Network**: Deploy behind TLS termination (e.g., Kubernetes Ingress) or enable built-in TLS
-- **Access Control**: Restrict gateway access to authorized clients
-- **Rate Limiting**: Enable rate limiting in production to prevent abuse
+- **Encryption Password**: Store encryption passwords securely using secrets management (Kubernetes Secrets, HashiCorp Vault, etc.)
+- **Backend Credentials**: Use IAM roles, service accounts, or secure credential storage systems
+- **Network Security**: Deploy behind TLS termination (e.g., Kubernetes Ingress) or enable built-in TLS
+- **Access Control**: Restrict gateway access to authorized clients using network policies, firewalls, or API gateways
+- **Rate Limiting**: Enable rate limiting in production environments to prevent abuse and ensure fair resource usage
+- **Audit Logging**: Enable audit logging for compliance and security monitoring
+
+### Encryption Details
+
+- **Algorithm**: AES-256-GCM (default) or ChaCha20-Poly1305
+- **Key Derivation**: PBKDF2 with 100,000+ iterations
+- **Encryption Mode**: Chunked encryption with per-chunk IVs for streaming support
+- **Range Requests**: Optimized for chunked format - fetches only needed encrypted chunks
 
 ## Contributing
+
+We welcome contributions! Please see `DEVELOPMENT_GUIDE.md` for detailed development guidelines.
 
 1. Fork the repository
 2. Create a feature branch
 3. Make your changes
-4. Run tests and linter
+4. Run tests and linter (`make test && make lint`)
 5. Submit a pull request
-
-See `DEVELOPMENT_GUIDE.md` for detailed development guidelines.
 
 ## License
 
@@ -419,4 +353,6 @@ MIT License - see [LICENSE](LICENSE) file for details.
 
 ## Support
 
-[Add support information]
+- **Issues**: Report bugs or request features on [GitHub Issues](https://github.com/your-org/s3-encryption-gateway/issues)
+- **Documentation**: See `DEVELOPMENT_GUIDE.md` for development setup
+- **Helm Chart**: See [Helm chart README](helm/s3-encryption-gateway/README.md) for Kubernetes deployment details
