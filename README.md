@@ -186,8 +186,9 @@ config:
 |-----------|-------------|---------|
 | `replicaCount` | Number of replicas | `1` |
 | `image.repository` | Image repository | `kenchrcum/s3-encryption-gateway` |
-| `image.tag` | Image tag | `"0.3.0"` |
+| `image.tag` | Image tag | `"0.3.3"` |
 | `image.pullPolicy` | Image pull policy | `IfNotPresent` |
+| `service.enabled` | Enable Service creation | `true` |
 | `service.type` | Service type | `ClusterIP` |
 | `service.port` | Service port | `80` |
 | `service.targetPort` | Service target port | `8080` |
@@ -208,6 +209,14 @@ config:
 |-----------|-------------|---------|
 | `networkPolicy.enabled` | Create a NetworkPolicy | `false` |
 | `networkPolicy.policyTypes` | List of policy types | `[Ingress, Egress]` |
+| `networkPolicy.namespaceIsolation` | Restrict ingress to same namespace only | `true` |
+| `networkPolicy.namespaceLabel.key` | Namespace label key for isolation | `"kubernetes.io/metadata.name"` |
+
+**Namespace Isolation**: When `namespaceIsolation` is enabled (default), the NetworkPolicy restricts ingress traffic to only allow pods in the same namespace to access the gateway. This is useful for namespace-scoped deployments where you want to prevent cross-namespace access.
+
+**Note**: Namespace isolation requires the namespace to have a label matching the configured `namespaceLabel.key`. Most modern Kubernetes distributions automatically label namespaces with `kubernetes.io/metadata.name`. If your namespace doesn't have this label, you can either:
+1. Label your namespace: `kubectl label namespace <name> kubernetes.io/metadata.name=<name>`
+2. Or configure a custom label key in `networkPolicy.namespaceLabel.key`
 
 ## Examples
 
@@ -354,6 +363,40 @@ serviceMonitor:
     prometheus: kube-prometheus
 ```
 
+### Without Service
+
+When using alternative ingress methods (like Ingress controllers) that handle service discovery, you can disable the Service:
+
+```yaml
+service:
+  enabled: false
+```
+
+**Note**: When `service.enabled` is `false`, the ServiceMonitor will also be disabled automatically, as it requires a Service to function.
+
+**Important**: For namespace-scoped deployments where pods need to communicate with the gateway, you should **keep the Service enabled** to provide stable DNS resolution**, as pod IPs can change over time. The NetworkPolicy with namespace isolation will still restrict access to the same namespace while allowing DNS-based service discovery.
+
+### With Namespace Isolation
+
+For namespace-scoped deployments with strict network isolation:
+
+```yaml
+service:
+  enabled: true  # Keep Service enabled for DNS resolution (required for pod IP changes)
+
+networkPolicy:
+  enabled: true
+  namespaceIsolation: true  # Restrict ingress to same namespace only
+  namespaceLabel:
+    key: "kubernetes.io/metadata.name"  # Standard Kubernetes namespace label
+```
+
+This configuration:
+- **Keeps the Service enabled** - DNS resolution is essential because pod IPs can change during the gateway's lifetime (restarts, rescheduling, scaling). The Service provides a stable DNS name that resolves to the current pod IPs.
+- Enables NetworkPolicy with namespace isolation
+- Only allows pods in the same namespace to access the gateway via the Service
+- Blocks cross-namespace communication while maintaining DNS-based service discovery
+
 ## Upgrading
 
 ```bash
@@ -380,7 +423,10 @@ helm uninstall my-gateway
    ```yaml
    networkPolicy:
      enabled: true
+     namespaceIsolation: true  # Restrict to same namespace (default)
    ```
+   
+   When `namespaceIsolation` is enabled, only pods in the same namespace can access the gateway, preventing cross-namespace communication. This is particularly useful for namespace-scoped deployments.
 
 4. **Single Bucket Proxy**: Use `proxiedBucket` to restrict access to a single bucket, minimizing IAM policy requirements.
 
@@ -400,8 +446,15 @@ kubectl get pods -l app.kubernetes.io/name=s3-encryption-gateway
 
 ### Test Health Endpoint
 
+If the Service is enabled:
 ```bash
 kubectl port-forward svc/s3-encryption-gateway 8080:80
+curl http://localhost:8080/health
+```
+
+If the Service is disabled, port-forward directly to a pod:
+```bash
+kubectl port-forward <pod-name> 8080:8080
 curl http://localhost:8080/health
 ```
 
