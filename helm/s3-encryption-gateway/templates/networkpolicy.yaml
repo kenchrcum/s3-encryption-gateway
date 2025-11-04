@@ -34,9 +34,18 @@ spec:
     - port: {{ .Values.service.targetPort }}
       protocol: TCP
   {{- end }}
+  {{- if has "Egress" .Values.networkPolicy.policyTypes }}
   egress:
+  # Allow all egress (needed for S3 backend communication)
+  # Empty namespaceSelector and podSelector match all namespaces and pods
   - to:
-    - {} # allow egress to any (tune as needed)
+    - namespaceSelector: {}
+      podSelector: {}
+  # Allow egress to external IPs (for S3 backends)
+  - to:
+    - ipBlock:
+        cidr: 0.0.0.0/0
+  {{- end }}
 {{- end }}
 
 
