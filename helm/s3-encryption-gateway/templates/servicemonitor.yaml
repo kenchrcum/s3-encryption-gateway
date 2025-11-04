@@ -1,4 +1,8 @@
 {{- if and .Values.serviceMonitor.enabled .Values.service.enabled }}
+{{- $tlsEnabled := false }}
+{{- if or (eq .Values.config.tls.enabled.value "true") (eq .Values.config.tls.enabled.value "1") }}
+  {{- $tlsEnabled = true }}
+{{- end }}
 apiVersion: monitoring.coreos.com/v1
 kind: ServiceMonitor
 metadata:
@@ -13,7 +17,7 @@ spec:
     matchLabels:
       {{- include "s3-encryption-gateway.selectorLabels" . | nindent 6 }}
   endpoints:
-  - port: http
+  - port: {{ if $tlsEnabled }}https{{ else }}http{{ end }}
     path: /metrics
     interval: {{ .Values.serviceMonitor.interval }}
     scrapeTimeout: {{ .Values.serviceMonitor.scrapeTimeout }}

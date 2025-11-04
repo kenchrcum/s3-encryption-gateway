@@ -190,8 +190,10 @@ config:
 | `image.pullPolicy` | Image pull policy | `IfNotPresent` |
 | `service.enabled` | Enable Service creation | `true` |
 | `service.type` | Service type | `ClusterIP` |
-| `service.port` | Service port | `80` |
+| `service.port` | Service port (only used when TLS is disabled) | `80` |
 | `service.targetPort` | Service target port | `8080` |
+
+**Note**: When `config.tls.enabled.value` is `true`, the Service automatically uses port `443` with port name `https` instead of the configured `service.port`. This ensures proper HTTPS service discovery (e.g., `https://service-name.namespace.svc.cluster.local:443`).
 | `resources` | Resource requests/limits | See values.yaml |
 | `autoscaling.enabled` | Enable HPA | `false` |
 | `serviceMonitor.enabled` | Enable ServiceMonitor | `false` |

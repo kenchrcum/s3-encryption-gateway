@@ -1,4 +1,8 @@
 {{- if .Values.service.enabled }}
+{{- $tlsEnabled := false }}
+{{- if or (eq .Values.config.tls.enabled.value "true") (eq .Values.config.tls.enabled.value "1") }}
+  {{- $tlsEnabled = true }}
+{{- end }}
 apiVersion: v1
 kind: Service
 metadata:
@@ -8,10 +12,17 @@ metadata:
 spec:
   type: {{ .Values.service.type }}
   ports:
+    {{- if $tlsEnabled }}
+    - port: 443
+      targetPort: {{ .Values.service.targetPort }}
+      protocol: TCP
+      name: https
+    {{- else }}
     - port: {{ .Values.service.port }}
       targetPort: {{ .Values.service.targetPort }}
       protocol: TCP
       name: http
+    {{- end }}
   selector:
     {{- include "s3-encryption-gateway.selectorLabels" . | nindent 4 }}
 {{- end }}
