@@ -164,9 +164,9 @@ func TestHandler_getS3Client_UseClientCredentials_IncompleteCredentials(t *testi
 		t.Error("getS3Client() should return nil client when credentials incomplete")
 	}
 	
-	// Verify error message indicates missing secret key
-	if !strings.Contains(err.Error(), "missing secret key") {
-		t.Errorf("getS3Client() error = %v, want error about missing secret key", err)
+	// Verify error message indicates Signature V4 incompatibility
+	if !strings.Contains(err.Error(), "Signature V4 requests are not supported") {
+		t.Errorf("getS3Client() error = %v, want error about Signature V4 incompatibility", err)
 	}
 }
 
