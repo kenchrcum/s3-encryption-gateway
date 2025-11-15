@@ -1552,6 +1552,150 @@ func (h *Handler) handleCreateMultipartUpload(w http.ResponseWriter, r *http.Req
 	h.metrics.RecordHTTPRequest("POST", r.URL.Path, http.StatusOK, time.Since(start), 0)
 }
 
+// CompleteMultipartUpload represents the XML structure for completing multipart uploads.
+type CompleteMultipartUpload struct {
+	XMLName xml.Name `xml:"CompleteMultipartUpload"`
+	Parts   []struct {
+		XMLName    xml.Name `xml:"Part"`
+		PartNumber int32    `xml:"PartNumber"`
+		ETag       string   `xml:"ETag"`
+	} `xml:"Part"`
+}
+
+// parseCompleteMultipartUploadXML parses the CompleteMultipartUpload XML with security limits.
+// It enforces size limits, validates part numbers and ETags, and provides clear error messages.
+func (h *Handler) parseCompleteMultipartUploadXML(reader io.Reader) (*CompleteMultipartUpload, error) {
+
+	// Read the entire request body with size limit to prevent DoS
+	const maxXMLSize = 10 * 1024 * 1024 // 10MB limit for XML payload
+	bodyBytes, err := io.ReadAll(io.LimitReader(reader, maxXMLSize))
+	if err != nil {
+		return nil, &S3Error{
+			Code:       "InvalidRequest",
+			Message:    "Failed to read request body",
+			HTTPStatus: http.StatusBadRequest,
+		}
+	}
+
+	// Check if we hit the size limit
+	if len(bodyBytes) >= maxXMLSize {
+		return nil, &S3Error{
+			Code:       "InvalidRequest",
+			Message:    "Request body too large",
+			HTTPStatus: http.StatusRequestEntityTooLarge,
+		}
+	}
+
+	// Parse XML with custom decoder that enforces limits
+	decoder := xml.NewDecoder(bytes.NewReader(bodyBytes))
+
+	// Set XML parsing limits
+	decoder.CharsetReader = func(charset string, input io.Reader) (io.Reader, error) {
+		return nil, fmt.Errorf("charset reader not supported")
+	}
+
+	var completeReq CompleteMultipartUpload
+	if err := decoder.Decode(&completeReq); err != nil {
+		h.logger.WithError(err).Debug("XML parsing failed")
+		return nil, &S3Error{
+			Code:       "MalformedXML",
+			Message:    "The XML you provided was not well-formed or did not validate against our published schema",
+			HTTPStatus: http.StatusBadRequest,
+		}
+	}
+
+	// Validate the parsed data
+	if err := h.validateCompleteMultipartUploadRequest(&completeReq); err != nil {
+		return nil, err
+	}
+
+	return &completeReq, nil
+}
+
+// validateCompleteMultipartUploadRequest validates the CompleteMultipartUpload request data.
+func (h *Handler) validateCompleteMultipartUploadRequest(req *CompleteMultipartUpload) error {
+	// Check for empty parts list
+	if len(req.Parts) == 0 {
+		return &S3Error{
+			Code:       "InvalidArgument",
+			Message:    "At least one part must be specified",
+			HTTPStatus: http.StatusBadRequest,
+		}
+	}
+
+	// Check for too many parts (AWS limit is 10,000 parts)
+	const maxParts = 10000
+	if len(req.Parts) > maxParts {
+		return &S3Error{
+			Code:       "InvalidArgument",
+			Message:    fmt.Sprintf("Too many parts specified (maximum %d)", maxParts),
+			HTTPStatus: http.StatusBadRequest,
+		}
+	}
+
+	// Track seen part numbers to detect duplicates
+	seenParts := make(map[int32]bool)
+	var lastPartNumber int32 = -1
+
+	for i, part := range req.Parts {
+		// Validate part number
+		if part.PartNumber < 1 || part.PartNumber > 10000 {
+			return &S3Error{
+				Code:       "InvalidArgument",
+				Message:    fmt.Sprintf("Part number must be between 1 and 10000, got %d", part.PartNumber),
+				HTTPStatus: http.StatusBadRequest,
+			}
+		}
+
+		// Check for duplicate part numbers
+		if seenParts[part.PartNumber] {
+			return &S3Error{
+				Code:       "InvalidArgument",
+				Message:    fmt.Sprintf("Duplicate part number: %d", part.PartNumber),
+				HTTPStatus: http.StatusBadRequest,
+			}
+		}
+		seenParts[part.PartNumber] = true
+
+		// Validate ETag format (should be quoted)
+		if !isValidETag(part.ETag) {
+			return &S3Error{
+				Code:       "InvalidArgument",
+				Message:    fmt.Sprintf("Invalid ETag format for part %d: %s", part.PartNumber, part.ETag),
+				HTTPStatus: http.StatusBadRequest,
+			}
+		}
+
+		// Check if parts are in ascending order (AWS requires this)
+		if i > 0 && part.PartNumber < lastPartNumber {
+			h.logger.WithFields(logrus.Fields{
+				"part_number":    part.PartNumber,
+				"last_part":      lastPartNumber,
+			}).Warn("Parts not in ascending order - AWS requires ascending part numbers")
+		}
+		lastPartNumber = part.PartNumber
+	}
+
+	return nil
+}
+
+// isValidETag validates ETag format (should be quoted and contain valid characters).
+func isValidETag(etag string) bool {
+	if len(etag) < 2 || !strings.HasPrefix(etag, "\"") || !strings.HasSuffix(etag, "\"") {
+		return false
+	}
+
+	// Basic validation: should contain only hex digits, dashes, and quotes
+	inner := etag[1 : len(etag)-1]
+	for _, r := range inner {
+		if !((r >= '0' && r <= '9') || (r >= 'a' && r <= 'f') || (r >= 'A' && r <= 'F') || r == '-') {
+			return false
+		}
+	}
+
+	return len(inner) > 0
+}
+
 // handleUploadPart handles uploading a part in a multipart upload.
 func (h *Handler) handleUploadPart(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
@@ -1689,23 +1833,20 @@ func (h *Handler) handleCompleteMultipartUpload(w http.ResponseWriter, r *http.R
 		return
 	}
 
-	// Parse multipart upload completion XML
-	type CompleteMultipartUpload struct {
-		XMLName xml.Name `xml:"CompleteMultipartUpload"`
-		Parts   []struct {
-			XMLName    xml.Name `xml:"Part"`
-			PartNumber int32    `xml:"PartNumber"`
-			ETag       string   `xml:"ETag"`
-		} `xml:"Part"`
-	}
-
-	var completeReq CompleteMultipartUpload
-	if err := xml.NewDecoder(r.Body).Decode(&completeReq); err != nil {
-		s3Err := &S3Error{
-			Code:       "MalformedXML",
-			Message:    "The XML you provided was not well-formed or did not validate against our published schema",
-			Resource:   r.URL.Path,
-			HTTPStatus: http.StatusBadRequest,
+	// Parse multipart upload completion XML with security limits
+	completeReq, err := h.parseCompleteMultipartUploadXML(r.Body)
+	if err != nil {
+		var s3Err *S3Error
+		if s3e, ok := err.(*S3Error); ok {
+			s3Err = s3e
+			s3Err.Resource = r.URL.Path
+		} else {
+			s3Err = &S3Error{
+				Code:       "MalformedXML",
+				Message:    "The XML you provided was not well-formed or did not validate against our published schema",
+				Resource:   r.URL.Path,
+				HTTPStatus: http.StatusBadRequest,
+			}
 		}
 		s3Err.WriteXML(w)
 		h.metrics.RecordHTTPRequest("POST", r.URL.Path, s3Err.HTTPStatus, time.Since(start), 0)

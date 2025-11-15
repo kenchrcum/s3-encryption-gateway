@@ -3,6 +3,7 @@ package api
 import (
 	"bytes"
 	"context"
+	"encoding/xml"
 	"fmt"
 	"io"
 	"net/http"
@@ -816,6 +817,257 @@ func TestContentRangeMapping(t *testing.T) {
 				}
 				// The ETag should be the original ETag (not the encrypted object's ETag)
 				// We can't easily verify the exact value without more setup, but presence is key
+			}
+		})
+	}
+}
+
+// FuzzParseCompleteMultipartUploadXML fuzzes the XML parser for CompleteMultipartUpload requests.
+// This tests various edge cases including malformed XML, invalid part numbers, duplicate parts, and invalid ETags.
+func FuzzParseCompleteMultipartUploadXML(f *testing.F) {
+	// Add seed corpus with valid and invalid examples
+	validXML := `<CompleteMultipartUpload>
+	<Part>
+		<PartNumber>1</PartNumber>
+		<ETag>"abc123"</ETag>
+	</Part>
+	<Part>
+		<PartNumber>2</PartNumber>
+		<ETag>"def456"</ETag>
+	</Part>
+</CompleteMultipartUpload>`
+
+	invalidXML := `<CompleteMultipartUpload>
+	<Part>
+		<PartNumber>invalid</PartNumber>
+		<ETag>"abc123"</ETag>
+	</Part>
+</CompleteMultipartUpload>`
+
+	duplicatePartsXML := `<CompleteMultipartUpload>
+	<Part>
+		<PartNumber>1</PartNumber>
+		<ETag>"abc123"</ETag>
+	</Part>
+	<Part>
+		<PartNumber>1</PartNumber>
+		<ETag>"def456"</ETag>
+	</Part>
+</CompleteMultipartUpload>`
+
+	invalidETagXML := `<CompleteMultipartUpload>
+	<Part>
+		<PartNumber>1</PartNumber>
+		<ETag>invalid-etag</ETag>
+	</Part>
+</CompleteMultipartUpload>`
+
+	outOfRangePartXML := `<CompleteMultipartUpload>
+	<Part>
+		<PartNumber>10001</PartNumber>
+		<ETag>"abc123"</ETag>
+	</Part>
+</CompleteMultipartUpload>`
+
+	// Add seed inputs
+	f.Add([]byte(validXML))
+	f.Add([]byte(invalidXML))
+	f.Add([]byte(duplicatePartsXML))
+	f.Add([]byte(invalidETagXML))
+	f.Add([]byte(outOfRangePartXML))
+
+	f.Fuzz(func(t *testing.T, input []byte) {
+		// Create a handler with minimal setup for fuzzing
+		logger := logrus.New()
+		logger.SetLevel(logrus.ErrorLevel) // Reduce log noise during fuzzing
+
+		handler := &Handler{
+			logger: logger,
+		}
+
+		// Parse the XML - this should not panic regardless of input
+		_, err := handler.parseCompleteMultipartUploadXML(bytes.NewReader(input))
+
+		// We don't assert on the error since fuzzing is about finding crashes,
+		// not validating correctness. The function should handle all inputs gracefully.
+		_ = err
+	})
+}
+
+// TestValidateCompleteMultipartUploadRequest tests the validation logic.
+func TestValidateCompleteMultipartUploadRequest(t *testing.T) {
+	logger := logrus.New()
+	logger.SetLevel(logrus.ErrorLevel)
+	handler := &Handler{logger: logger}
+
+	tests := []struct {
+		name        string
+		req         *CompleteMultipartUpload
+		expectError bool
+		errorCode   string
+	}{
+		{
+			name: "valid request",
+			req: &CompleteMultipartUpload{
+				Parts: []struct {
+					XMLName    xml.Name `xml:"Part"`
+					PartNumber int32    `xml:"PartNumber"`
+					ETag       string   `xml:"ETag"`
+				}{
+					{PartNumber: 1, ETag: `"abc123"`},
+					{PartNumber: 2, ETag: `"def456"`},
+				},
+			},
+			expectError: false,
+		},
+		{
+			name: "empty parts",
+			req: &CompleteMultipartUpload{
+				Parts: []struct {
+					XMLName    xml.Name `xml:"Part"`
+					PartNumber int32    `xml:"PartNumber"`
+					ETag       string   `xml:"ETag"`
+				}{},
+			},
+			expectError: true,
+			errorCode:   "InvalidArgument",
+		},
+		{
+			name:        "duplicate part numbers",
+			req: &CompleteMultipartUpload{
+				Parts: []struct {
+					XMLName    xml.Name `xml:"Part"`
+					PartNumber int32    `xml:"PartNumber"`
+					ETag       string   `xml:"ETag"`
+				}{
+					{PartNumber: 1, ETag: `"abc123"`},
+					{PartNumber: 1, ETag: `"def456"`},
+				},
+			},
+			expectError: true,
+			errorCode:   "InvalidArgument",
+		},
+		{
+			name: "invalid part number (zero)",
+			req: &CompleteMultipartUpload{
+				Parts: []struct {
+					XMLName    xml.Name `xml:"Part"`
+					PartNumber int32    `xml:"PartNumber"`
+					ETag       string   `xml:"ETag"`
+				}{
+					{PartNumber: 0, ETag: `"abc123"`},
+				},
+			},
+			expectError: true,
+			errorCode:   "InvalidArgument",
+		},
+		{
+			name: "invalid part number (too high)",
+			req: &CompleteMultipartUpload{
+				Parts: []struct {
+					XMLName    xml.Name `xml:"Part"`
+					PartNumber int32    `xml:"PartNumber"`
+					ETag       string   `xml:"ETag"`
+				}{
+					{PartNumber: 10001, ETag: `"abc123"`},
+				},
+			},
+			expectError: true,
+			errorCode:   "InvalidArgument",
+		},
+		{
+			name: "invalid ETag format",
+			req: &CompleteMultipartUpload{
+				Parts: []struct {
+					XMLName    xml.Name `xml:"Part"`
+					PartNumber int32    `xml:"PartNumber"`
+					ETag       string   `xml:"ETag"`
+				}{
+					{PartNumber: 1, ETag: `invalid-etag`},
+				},
+			},
+			expectError: true,
+			errorCode:   "InvalidArgument",
+		},
+		{
+			name: "unquoted ETag",
+			req: &CompleteMultipartUpload{
+				Parts: []struct {
+					XMLName    xml.Name `xml:"Part"`
+					PartNumber int32    `xml:"PartNumber"`
+					ETag       string   `xml:"ETag"`
+				}{
+					{PartNumber: 1, ETag: `abc123`},
+				},
+			},
+			expectError: true,
+			errorCode:   "InvalidArgument",
+		},
+		{
+			name: "parts not in ascending order (should warn but not error)",
+			req: &CompleteMultipartUpload{
+				Parts: []struct {
+					XMLName    xml.Name `xml:"Part"`
+					PartNumber int32    `xml:"PartNumber"`
+					ETag       string   `xml:"ETag"`
+				}{
+					{PartNumber: 2, ETag: `"abc123"`},
+					{PartNumber: 1, ETag: `"def456"`},
+				},
+			},
+			expectError: false, // AWS allows this but logs a warning
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := handler.validateCompleteMultipartUploadRequest(tt.req)
+
+			if tt.expectError {
+				if err == nil {
+					t.Errorf("Expected error but got none")
+					return
+				}
+				if s3Err, ok := err.(*S3Error); ok {
+					if s3Err.Code != tt.errorCode {
+						t.Errorf("Expected error code %s, got %s", tt.errorCode, s3Err.Code)
+					}
+				} else {
+					t.Errorf("Expected S3Error, got %T", err)
+				}
+			} else {
+				if err != nil {
+					t.Errorf("Expected no error but got: %v", err)
+				}
+			}
+		})
+	}
+}
+
+// TestIsValidETag tests the ETag validation function.
+func TestIsValidETag(t *testing.T) {
+	tests := []struct {
+		etag    string
+		isValid bool
+	}{
+		{`"abc123"`, true},
+		{`"ABCDEF123"`, true},
+		{`"a-b-c-d-e"`, true},
+		{`"1234567890abcdef"`, true},
+		{`""`, false}, // Empty
+		{`"abc`, false}, // Unclosed quote
+		{`abc"`, false}, // Unopened quote
+		{`abc123`, false}, // No quotes
+		{`"abc 123"`, false}, // Invalid character (space)
+		{`"abc@123"`, false}, // Invalid character (@)
+		{`"abc_123"`, false}, // Invalid character (_)
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.etag, func(t *testing.T) {
+			result := isValidETag(tt.etag)
+			if result != tt.isValid {
+				t.Errorf("isValidETag(%q) = %v, want %v", tt.etag, result, tt.isValid)
 			}
 		})
 	}
