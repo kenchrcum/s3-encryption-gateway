@@ -38,6 +38,7 @@ var (
 
 // StartMinIOServer starts a local MinIO server for testing.
 // It uses Docker if available, otherwise tries to use a local MinIO binary.
+// This uses a global instance shared across integration tests.
 func StartMinIOServer(t *testing.T) *MinIOTestServer {
 	t.Helper()
 
@@ -111,6 +112,67 @@ func StartMinIOServer(t *testing.T) *MinIOTestServer {
 	minioServer.refMutex.Unlock()
 
 	return minioServer
+}
+
+// StartMinIOServerForProvider starts a separate MinIO server instance for provider tests.
+// This doesn't use the global instance, allowing provider tests to run independently.
+func StartMinIOServerForProvider(t *testing.T) *MinIOTestServer {
+	t.Helper()
+
+	// Use environment variables for MinIO credentials
+	accessKey := os.Getenv("MINIO_ROOT_USER")
+	if accessKey == "" {
+		accessKey = "minioadmin"
+	}
+	secretKey := os.Getenv("MINIO_ROOT_PASSWORD")
+	if secretKey == "" {
+		secretKey = "minioadmin"
+	}
+
+	// Use unique bucket name per test run
+	bucketName := fmt.Sprintf("test-bucket-%d", time.Now().UnixNano())
+
+	server := &MinIOTestServer{
+		AccessKey: accessKey,
+		SecretKey: secretKey,
+		Bucket:    bucketName,
+	}
+
+	// Try Docker first, then fallback to MinIO binary
+	var err error
+	t.Logf("Testing Docker availability...")
+	if hasDocker() {
+		t.Logf("Docker is available, trying Docker MinIO...")
+		err = server.startDockerMinIO(t)
+		if err != nil {
+			t.Logf("Docker MinIO failed: %v", err)
+		} else {
+			t.Logf("Docker MinIO started successfully")
+			return server
+		}
+	} else {
+		t.Logf("Docker not available")
+	}
+
+	// If Docker failed or is not available, try MinIO binary
+	if err != nil || !hasDocker() {
+		t.Logf("Testing MinIO binary availability...")
+		if hasMinIOBinary() {
+			t.Logf("MinIO binary available, trying binary MinIO...")
+			err = server.startBinaryMinIO(t)
+			if err != nil {
+				t.Logf("Binary MinIO failed: %v", err)
+			} else {
+				t.Logf("Binary MinIO started successfully")
+				return server
+			}
+		} else {
+			t.Logf("MinIO binary not available")
+		}
+	}
+
+	t.Skipf("MinIO server setup failed: %v", err)
+	return nil
 }
 
 // hasDocker checks if Docker is available.

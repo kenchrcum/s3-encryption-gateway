@@ -91,7 +91,7 @@ func TranslateError(err error, bucket, key string) *S3Error {
 				RequestID:  requestID,
 				HTTPStatus: http.StatusNotFound,
 			}
-		case "NoSuchKey":
+		case "NoSuchKey", "NotFound":
 			return &S3Error{
 				Code:       "NoSuchKey",
 				Message:    fmt.Sprintf("The specified key does not exist: %s", key),

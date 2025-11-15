@@ -284,6 +284,237 @@ func TestS3Gateway_MultipartUpload(t *testing.T) {
 	}
 }
 
+// TestS3Gateway_AbortMultipartUpload tests aborting multipart uploads.
+func TestS3Gateway_AbortMultipartUpload(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping integration test in short mode")
+	}
+
+	minioServer := StartMinIOServer(t)
+	defer minioServer.Stop()
+
+	// Create bucket directly in MinIO first
+	createBucketInMinIO(t, minioServer)
+
+	gateway := StartGateway(t, minioServer.GetGatewayConfig())
+	defer gateway.Close()
+
+	client := gateway.GetHTTPClient()
+	bucket := minioServer.Bucket
+	key := "abort-multipart-key"
+
+	// 1. Initiate multipart upload
+	initURL := fmt.Sprintf("http://%s/%s/%s?uploads", gateway.Addr, bucket, key)
+	initReq, err := http.NewRequest("POST", initURL, nil)
+	if err != nil {
+		t.Fatalf("Failed to create init request: %v", err)
+	}
+
+	initResp, err := client.Do(initReq)
+	if err != nil {
+		t.Fatalf("Init request failed: %v", err)
+	}
+	defer initResp.Body.Close()
+
+	if initResp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(initResp.Body)
+		t.Fatalf("Init failed with status %d: %s", initResp.StatusCode, string(body))
+	}
+
+	var initResult struct {
+		XMLName  xml.Name `xml:"InitiateMultipartUploadResult"`
+		UploadId string   `xml:"UploadId"`
+	}
+	if err := xml.NewDecoder(initResp.Body).Decode(&initResult); err != nil {
+		t.Fatalf("Failed to decode init response: %v", err)
+	}
+
+	if initResult.UploadId == "" {
+		t.Fatal("UploadId is empty")
+	}
+
+	uploadID := initResult.UploadId
+
+	// 2. Upload a part
+	part1Data := bytes.Repeat([]byte("a"), 5*1024*1024) // 5MB
+	part1URL := fmt.Sprintf("http://%s/%s/%s?partNumber=1&uploadId=%s", gateway.Addr, bucket, key, uploadID)
+	part1Req, err := http.NewRequest("PUT", part1URL, bytes.NewReader(part1Data))
+	if err != nil {
+		t.Fatalf("Failed to create part 1 request: %v", err)
+	}
+
+	part1Resp, err := client.Do(part1Req)
+	if err != nil {
+		t.Fatalf("Part 1 upload failed: %v", err)
+	}
+	defer part1Resp.Body.Close()
+
+	if part1Resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(part1Resp.Body)
+		t.Fatalf("Part 1 upload failed with status %d: %s", part1Resp.StatusCode, string(body))
+	}
+
+	// 3. Abort multipart upload
+	abortURL := fmt.Sprintf("http://%s/%s/%s?uploadId=%s", gateway.Addr, bucket, key, uploadID)
+	abortReq, err := http.NewRequest("DELETE", abortURL, nil)
+	if err != nil {
+		t.Fatalf("Failed to create abort request: %v", err)
+	}
+
+	abortResp, err := client.Do(abortReq)
+	if err != nil {
+		t.Fatalf("Abort request failed: %v", err)
+	}
+	defer abortResp.Body.Close()
+
+	if abortResp.StatusCode != http.StatusNoContent {
+		body, _ := io.ReadAll(abortResp.Body)
+		t.Fatalf("Abort failed with status %d: %s", abortResp.StatusCode, string(body))
+	}
+
+	// 4. Verify object doesn't exist (multipart upload was aborted)
+	getURL := fmt.Sprintf("http://%s/%s/%s", gateway.Addr, bucket, key)
+	getReq, err := http.NewRequest("GET", getURL, nil)
+	if err != nil {
+		t.Fatalf("Failed to create GET request: %v", err)
+	}
+
+	getResp, err := client.Do(getReq)
+	if err != nil {
+		t.Fatalf("GET request failed: %v", err)
+	}
+	defer getResp.Body.Close()
+
+	if getResp.StatusCode != http.StatusNotFound {
+		t.Errorf("Expected object to not exist after abort (404), got %d", getResp.StatusCode)
+	}
+}
+
+// TestS3Gateway_ListParts tests listing parts of multipart uploads.
+func TestS3Gateway_ListParts(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping integration test in short mode")
+	}
+
+	minioServer := StartMinIOServer(t)
+	defer minioServer.Stop()
+
+	// Create bucket directly in MinIO first
+	createBucketInMinIO(t, minioServer)
+
+	gateway := StartGateway(t, minioServer.GetGatewayConfig())
+	defer gateway.Close()
+
+	client := gateway.GetHTTPClient()
+	bucket := minioServer.Bucket
+	key := "list-parts-key"
+
+	// 1. Initiate multipart upload
+	initURL := fmt.Sprintf("http://%s/%s/%s?uploads", gateway.Addr, bucket, key)
+	initReq, err := http.NewRequest("POST", initURL, nil)
+	if err != nil {
+		t.Fatalf("Failed to create init request: %v", err)
+	}
+
+	initResp, err := client.Do(initReq)
+	if err != nil {
+		t.Fatalf("Init request failed: %v", err)
+	}
+	defer initResp.Body.Close()
+
+	if initResp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(initResp.Body)
+		t.Fatalf("Init failed with status %d: %s", initResp.StatusCode, string(body))
+	}
+
+	var initResult struct {
+		XMLName  xml.Name `xml:"InitiateMultipartUploadResult"`
+		UploadId string   `xml:"UploadId"`
+	}
+	if err := xml.NewDecoder(initResp.Body).Decode(&initResult); err != nil {
+		t.Fatalf("Failed to decode init response: %v", err)
+	}
+
+	if initResult.UploadId == "" {
+		t.Fatal("UploadId is empty")
+	}
+
+	uploadID := initResult.UploadId
+
+	// 2. Upload multiple parts
+	partData := bytes.Repeat([]byte("x"), 5*1024*1024) // 5MB each
+	uploadedParts := []string{}
+
+	for partNum := 1; partNum <= 3; partNum++ {
+		partURL := fmt.Sprintf("http://%s/%s/%s?partNumber=%d&uploadId=%s", gateway.Addr, bucket, key, partNum, uploadID)
+		partReq, err := http.NewRequest("PUT", partURL, bytes.NewReader(partData))
+		if err != nil {
+			t.Fatalf("Failed to create part %d request: %v", partNum, err)
+		}
+
+		partResp, err := client.Do(partReq)
+		if err != nil {
+			t.Fatalf("Part %d upload failed: %v", partNum, err)
+		}
+		defer partResp.Body.Close()
+
+		if partResp.StatusCode != http.StatusOK {
+			body, _ := io.ReadAll(partResp.Body)
+			t.Fatalf("Part %d upload failed with status %d: %s", partNum, partResp.StatusCode, string(body))
+		}
+
+		// Extract ETag from response
+		etag := partResp.Header.Get("ETag")
+		if etag == "" {
+			t.Fatalf("Part %d upload missing ETag", partNum)
+		}
+		uploadedParts = append(uploadedParts, etag)
+	}
+
+	// 3. List parts
+	listURL := fmt.Sprintf("http://%s/%s/%s?uploadId=%s", gateway.Addr, bucket, key, uploadID)
+	listReq, err := http.NewRequest("GET", listURL, nil)
+	if err != nil {
+		t.Fatalf("Failed to create list parts request: %v", err)
+	}
+
+	listResp, err := client.Do(listReq)
+	if err != nil {
+		t.Fatalf("List parts request failed: %v", err)
+	}
+	defer listResp.Body.Close()
+
+	if listResp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(listResp.Body)
+		t.Fatalf("List parts failed with status %d: %s", listResp.StatusCode, string(body))
+	}
+
+	// Parse response
+	body, err := io.ReadAll(listResp.Body)
+	if err != nil {
+		t.Fatalf("Failed to read list parts response: %v", err)
+	}
+
+	// Check that response contains part information
+	bodyStr := string(body)
+	if !strings.Contains(bodyStr, "<Part>") {
+		t.Error("ListParts response should contain <Part> elements")
+	}
+	if !strings.Contains(bodyStr, "<PartNumber>1</PartNumber>") {
+		t.Error("ListParts response should contain part number 1")
+	}
+	if !strings.Contains(bodyStr, "<PartNumber>2</PartNumber>") {
+		t.Error("ListParts response should contain part number 2")
+	}
+	if !strings.Contains(bodyStr, "<PartNumber>3</PartNumber>") {
+		t.Error("ListParts response should contain part number 3")
+	}
+	if !strings.Contains(bodyStr, "<Size>") {
+		t.Error("ListParts response should contain part size")
+	}
+	// Note: Size may vary due to encryption overhead, so we don't check exact value
+}
+
 // TestS3Gateway_RangeRequests tests range request handling.
 func TestS3Gateway_RangeRequests(t *testing.T) {
 	if testing.Short() {
@@ -527,6 +758,295 @@ func TestS3Gateway_DeleteObjects(t *testing.T) {
 			t.Errorf("Expected object %s to be deleted (404), got %d", key, getResp.StatusCode)
 		}
 	}
+}
+
+// TestS3Gateway_DeleteObject tests single object delete operation.
+func TestS3Gateway_DeleteObject(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping integration test in short mode")
+	}
+
+	minioServer := StartMinIOServer(t)
+	defer minioServer.Stop()
+
+	// Create bucket directly in MinIO first
+	createBucketInMinIO(t, minioServer)
+
+	gateway := StartGateway(t, minioServer.GetGatewayConfig())
+	defer gateway.Close()
+
+	client := gateway.GetHTTPClient()
+	bucket := minioServer.Bucket
+	key := "delete-single-key"
+	testData := []byte("test data for single delete")
+
+	// Upload object
+	putURL := fmt.Sprintf("http://%s/%s/%s", gateway.Addr, bucket, key)
+	putReq, err := http.NewRequest("PUT", putURL, bytes.NewReader(testData))
+	if err != nil {
+		t.Fatalf("Failed to create PUT request: %v", err)
+	}
+
+	putResp, err := client.Do(putReq)
+	if err != nil {
+		t.Fatalf("PUT request failed: %v", err)
+	}
+	defer putResp.Body.Close()
+
+	if putResp.StatusCode != http.StatusOK {
+		t.Fatalf("PUT failed with status %d", putResp.StatusCode)
+	}
+
+	// Delete object
+	deleteURL := fmt.Sprintf("http://%s/%s/%s", gateway.Addr, bucket, key)
+	deleteReq, err := http.NewRequest("DELETE", deleteURL, nil)
+	if err != nil {
+		t.Fatalf("Failed to create DELETE request: %v", err)
+	}
+
+	deleteResp, err := client.Do(deleteReq)
+	if err != nil {
+		t.Fatalf("DELETE request failed: %v", err)
+	}
+	defer deleteResp.Body.Close()
+
+	if deleteResp.StatusCode != http.StatusNoContent {
+		body, _ := io.ReadAll(deleteResp.Body)
+		t.Fatalf("DELETE failed with status %d: %s", deleteResp.StatusCode, string(body))
+	}
+
+	// Verify object is deleted
+	getURL := fmt.Sprintf("http://%s/%s/%s", gateway.Addr, bucket, key)
+	getReq, err := http.NewRequest("GET", getURL, nil)
+	if err != nil {
+		t.Fatalf("Failed to create GET request: %v", err)
+	}
+
+	getResp, err := client.Do(getReq)
+	if err != nil {
+		t.Fatalf("GET request failed: %v", err)
+	}
+	defer getResp.Body.Close()
+
+	if getResp.StatusCode != http.StatusNotFound {
+		t.Errorf("Expected object to be deleted (404), got %d", getResp.StatusCode)
+	}
+}
+
+// TestS3Gateway_HeadObject tests HEAD object operation.
+func TestS3Gateway_HeadObject(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping integration test in short mode")
+	}
+
+	minioServer := StartMinIOServer(t)
+	defer minioServer.Stop()
+
+	// Create bucket directly in MinIO first
+	createBucketInMinIO(t, minioServer)
+
+	gateway := StartGateway(t, minioServer.GetGatewayConfig())
+	defer gateway.Close()
+
+	client := gateway.GetHTTPClient()
+	bucket := minioServer.Bucket
+	key := "head-test-key"
+	testData := []byte("test data for head request")
+
+	// Upload object
+	putURL := fmt.Sprintf("http://%s/%s/%s", gateway.Addr, bucket, key)
+	putReq, err := http.NewRequest("PUT", putURL, bytes.NewReader(testData))
+	if err != nil {
+		t.Fatalf("Failed to create PUT request: %v", err)
+	}
+
+	putResp, err := client.Do(putReq)
+	if err != nil {
+		t.Fatalf("PUT request failed: %v", err)
+	}
+	defer putResp.Body.Close()
+
+	if putResp.StatusCode != http.StatusOK {
+		t.Fatalf("PUT failed with status %d", putResp.StatusCode)
+	}
+
+	// HEAD object
+	headURL := fmt.Sprintf("http://%s/%s/%s", gateway.Addr, bucket, key)
+	headReq, err := http.NewRequest("HEAD", headURL, nil)
+	if err != nil {
+		t.Fatalf("Failed to create HEAD request: %v", err)
+	}
+
+	headResp, err := client.Do(headReq)
+	if err != nil {
+		t.Fatalf("HEAD request failed: %v", err)
+	}
+	defer headResp.Body.Close()
+
+	if headResp.StatusCode != http.StatusOK {
+		t.Fatalf("HEAD failed with status %d", headResp.StatusCode)
+	}
+
+	// Verify headers are present
+	contentLength := headResp.Header.Get("Content-Length")
+	if contentLength == "" {
+		t.Error("Content-Length header missing in HEAD response")
+	}
+
+	contentType := headResp.Header.Get("Content-Type")
+	if contentType == "" {
+		t.Error("Content-Type header missing in HEAD response")
+	}
+
+	etag := headResp.Header.Get("ETag")
+	if etag == "" {
+		t.Error("ETag header missing in HEAD response")
+	}
+
+	// Verify body is empty
+	body, err := io.ReadAll(headResp.Body)
+	if err != nil {
+		t.Fatalf("Failed to read HEAD response body: %v", err)
+	}
+	if len(body) != 0 {
+		t.Errorf("HEAD response should have empty body, got %d bytes", len(body))
+	}
+
+	// Compare with GET request (should have same headers)
+	getURL := fmt.Sprintf("http://%s/%s/%s", gateway.Addr, bucket, key)
+	getReq, err := http.NewRequest("GET", getURL, nil)
+	if err != nil {
+		t.Fatalf("Failed to create GET request: %v", err)
+	}
+
+	getResp, err := client.Do(getReq)
+	if err != nil {
+		t.Fatalf("GET request failed: %v", err)
+	}
+	defer getResp.Body.Close()
+
+	if getResp.StatusCode != http.StatusOK {
+		t.Fatalf("GET failed with status %d", getResp.StatusCode)
+	}
+
+	// Compare key headers
+	if headResp.Header.Get("Content-Length") != getResp.Header.Get("Content-Length") {
+		t.Errorf("Content-Length mismatch: HEAD=%s, GET=%s",
+			headResp.Header.Get("Content-Length"), getResp.Header.Get("Content-Length"))
+	}
+	if headResp.Header.Get("Content-Type") != getResp.Header.Get("Content-Type") {
+		t.Errorf("Content-Type mismatch: HEAD=%s, GET=%s",
+			headResp.Header.Get("Content-Type"), getResp.Header.Get("Content-Type"))
+	}
+	if headResp.Header.Get("ETag") != getResp.Header.Get("ETag") {
+		t.Errorf("ETag mismatch: HEAD=%s, GET=%s",
+			headResp.Header.Get("ETag"), getResp.Header.Get("ETag"))
+	}
+}
+
+// TestS3Gateway_ErrorCases tests various error conditions and edge cases.
+func TestS3Gateway_ErrorCases(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping integration test in short mode")
+	}
+
+	minioServer := StartMinIOServer(t)
+	defer minioServer.Stop()
+
+	// Create bucket directly in MinIO first
+	createBucketInMinIO(t, minioServer)
+
+	gateway := StartGateway(t, minioServer.GetGatewayConfig())
+	defer gateway.Close()
+
+	client := gateway.GetHTTPClient()
+	bucket := minioServer.Bucket
+
+	// Test 1: GET non-existent object (already tested in error handling, but let's verify)
+	nonExistentURL := fmt.Sprintf("http://%s/%s/non-existent-key", gateway.Addr, bucket)
+	getReq, err := http.NewRequest("GET", nonExistentURL, nil)
+	if err != nil {
+		t.Fatalf("Failed to create GET request: %v", err)
+	}
+
+	getResp, err := client.Do(getReq)
+	if err != nil {
+		t.Fatalf("GET request failed: %v", err)
+	}
+	defer getResp.Body.Close()
+
+	if getResp.StatusCode != http.StatusNotFound {
+		t.Errorf("Expected 404 for non-existent object, got %d", getResp.StatusCode)
+	}
+
+	// Test 2: HEAD non-existent object
+	headReq, err := http.NewRequest("HEAD", nonExistentURL, nil)
+	if err != nil {
+		t.Fatalf("Failed to create HEAD request: %v", err)
+	}
+
+	headResp, err := client.Do(headReq)
+	if err != nil {
+		t.Fatalf("HEAD request failed: %v", err)
+	}
+	defer headResp.Body.Close()
+
+	if headResp.StatusCode != http.StatusNotFound {
+		t.Errorf("Expected 404 for HEAD non-existent object, got %d", headResp.StatusCode)
+	}
+
+	// Test 3: DELETE non-existent object (should succeed)
+	deleteReq, err := http.NewRequest("DELETE", nonExistentURL, nil)
+	if err != nil {
+		t.Fatalf("Failed to create DELETE request: %v", err)
+	}
+
+	deleteResp, err := client.Do(deleteReq)
+	if err != nil {
+		t.Fatalf("DELETE request failed: %v", err)
+	}
+	defer deleteResp.Body.Close()
+
+	if deleteResp.StatusCode != http.StatusNoContent {
+		t.Errorf("Expected 204 for DELETE non-existent object, got %d", deleteResp.StatusCode)
+	}
+
+	// Test 4: Invalid multipart upload operations
+	// Try to complete upload with invalid uploadId
+	invalidCompleteURL := fmt.Sprintf("http://%s/%s/test-key?uploadId=invalid-id", gateway.Addr, bucket)
+	completeReq, err := http.NewRequest("POST", invalidCompleteURL, nil)
+	if err != nil {
+		t.Fatalf("Failed to create complete request: %v", err)
+	}
+
+	completeResp, err := client.Do(completeReq)
+	if err != nil {
+		t.Fatalf("Complete request failed: %v", err)
+	}
+	defer completeResp.Body.Close()
+
+	if completeResp.StatusCode != http.StatusBadRequest {
+		t.Errorf("Expected 400 for invalid uploadId, got %d", completeResp.StatusCode)
+	}
+
+	// Test 5: Invalid bucket name
+	invalidBucketURL := fmt.Sprintf("http://%s/invalid-bucket/test-key", gateway.Addr)
+	invalidReq, err := http.NewRequest("GET", invalidBucketURL, nil)
+	if err != nil {
+		t.Fatalf("Failed to create request: %v", err)
+	}
+
+	invalidResp, err := client.Do(invalidReq)
+	if err != nil {
+		t.Fatalf("Request failed: %v", err)
+	}
+	defer invalidResp.Body.Close()
+
+	// Should get an error response (NoSuchBucket or similar)
+	if invalidResp.StatusCode == http.StatusOK {
+		t.Error("Expected error for invalid bucket, got 200")
+	}
+	// The specific error code may vary, so we just check it's not 200
 }
 
 // TestS3Gateway_ListObjects tests ListObjects operation.

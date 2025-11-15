@@ -18,8 +18,8 @@ func TestProvider_Compatibility(t *testing.T) {
 		t.Skip("Skipping integration test in short mode")
 	}
 
-	minioServer := StartMinIOServer(t)
-	defer minioServer.Stop()
+	minioServer := StartMinIOServerForProvider(t)
+	defer minioServer.StopForce()
 
 	// Test that we can create an S3 client with MinIO provider configuration
 	cfg := &config.BackendConfig{
@@ -76,8 +76,8 @@ func TestProvider_EndpointConfiguration(t *testing.T) {
 		t.Skip("Skipping integration test in short mode")
 	}
 
-	minioServer := StartMinIOServer(t)
-	defer minioServer.Stop()
+	minioServer := StartMinIOServerForProvider(t)
+	defer minioServer.StopForce()
 
 	testCases := []struct {
 		name     string
@@ -129,8 +129,8 @@ func TestGateway_ProviderIntegration(t *testing.T) {
 		t.Skip("Skipping integration test in short mode")
 	}
 
-	minioServer := StartMinIOServer(t)
-	defer minioServer.Stop()
+	minioServer := StartMinIOServerForProvider(t)
+	defer minioServer.StopForce()
 
 	gatewayConfig := minioServer.GetGatewayConfig()
 	gatewayConfig.Backend.Provider = "minio" // Explicitly set MinIO provider
