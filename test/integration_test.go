@@ -547,6 +547,249 @@ func TestS3Gateway_ListObjects(t *testing.T) {
 	}
 }
 
+// TestS3Gateway_ListObjects_Delimiter tests ListObjects with delimiter for directory-like listings.
+func TestS3Gateway_ListObjects_Delimiter(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping integration test in short mode")
+	}
+
+	minioServer := StartMinIOServer(t)
+	defer minioServer.Stop()
+
+	gateway := StartGateway(t, minioServer.GetGatewayConfig())
+	defer gateway.Close()
+
+	client := gateway.GetHTTPClient()
+	bucket := minioServer.Bucket
+
+	// Upload test objects with directory-like structure
+	testObjects := []string{
+		"folder1/file1.txt",
+		"folder1/file2.txt",
+		"folder2/file3.txt",
+		"root-file.txt",
+	}
+
+	for _, key := range testObjects {
+		putURL := fmt.Sprintf("http://%s/%s/%s", gateway.Addr, bucket, key)
+		putReq, err := http.NewRequest("PUT", putURL, bytes.NewReader([]byte("test data")))
+		if err != nil {
+			t.Fatalf("Failed to create PUT request: %v", err)
+		}
+
+		putResp, err := client.Do(putReq)
+		if err != nil {
+			t.Fatalf("PUT request failed: %v", err)
+		}
+		putResp.Body.Close()
+
+		if putResp.StatusCode != http.StatusOK {
+			t.Fatalf("PUT failed with status %d", putResp.StatusCode)
+		}
+	}
+
+	// Test delimiter listing (should show common prefixes)
+	listURL := fmt.Sprintf("http://%s/%s?delimiter=/", gateway.Addr, bucket)
+	listReq, err := http.NewRequest("GET", listURL, nil)
+	if err != nil {
+		t.Fatalf("Failed to create LIST request: %v", err)
+	}
+
+	listResp, err := client.Do(listReq)
+	if err != nil {
+		t.Fatalf("LIST request failed: %v", err)
+	}
+	defer listResp.Body.Close()
+
+	if listResp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(listResp.Body)
+		t.Fatalf("LIST failed with status %d: %s", listResp.StatusCode, string(body))
+	}
+
+	body, err := io.ReadAll(listResp.Body)
+	if err != nil {
+		t.Fatalf("Failed to read response: %v", err)
+	}
+
+	responseStr := string(body)
+
+	// Should contain common prefixes
+	if !bytes.Contains(body, []byte("<CommonPrefixes>")) {
+		t.Errorf("Expected CommonPrefixes in delimiter response, got: %s", responseStr)
+	}
+	if !bytes.Contains(body, []byte("<Prefix>folder1/</Prefix>")) {
+		t.Errorf("Expected folder1/ common prefix, got: %s", responseStr)
+	}
+	if !bytes.Contains(body, []byte("<Prefix>folder2/</Prefix>")) {
+		t.Errorf("Expected folder2/ common prefix, got: %s", responseStr)
+	}
+	// Should contain root file
+	if !bytes.Contains(body, []byte("<Key>root-file.txt</Key>")) {
+		t.Errorf("Expected root-file.txt in response, got: %s", responseStr)
+	}
+}
+
+// TestS3Gateway_ListObjects_Prefix tests ListObjects with prefix filtering.
+func TestS3Gateway_ListObjects_Prefix(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping integration test in short mode")
+	}
+
+	minioServer := StartMinIOServer(t)
+	defer minioServer.Stop()
+
+	gateway := StartGateway(t, minioServer.GetGatewayConfig())
+	defer gateway.Close()
+
+	client := gateway.GetHTTPClient()
+	bucket := minioServer.Bucket
+
+	// Upload test objects
+	testObjects := []string{
+		"app/logs/error.log",
+		"app/logs/info.log",
+		"app/config/settings.json",
+		"data/file1.txt",
+		"data/file2.txt",
+	}
+
+	for _, key := range testObjects {
+		putURL := fmt.Sprintf("http://%s/%s/%s", gateway.Addr, bucket, key)
+		putReq, err := http.NewRequest("PUT", putURL, bytes.NewReader([]byte("test data")))
+		if err != nil {
+			t.Fatalf("Failed to create PUT request: %v", err)
+		}
+
+		putResp, err := client.Do(putReq)
+		if err != nil {
+			t.Fatalf("PUT request failed: %v", err)
+		}
+		putResp.Body.Close()
+
+		if putResp.StatusCode != http.StatusOK {
+			t.Fatalf("PUT failed with status %d", putResp.StatusCode)
+		}
+	}
+
+	// Test prefix filtering
+	listURL := fmt.Sprintf("http://%s/%s?prefix=app/", gateway.Addr, bucket)
+	listReq, err := http.NewRequest("GET", listURL, nil)
+	if err != nil {
+		t.Fatalf("Failed to create LIST request: %v", err)
+	}
+
+	listResp, err := client.Do(listReq)
+	if err != nil {
+		t.Fatalf("LIST request failed: %v", err)
+	}
+	defer listResp.Body.Close()
+
+	if listResp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(listResp.Body)
+		t.Fatalf("LIST failed with status %d: %s", listResp.StatusCode, string(body))
+	}
+
+	body, err := io.ReadAll(listResp.Body)
+	if err != nil {
+		t.Fatalf("Failed to read response: %v", err)
+	}
+
+	responseStr := string(body)
+
+	// Should contain app/ prefixed objects
+	expectedKeys := []string{"app/logs/error.log", "app/logs/info.log", "app/config/settings.json"}
+	for _, key := range expectedKeys {
+		if !bytes.Contains(body, []byte("<Key>"+key+"</Key>")) {
+			t.Errorf("Expected key %s in prefix response, got: %s", key, responseStr)
+		}
+	}
+
+	// Should NOT contain data/ objects
+	unexpectedKeys := []string{"data/file1.txt", "data/file2.txt"}
+	for _, key := range unexpectedKeys {
+		if bytes.Contains(body, []byte("<Key>"+key+"</Key>")) {
+			t.Errorf("Unexpected key %s in prefix response, got: %s", key, responseStr)
+		}
+	}
+}
+
+// TestS3Gateway_ListObjects_MaxKeys tests ListObjects with max-keys pagination.
+func TestS3Gateway_ListObjects_MaxKeys(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping integration test in short mode")
+	}
+
+	minioServer := StartMinIOServer(t)
+	defer minioServer.Stop()
+
+	gateway := StartGateway(t, minioServer.GetGatewayConfig())
+	defer gateway.Close()
+
+	client := gateway.GetHTTPClient()
+	bucket := minioServer.Bucket
+
+	// Upload multiple objects
+	for i := 0; i < 5; i++ {
+		key := fmt.Sprintf("object%02d.txt", i)
+		putURL := fmt.Sprintf("http://%s/%s/%s", gateway.Addr, bucket, key)
+		putReq, err := http.NewRequest("PUT", putURL, bytes.NewReader([]byte("test data")))
+		if err != nil {
+			t.Fatalf("Failed to create PUT request: %v", err)
+		}
+
+		putResp, err := client.Do(putReq)
+		if err != nil {
+			t.Fatalf("PUT request failed: %v", err)
+		}
+		putResp.Body.Close()
+
+		if putResp.StatusCode != http.StatusOK {
+			t.Fatalf("PUT failed with status %d", putResp.StatusCode)
+		}
+	}
+
+	// Test max-keys pagination
+	listURL := fmt.Sprintf("http://%s/%s?max-keys=2", gateway.Addr, bucket)
+	listReq, err := http.NewRequest("GET", listURL, nil)
+	if err != nil {
+		t.Fatalf("Failed to create LIST request: %v", err)
+	}
+
+	listResp, err := client.Do(listReq)
+	if err != nil {
+		t.Fatalf("LIST request failed: %v", err)
+	}
+	defer listResp.Body.Close()
+
+	if listResp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(listResp.Body)
+		t.Fatalf("LIST failed with status %d: %s", listResp.StatusCode, string(body))
+	}
+
+	body, err := io.ReadAll(listResp.Body)
+	if err != nil {
+		t.Fatalf("Failed to read response: %v", err)
+	}
+
+	responseStr := string(body)
+
+	// Should be truncated
+	if !bytes.Contains(body, []byte("<IsTruncated>true</IsTruncated>")) {
+		t.Errorf("Expected IsTruncated=true, got: %s", responseStr)
+	}
+
+	// Should have NextContinuationToken
+	if !bytes.Contains(body, []byte("<NextContinuationToken>")) {
+		t.Errorf("Expected NextContinuationToken, got: %s", responseStr)
+	}
+
+	// Count Contents elements
+	contentsCount := bytes.Count(body, []byte("<Contents>"))
+	if contentsCount != 2 {
+		t.Errorf("Expected 2 objects with max-keys=2, got %d Contents elements: %s", contentsCount, responseStr)
+	}
+}
+
 // TestS3Gateway_ErrorHandling tests S3 error responses.
 func TestS3Gateway_ErrorHandling(t *testing.T) {
 	if testing.Short() {

@@ -22,7 +22,7 @@ type Client interface {
 	GetObject(ctx context.Context, bucket, key string, versionID *string, rangeHeader *string) (io.ReadCloser, map[string]string, error)
 	DeleteObject(ctx context.Context, bucket, key string, versionID *string) error
 	HeadObject(ctx context.Context, bucket, key string, versionID *string) (map[string]string, error)
-	ListObjects(ctx context.Context, bucket, prefix string, opts ListOptions) ([]ObjectInfo, error)
+	ListObjects(ctx context.Context, bucket, prefix string, opts ListOptions) (ListResult, error)
 
 	// Multipart upload operations
 	CreateMultipartUpload(ctx context.Context, bucket, key string, metadata map[string]string) (string, error)
@@ -38,9 +38,17 @@ type Client interface {
 
 // ListOptions holds options for listing objects.
 type ListOptions struct {
-	Delimiter string
-	Marker    string
-	MaxKeys   int32
+	Delimiter         string
+	ContinuationToken string
+	MaxKeys           int32
+}
+
+// ListResult holds the result of a list operation.
+type ListResult struct {
+	Objects           []ObjectInfo
+	CommonPrefixes    []string
+	NextContinuationToken string
+	IsTruncated       bool
 }
 
 // ObjectInfo holds information about an S3 object.
@@ -348,7 +356,7 @@ func (c *s3Client) HeadObject(ctx context.Context, bucket, key string, versionID
 }
 
 // ListObjects lists objects in a bucket.
-func (c *s3Client) ListObjects(ctx context.Context, bucket, prefix string, opts ListOptions) ([]ObjectInfo, error) {
+func (c *s3Client) ListObjects(ctx context.Context, bucket, prefix string, opts ListOptions) (ListResult, error) {
 	input := &s3.ListObjectsV2Input{
 		Bucket: aws.String(bucket),
 		Prefix: aws.String(prefix),
@@ -357,8 +365,8 @@ func (c *s3Client) ListObjects(ctx context.Context, bucket, prefix string, opts 
 	if opts.Delimiter != "" {
 		input.Delimiter = aws.String(opts.Delimiter)
 	}
-	if opts.Marker != "" {
-		input.ContinuationToken = aws.String(opts.Marker)
+	if opts.ContinuationToken != "" {
+		input.ContinuationToken = aws.String(opts.ContinuationToken)
 	}
 	if opts.MaxKeys > 0 {
 		input.MaxKeys = aws.Int32(opts.MaxKeys)
@@ -366,7 +374,7 @@ func (c *s3Client) ListObjects(ctx context.Context, bucket, prefix string, opts 
 
 	result, err := c.client.ListObjectsV2(ctx, input)
 	if err != nil {
-		return nil, fmt.Errorf("failed to list objects in bucket %s: %w", bucket, err)
+		return ListResult{}, fmt.Errorf("failed to list objects in bucket %s: %w", bucket, err)
 	}
 
 	objects := make([]ObjectInfo, 0, len(result.Contents))
@@ -379,7 +387,19 @@ func (c *s3Client) ListObjects(ctx context.Context, bucket, prefix string, opts 
 		})
 	}
 
-	return objects, nil
+	commonPrefixes := make([]string, 0, len(result.CommonPrefixes))
+	for _, cp := range result.CommonPrefixes {
+		commonPrefixes = append(commonPrefixes, aws.ToString(cp.Prefix))
+	}
+
+	listResult := ListResult{
+		Objects:              objects,
+		CommonPrefixes:       commonPrefixes,
+		NextContinuationToken: aws.ToString(result.NextContinuationToken),
+		IsTruncated:          aws.ToBool(result.IsTruncated),
+	}
+
+	return listResult, nil
 }
 
 // convertMetadata converts our internal metadata map (keys like "x-amz-meta-foo")

@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
 
@@ -80,20 +81,83 @@ func (m *mockS3Client) HeadObject(ctx context.Context, bucket, key string, versi
 	return meta, nil
 }
 
-func (m *mockS3Client) ListObjects(ctx context.Context, bucket, prefix string, opts s3.ListOptions) ([]s3.ObjectInfo, error) {
+func (m *mockS3Client) ListObjects(ctx context.Context, bucket, prefix string, opts s3.ListOptions) (s3.ListResult, error) {
 	if err := m.errors[bucket+"/list"]; err != nil {
-		return nil, err
+		return s3.ListResult{}, err
 	}
-	var objects []s3.ObjectInfo
+
+	var allObjects []s3.ObjectInfo
+	commonPrefixesMap := make(map[string]bool)
+
 	for key := range m.objects {
 		if len(key) > len(bucket)+1 && key[:len(bucket)+1] == bucket+"/" {
 			objKey := key[len(bucket)+1:]
-			if prefix == "" || len(objKey) >= len(prefix) && objKey[:len(prefix)] == prefix {
-				objects = append(objects, s3.ObjectInfo{Key: objKey})
+
+			// Apply prefix filter
+			if prefix != "" && !strings.HasPrefix(objKey, prefix) {
+				continue
+			}
+
+			if opts.Delimiter != "" {
+				// With delimiter, we need to check for common prefixes
+				afterPrefix := objKey
+				if prefix != "" {
+					afterPrefix = objKey[len(prefix):]
+				}
+
+				if idx := strings.Index(afterPrefix, opts.Delimiter); idx >= 0 {
+					// This is a "directory" - add to common prefixes
+					commonPrefix := prefix + afterPrefix[:idx+len(opts.Delimiter)]
+					commonPrefixesMap[commonPrefix] = true
+				} else {
+					// This is a regular object
+					allObjects = append(allObjects, s3.ObjectInfo{Key: objKey})
+				}
+			} else {
+				// No delimiter, just add all objects
+				allObjects = append(allObjects, s3.ObjectInfo{Key: objKey})
 			}
 		}
 	}
-	return objects, nil
+
+	// Convert common prefixes map to slice
+	var commonPrefixes []string
+	for cp := range commonPrefixesMap {
+		commonPrefixes = append(commonPrefixes, cp)
+	}
+
+	// Apply MaxKeys limit and pagination
+	maxKeys := int(opts.MaxKeys)
+	if maxKeys <= 0 {
+		maxKeys = 1000 // Default
+	}
+
+	var objects []s3.ObjectInfo
+	isTruncated := false
+	nextToken := ""
+
+	// Simple mock pagination - just limit the number of objects returned
+	totalItems := len(allObjects) + len(commonPrefixes)
+	if totalItems > maxKeys {
+		isTruncated = true
+		// For simplicity, just return maxKeys objects
+		if len(allObjects) > maxKeys {
+			objects = allObjects[:maxKeys]
+		} else {
+			objects = allObjects
+		}
+		// Generate a mock continuation token
+		nextToken = "mock-continuation-token"
+	} else {
+		objects = allObjects
+	}
+
+	return s3.ListResult{
+		Objects:              objects,
+		CommonPrefixes:       commonPrefixes,
+		NextContinuationToken: nextToken,
+		IsTruncated:          isTruncated,
+	}, nil
 }
 
 func (m *mockS3Client) CreateMultipartUpload(ctx context.Context, bucket, key string, metadata map[string]string) (string, error) {
@@ -365,6 +429,256 @@ func TestHandler_HandleListObjects(t *testing.T) {
 
 	if w.Header().Get("Content-Type") != "application/xml" {
 		t.Errorf("expected Content-Type application/xml, got %s", w.Header().Get("Content-Type"))
+	}
+}
+
+func TestHandler_HandleListObjects_Delimiter(t *testing.T) {
+	logger := logrus.New()
+	logger.SetLevel(logrus.ErrorLevel)
+	mockClient := newMockS3Client()
+	mockEngine, _ := crypto.NewEngine("test-password-123456")
+	handler := NewHandler(mockClient, mockEngine, logger, getTestMetrics())
+
+	// Pre-populate with test data for delimiter testing
+	testObjects := []struct {
+		key  string
+		data string
+	}{
+		{"folder1/file1.txt", "data1"},
+		{"folder1/file2.txt", "data2"},
+		{"folder2/file3.txt", "data3"},
+		{"root-file.txt", "root"},
+	}
+
+	for _, obj := range testObjects {
+		mockClient.PutObject(context.Background(), "test-bucket", obj.key, strings.NewReader(obj.data), nil, nil)
+	}
+
+	router := mux.NewRouter()
+	handler.RegisterRoutes(router)
+
+	tests := []struct {
+		name           string
+		delimiter      string
+		prefix         string
+		expectedBodies []string // substrings that should be in response
+	}{
+		{
+			name:      "delimiter slash no prefix",
+			delimiter: "/",
+			expectedBodies: []string{
+				"<Prefix>folder1/</Prefix>",
+				"<Prefix>folder2/</Prefix>",
+				"<Key>root-file.txt</Key>",
+			},
+		},
+		{
+			name:      "delimiter slash with prefix",
+			delimiter: "/",
+			prefix:    "folder1/",
+			expectedBodies: []string{
+				"<Key>folder1/file1.txt</Key>",
+				"<Key>folder1/file2.txt</Key>",
+			},
+		},
+		{
+			name:      "no delimiter",
+			delimiter: "",
+			expectedBodies: []string{
+				"<Key>folder1/file1.txt</Key>",
+				"<Key>folder1/file2.txt</Key>",
+				"<Key>folder2/file3.txt</Key>",
+				"<Key>root-file.txt</Key>",
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			url := "/test-bucket"
+			if tt.prefix != "" {
+				url += "?prefix=" + tt.prefix
+			}
+			if tt.delimiter != "" {
+				if tt.prefix != "" {
+					url += "&delimiter=" + tt.delimiter
+				} else {
+					url += "?delimiter=" + tt.delimiter
+				}
+			}
+
+			req := httptest.NewRequest("GET", url, nil)
+			w := httptest.NewRecorder()
+
+			router.ServeHTTP(w, req)
+
+			if w.Code != http.StatusOK {
+				t.Errorf("expected status %d, got %d", http.StatusOK, w.Code)
+			}
+
+			body := w.Body.String()
+			for _, expected := range tt.expectedBodies {
+				if !strings.Contains(body, expected) {
+					t.Errorf("expected response to contain %q, but it didn't.\nResponse: %s", expected, body)
+				}
+			}
+		})
+	}
+}
+
+func TestHandler_HandleListObjects_ContinuationToken(t *testing.T) {
+	logger := logrus.New()
+	logger.SetLevel(logrus.ErrorLevel)
+	mockClient := newMockS3Client()
+	mockEngine, _ := crypto.NewEngine("test-password-123456")
+	handler := NewHandler(mockClient, mockEngine, logger, getTestMetrics())
+
+	// Pre-populate with many objects for pagination testing
+	for i := 0; i < 10; i++ {
+		key := fmt.Sprintf("object%03d.txt", i)
+		data := fmt.Sprintf("data%d", i)
+		mockClient.PutObject(context.Background(), "test-bucket", key, strings.NewReader(data), nil, nil)
+	}
+
+	router := mux.NewRouter()
+	handler.RegisterRoutes(router)
+
+	// First request with max-keys=3
+	req := httptest.NewRequest("GET", "/test-bucket?max-keys=3", nil)
+	w := httptest.NewRecorder()
+
+	router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("expected status %d, got %d", http.StatusOK, w.Code)
+	}
+
+	body := w.Body.String()
+	// Should contain NextContinuationToken and IsTruncated=true
+	if !strings.Contains(body, "<IsTruncated>true</IsTruncated>") {
+		t.Errorf("expected response to be truncated, but it wasn't.\nResponse: %s", body)
+	}
+	if !strings.Contains(body, "<NextContinuationToken>") {
+		t.Errorf("expected response to contain NextContinuationToken, but it didn't.\nResponse: %s", body)
+	}
+}
+
+func TestHandler_HandleListObjects_Prefix(t *testing.T) {
+	logger := logrus.New()
+	logger.SetLevel(logrus.ErrorLevel)
+	mockClient := newMockS3Client()
+	mockEngine, _ := crypto.NewEngine("test-password-123456")
+	handler := NewHandler(mockClient, mockEngine, logger, getTestMetrics())
+
+	// Pre-populate with test data
+	testObjects := []string{
+		"app/logs/error.log",
+		"app/logs/info.log",
+		"app/config/settings.json",
+		"data/file1.txt",
+		"data/file2.txt",
+	}
+
+	for _, key := range testObjects {
+		mockClient.PutObject(context.Background(), "test-bucket", key, strings.NewReader("test data"), nil, nil)
+	}
+
+	router := mux.NewRouter()
+	handler.RegisterRoutes(router)
+
+	tests := []struct {
+		name       string
+		prefix     string
+		expected   []string
+		notExpected []string
+	}{
+		{
+			name:     "prefix app/",
+			prefix:   "app/",
+			expected: []string{"app/logs/error.log", "app/logs/info.log", "app/config/settings.json"},
+			notExpected: []string{"data/file1.txt", "data/file2.txt"},
+		},
+		{
+			name:     "prefix app/logs/",
+			prefix:   "app/logs/",
+			expected: []string{"app/logs/error.log", "app/logs/info.log"},
+			notExpected: []string{"app/config/settings.json", "data/file1.txt"},
+		},
+		{
+			name:     "no prefix",
+			prefix:   "",
+			expected: []string{"app/logs/error.log", "app/logs/info.log", "app/config/settings.json", "data/file1.txt", "data/file2.txt"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			url := "/test-bucket"
+			if tt.prefix != "" {
+				url += "?prefix=" + tt.prefix
+			}
+
+			req := httptest.NewRequest("GET", url, nil)
+			w := httptest.NewRecorder()
+
+			router.ServeHTTP(w, req)
+
+			if w.Code != http.StatusOK {
+				t.Errorf("expected status %d, got %d", http.StatusOK, w.Code)
+			}
+
+			body := w.Body.String()
+			for _, expected := range tt.expected {
+				if !strings.Contains(body, "<Key>"+expected+"</Key>") {
+					t.Errorf("expected response to contain key %q, but it didn't.\nResponse: %s", expected, body)
+				}
+			}
+			for _, notExpected := range tt.notExpected {
+				if strings.Contains(body, "<Key>"+notExpected+"</Key>") {
+					t.Errorf("expected response to NOT contain key %q, but it did.\nResponse: %s", notExpected, body)
+				}
+			}
+		})
+	}
+}
+
+func TestHandler_HandleListObjects_MaxKeys(t *testing.T) {
+	logger := logrus.New()
+	logger.SetLevel(logrus.ErrorLevel)
+	mockClient := newMockS3Client()
+	mockEngine, _ := crypto.NewEngine("test-password-123456")
+	handler := NewHandler(mockClient, mockEngine, logger, getTestMetrics())
+
+	// Pre-populate with test data
+	for i := 0; i < 5; i++ {
+		key := fmt.Sprintf("object%d.txt", i)
+		data := fmt.Sprintf("data%d", i)
+		mockClient.PutObject(context.Background(), "test-bucket", key, strings.NewReader(data), nil, nil)
+	}
+
+	router := mux.NewRouter()
+	handler.RegisterRoutes(router)
+
+	req := httptest.NewRequest("GET", "/test-bucket?max-keys=2", nil)
+	w := httptest.NewRecorder()
+
+	router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("expected status %d, got %d", http.StatusOK, w.Code)
+	}
+
+	body := w.Body.String()
+
+	// Count how many <Contents> elements we have
+	contentsCount := strings.Count(body, "<Contents>")
+	if contentsCount != 2 {
+		t.Errorf("expected 2 objects with max-keys=2, got %d.\nResponse: %s", contentsCount, body)
+	}
+
+	// Should be truncated
+	if !strings.Contains(body, "<IsTruncated>true</IsTruncated>") {
+		t.Errorf("expected response to be truncated, but it wasn't.\nResponse: %s", body)
 	}
 }
 

@@ -1295,19 +1295,19 @@ func (h *Handler) handleListObjects(w http.ResponseWriter, r *http.Request) {
 
 	prefix := r.URL.Query().Get("prefix")
 	delimiter := r.URL.Query().Get("delimiter")
-	marker := r.URL.Query().Get("marker")
+	continuationToken := r.URL.Query().Get("continuation-token")
 	maxKeys := int32(1000) // Default
 	if mk := r.URL.Query().Get("max-keys"); mk != "" {
 		fmt.Sscanf(mk, "%d", &maxKeys)
 	}
 
 	opts := s3.ListOptions{
-		Delimiter: delimiter,
-		Marker:    marker,
-		MaxKeys:   maxKeys,
+		Delimiter:         delimiter,
+		ContinuationToken: continuationToken,
+		MaxKeys:           maxKeys,
 	}
 
-	objects, err := s3Client.ListObjects(ctx, bucket, prefix, opts)
+	listResult, err := s3Client.ListObjects(ctx, bucket, prefix, opts)
 	if err != nil {
 		s3Err := TranslateError(err, bucket, "")
 		s3Err.WriteXML(w)
@@ -1320,8 +1320,37 @@ func (h *Handler) handleListObjects(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Translate metadata for encrypted objects
+	translatedObjects := make([]s3.ObjectInfo, len(listResult.Objects))
+	for i, obj := range listResult.Objects {
+		translatedObjects[i] = obj
+		// If object is encrypted, translate size and ETag
+		if h.encryptionEngine.IsEncrypted(map[string]string{}) {
+			// We need to fetch HEAD metadata for each object to get encryption info
+			// This is expensive but necessary for accurate listings
+			if headMeta, headErr := s3Client.HeadObject(ctx, bucket, obj.Key, nil); headErr == nil {
+				if h.encryptionEngine.IsEncrypted(headMeta) {
+					// Restore original size
+					if originalSize, ok := headMeta["x-amz-meta-encryption-original-size"]; ok {
+						if parsedSize, err := strconv.ParseInt(originalSize, 10, 64); err == nil {
+							translatedObjects[i].Size = parsedSize
+						}
+					} else if originalSize, ok := headMeta["x-amz-meta-original-content-length"]; ok {
+						if parsedSize, err := strconv.ParseInt(originalSize, 10, 64); err == nil {
+							translatedObjects[i].Size = parsedSize
+						}
+					}
+					// Restore original ETag
+					if originalETag, ok := headMeta["x-amz-meta-encryption-original-etag"]; ok {
+						translatedObjects[i].ETag = originalETag
+					}
+				}
+			}
+		}
+	}
+
 	// Generate proper S3 ListBucketResult XML response
-	xmlResponse := generateListObjectsXML(bucket, prefix, delimiter, objects)
+	xmlResponse := generateListObjectsXML(bucket, prefix, delimiter, translatedObjects, listResult.CommonPrefixes, listResult.NextContinuationToken, listResult.IsTruncated)
 
 	w.Header().Set("Content-Type", "application/xml")
 	w.WriteHeader(http.StatusOK)
@@ -1384,7 +1413,7 @@ func applyRangeRequest(data []byte, rangeHeader string) ([]byte, error) {
 }
 
 // generateListObjectsXML generates S3-compatible ListBucketResult XML.
-func generateListObjectsXML(bucket, prefix, delimiter string, objects []s3.ObjectInfo) string {
+func generateListObjectsXML(bucket, prefix, delimiter string, objects []s3.ObjectInfo, commonPrefixes []string, nextContinuationToken string, isTruncated bool) string {
 	var xml strings.Builder
 	xml.WriteString(`<?xml version="1.0" encoding="UTF-8"?>` + "\n")
 	xml.WriteString("<ListBucketResult xmlns=\"http://s3.amazonaws.com/doc/2006-03-01/\">" + "\n")
@@ -1396,8 +1425,14 @@ func generateListObjectsXML(bucket, prefix, delimiter string, objects []s3.Objec
 		xml.WriteString(fmt.Sprintf("  <Delimiter>%s</Delimiter>\n", delimiter))
 	}
 	xml.WriteString(fmt.Sprintf("  <MaxKeys>%d</MaxKeys>\n", len(objects)))
-	xml.WriteString(fmt.Sprintf("  <IsTruncated>false</IsTruncated>\n"))
+	xml.WriteString(fmt.Sprintf("  <IsTruncated>%t</IsTruncated>\n", isTruncated))
 
+	// Add continuation token if present
+	if nextContinuationToken != "" {
+		xml.WriteString(fmt.Sprintf("  <NextContinuationToken>%s</NextContinuationToken>\n", nextContinuationToken))
+	}
+
+	// Add objects
 	for _, obj := range objects {
 		xml.WriteString("  <Contents>\n")
 		xml.WriteString(fmt.Sprintf("    <Key>%s</Key>\n", obj.Key))
@@ -1407,6 +1442,14 @@ func generateListObjectsXML(bucket, prefix, delimiter string, objects []s3.Objec
 		xml.WriteString("    <StorageClass>STANDARD</StorageClass>\n")
 		xml.WriteString("  </Contents>\n")
 	}
+
+	// Add common prefixes
+	for _, cp := range commonPrefixes {
+		xml.WriteString("  <CommonPrefixes>\n")
+		xml.WriteString(fmt.Sprintf("    <Prefix>%s</Prefix>\n", cp))
+		xml.WriteString("  </CommonPrefixes>\n")
+	}
+
 	xml.WriteString("</ListBucketResult>")
 	return xml.String()
 }
