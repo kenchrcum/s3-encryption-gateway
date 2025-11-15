@@ -69,6 +69,8 @@ type engine struct {
 	// Provider and compaction settings
 	providerProfile *ProviderProfile
 	compactor       *MetadataCompactor
+	// Buffer pool for reducing allocations
+	bufferPool *BufferPool
 }
 
 // NewEngine creates a new encryption engine with the given password.
@@ -153,6 +155,7 @@ func NewEngineWithChunkingAndProvider(password string, compressionEngine Compres
 		chunkSize:            chunkSize,
 		providerProfile:     profile,
 		compactor:           compactor,
+		bufferPool:         GetGlobalBufferPool(),
 	}, nil
 }
 
@@ -212,7 +215,7 @@ func (e *engine) generateNonceForAlgorithm(algorithm string) ([]byte, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to get nonce size for algorithm %s: %w", algorithm, err)
 	}
-	
+
 	nonce := make([]byte, nonceSize)
 	if _, err := rand.Read(nonce); err != nil {
 		return nil, fmt.Errorf("failed to generate nonce: %w", err)
@@ -310,7 +313,7 @@ func (e *engine) Encrypt(reader io.Reader, metadata map[string]string) (io.Reade
 	}
 	if len(key) != keySize {
 		// Trim or pad key to required size
-		adjustedKey := make([]byte, keySize)
+		adjustedKey := e.bufferPool.Get32()
 		copy(adjustedKey, key)
 		if len(key) < keySize {
 			// Pad with PBKDF2 of original key (simple approach)
@@ -318,6 +321,7 @@ func (e *engine) Encrypt(reader io.Reader, metadata map[string]string) (io.Reade
 		}
 		zeroBytes(key)
 		key = adjustedKey
+		defer e.bufferPool.Put32(adjustedKey) // Return to pool when function exits
 	}
 
 	// Create cipher using selected algorithm
@@ -450,13 +454,14 @@ func (e *engine) Decrypt(reader io.Reader, metadata map[string]string) (io.Reade
 		keySize = chacha20KeySize
 	}
 	if len(key) != keySize {
-		adjustedKey := make([]byte, keySize)
+		adjustedKey := e.bufferPool.Get32()
 		copy(adjustedKey, key)
 		if len(key) < keySize {
 			copy(adjustedKey[len(key):], key[:keySize-len(key)])
 		}
 		zeroBytes(key)
 		key = adjustedKey
+		defer e.bufferPool.Put32(adjustedKey) // Return to pool when function exits
 	}
 
 	// Create cipher using algorithm from metadata
@@ -626,13 +631,14 @@ func (e *engine) encryptChunked(reader io.Reader, metadata map[string]string) (i
 		keySize = chacha20KeySize
 	}
 	if len(key) != keySize {
-		adjustedKey := make([]byte, keySize)
+		adjustedKey := e.bufferPool.Get32()
 		copy(adjustedKey, key)
 		if len(key) < keySize {
 			copy(adjustedKey[len(key):], key[:keySize-len(key)])
 		}
 		zeroBytes(key)
 		key = adjustedKey
+		defer e.bufferPool.Put32(adjustedKey) // Return to pool when function exits
 	}
 
 	// Create cipher using selected algorithm
@@ -643,7 +649,7 @@ func (e *engine) encryptChunked(reader io.Reader, metadata map[string]string) (i
 	aead := aeadCipher.(cipher.AEAD)
 
 	// Create chunked encrypt reader
-	chunkedReader, manifest := newChunkedEncryptReader(bytes.NewReader(plaintext), aead, baseIV, e.chunkSize)
+	chunkedReader, manifest := newChunkedEncryptReader(bytes.NewReader(plaintext), aead, baseIV, e.chunkSize, e.bufferPool)
 
 	// Encode manifest for storage
 	manifestEncoded, err := encodeManifest(manifest)
@@ -714,13 +720,14 @@ func (e *engine) encryptChunkedWithMetadataFallback(plaintext []byte, fullMetada
 		keySize = chacha20KeySize
 	}
 	if len(key) != keySize {
-		adjustedKey := make([]byte, keySize)
+		adjustedKey := e.bufferPool.Get32()
 		copy(adjustedKey, key)
 		if len(key) < keySize {
 			copy(adjustedKey[len(key):], key[:keySize-len(key)])
 		}
 		zeroBytes(key)
 		key = adjustedKey
+		defer e.bufferPool.Put32(adjustedKey) // Return to pool when function exits
 	}
 
 	// Create cipher
@@ -731,7 +738,7 @@ func (e *engine) encryptChunkedWithMetadataFallback(plaintext []byte, fullMetada
 	aead := aeadCipher.(cipher.AEAD)
 
 	// Create chunked encrypt reader for the plaintext
-	chunkedReader, manifest := newChunkedEncryptReader(bytes.NewReader(plaintext), aead, baseIV, e.chunkSize)
+	chunkedReader, manifest := newChunkedEncryptReader(bytes.NewReader(plaintext), aead, baseIV, e.chunkSize, e.bufferPool)
 
 	// Read the chunked encrypted data
 	chunkedData, err := io.ReadAll(chunkedReader)
@@ -762,7 +769,8 @@ func (e *engine) encryptChunkedWithMetadataFallback(plaintext []byte, fullMetada
 
 	// Create object format: [metadata_length][metadata_json][chunked_encrypted_data]
 	metadataLen := uint32(len(metadataJSON))
-	metadataLenBytes := make([]byte, 4)
+	metadataLenBytes := e.bufferPool.Get4()
+	defer e.bufferPool.Put4(metadataLenBytes) // Return to pool after use
 	metadataLenBytes[0] = byte(metadataLen >> 24)
 	metadataLenBytes[1] = byte(metadataLen >> 16)
 	metadataLenBytes[2] = byte(metadataLen >> 8)
@@ -842,13 +850,14 @@ func (e *engine) decryptChunked(reader io.Reader, metadata map[string]string) (i
 		keySize = chacha20KeySize
 	}
 	if len(key) != keySize {
-		adjustedKey := make([]byte, keySize)
+		adjustedKey := e.bufferPool.Get32()
 		copy(adjustedKey, key)
 		if len(key) < keySize {
 			copy(adjustedKey[len(key):], key[:keySize-len(key)])
 		}
 		zeroBytes(key)
 		key = adjustedKey
+		defer e.bufferPool.Put32(adjustedKey) // Return to pool when function exits
 	}
 
 	// Create cipher using algorithm from metadata
@@ -859,7 +868,7 @@ func (e *engine) decryptChunked(reader io.Reader, metadata map[string]string) (i
 	aead := aeadCipher.(cipher.AEAD)
 
 	// Create chunked decrypt reader
-	chunkedReader, err := newChunkedDecryptReader(reader, aead, manifest)
+	chunkedReader, err := newChunkedDecryptReader(reader, aead, manifest, e.bufferPool)
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to create chunked decrypt reader: %w", err)
 	}
@@ -974,13 +983,14 @@ func (e *engine) DecryptRange(reader io.Reader, metadata map[string]string, plai
 		keySize = chacha20KeySize
 	}
 	if len(key) != keySize {
-		adjustedKey := make([]byte, keySize)
+		adjustedKey := e.bufferPool.Get32()
 		copy(adjustedKey, key)
 		if len(key) < keySize {
 			copy(adjustedKey[len(key):], key[:keySize-len(key)])
 		}
 		zeroBytes(key)
 		key = adjustedKey
+		defer e.bufferPool.Put32(adjustedKey) // Return to pool when function exits
 	}
 
 	// Create cipher
@@ -991,7 +1001,7 @@ func (e *engine) DecryptRange(reader io.Reader, metadata map[string]string, plai
 	aead := aeadCipher.(cipher.AEAD)
 
 	// Create range-aware decrypt reader
-	rangeReader, err := newRangeDecryptReader(reader, aead, manifest, baseIV, plaintextStart, plaintextEnd)
+	rangeReader, err := newRangeDecryptReader(reader, aead, manifest, baseIV, plaintextStart, plaintextEnd, e.bufferPool)
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to create range reader: %w", err)
 	}
@@ -1084,13 +1094,14 @@ func (e *engine) encryptWithMetadataFallback(plaintext []byte, fullMetadata map[
 		keySize = chacha20KeySize
 	}
 	if len(key) != keySize {
-		adjustedKey := make([]byte, keySize)
+		adjustedKey := e.bufferPool.Get32()
 		copy(adjustedKey, key)
 		if len(key) < keySize {
 			copy(adjustedKey[len(key):], key[:keySize-len(key)])
 		}
 		zeroBytes(key)
 		key = adjustedKey
+		defer e.bufferPool.Put32(adjustedKey) // Return to pool when function exits
 	}
 
 	// Create cipher
@@ -1107,7 +1118,8 @@ func (e *engine) encryptWithMetadataFallback(plaintext []byte, fullMetadata map[
 
 	// Create object format: [metadata_length][metadata_json][compressed_data]
 	metadataLen := uint32(len(metadataJSON))
-	metadataLenBytes := make([]byte, 4) // 4 bytes for length
+	metadataLenBytes := e.bufferPool.Get4() // 4 bytes for length
+	defer e.bufferPool.Put4(metadataLenBytes) // Return to pool after use
 	metadataLenBytes[0] = byte(metadataLen >> 24)
 	metadataLenBytes[1] = byte(metadataLen >> 16)
 	metadataLenBytes[2] = byte(metadataLen >> 8)
@@ -1197,13 +1209,14 @@ func (e *engine) decryptWithMetadataFallback(reader io.Reader, metadata map[stri
 		keySize = chacha20KeySize
 	}
 	if len(key) != keySize {
-		adjustedKey := make([]byte, keySize)
+		adjustedKey := e.bufferPool.Get32()
 		copy(adjustedKey, key)
 		if len(key) < keySize {
 			copy(adjustedKey[len(key):], key[:keySize-len(key)])
 		}
 		zeroBytes(key)
 		key = adjustedKey
+		defer e.bufferPool.Put32(adjustedKey) // Return to pool when function exits
 	}
 
 	// Create cipher

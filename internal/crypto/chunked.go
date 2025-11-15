@@ -49,13 +49,14 @@ type chunkedEncryptReader struct {
 	currentChunk []byte
 	chunkIndex   int
 	manifest     *ChunkManifest
+	bufferPool   *BufferPool
 	closed       bool
 	err          error
 }
 
 // newChunkedEncryptReader creates a new chunked encryption reader.
 // It generates a base IV and derives per-chunk IVs deterministically.
-func newChunkedEncryptReader(source io.Reader, aead cipher.AEAD, baseIV []byte, chunkSize int) (*chunkedEncryptReader, *ChunkManifest) {
+func newChunkedEncryptReader(source io.Reader, aead cipher.AEAD, baseIV []byte, chunkSize int, bufferPool *BufferPool) (*chunkedEncryptReader, *ChunkManifest) {
 	if chunkSize < MinChunkSize {
 		chunkSize = MinChunkSize
 	}
@@ -78,6 +79,7 @@ func newChunkedEncryptReader(source io.Reader, aead cipher.AEAD, baseIV []byte, 
 		currentChunk: nil,
 		chunkIndex:   0,
 		manifest:     manifest,
+		bufferPool:   bufferPool,
 	}, manifest
 }
 
@@ -92,7 +94,7 @@ func (r *chunkedEncryptReader) deriveChunkIV(chunkIndex int) []byte {
 	// This maintains security while allowing streaming
 	indexBytes := make([]byte, 4)
 	binary.BigEndian.PutUint32(indexBytes, uint32(chunkIndex))
-	
+
 	for i := 0; i < 4 && i < len(iv); i++ {
 		iv[len(iv)-1-i] ^= indexBytes[3-i]
 	}
@@ -199,12 +201,13 @@ type chunkedDecryptReader struct {
 	buffer       []byte
 	currentChunk []byte
 	chunkIndex   int
+	bufferPool   *BufferPool
 	closed       bool
 	err          error
 }
 
 // newChunkedDecryptReader creates a new chunked decryption reader.
-func newChunkedDecryptReader(source io.Reader, aead cipher.AEAD, manifest *ChunkManifest) (*chunkedDecryptReader, error) {
+func newChunkedDecryptReader(source io.Reader, aead cipher.AEAD, manifest *ChunkManifest, bufferPool *BufferPool) (*chunkedDecryptReader, error) {
 	baseIV, err := decodeBase64(manifest.BaseIV)
 	if err != nil {
 		return nil, fmt.Errorf("failed to decode base IV: %w", err)
@@ -219,6 +222,7 @@ func newChunkedDecryptReader(source io.Reader, aead cipher.AEAD, manifest *Chunk
 		buffer:       make([]byte, manifest.ChunkSize+tagSize), // Account for auth tag
 		currentChunk: nil,
 		chunkIndex:   0,
+		bufferPool:   bufferPool,
 	}, nil
 }
 

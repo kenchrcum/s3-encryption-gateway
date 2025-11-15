@@ -28,6 +28,8 @@ type Metrics struct {
 	encryptionDuration   *prometheus.HistogramVec
 	encryptionErrors     *prometheus.CounterVec
 	encryptionBytes      *prometheus.CounterVec
+	bufferPoolHits       *prometheus.CounterVec
+	bufferPoolMisses     *prometheus.CounterVec
 	activeConnections    prometheus.Gauge
 	goroutines           prometheus.Gauge
 	memoryAllocBytes     prometheus.Gauge
@@ -122,6 +124,20 @@ func newMetricsWithRegistry(reg prometheus.Registerer) *Metrics {
 			},
 			[]string{"operation"},
 		),
+		bufferPoolHits: factory.NewCounterVec(
+			prometheus.CounterOpts{
+				Name: "buffer_pool_hits_total",
+				Help: "Total number of buffer pool hits",
+			},
+			[]string{"size_class"},
+		),
+		bufferPoolMisses: factory.NewCounterVec(
+			prometheus.CounterOpts{
+				Name: "buffer_pool_misses_total",
+				Help: "Total number of buffer pool misses",
+			},
+			[]string{"size_class"},
+		),
 		activeConnections: factory.NewGauge(
 			prometheus.GaugeOpts{
 				Name: "active_connections",
@@ -198,6 +214,16 @@ func (m *Metrics) RecordEncryptionOperation(operation string, duration time.Dura
 // RecordEncryptionError records an encryption operation error.
 func (m *Metrics) RecordEncryptionError(operation, errorType string) {
 	m.encryptionErrors.WithLabelValues(operation, errorType).Inc()
+}
+
+// RecordBufferPoolHit records a buffer pool hit.
+func (m *Metrics) RecordBufferPoolHit(sizeClass string) {
+	m.bufferPoolHits.WithLabelValues(sizeClass).Inc()
+}
+
+// RecordBufferPoolMiss records a buffer pool miss.
+func (m *Metrics) RecordBufferPoolMiss(sizeClass string) {
+	m.bufferPoolMisses.WithLabelValues(sizeClass).Inc()
 }
 
 // UpdateSystemMetrics updates system-level metrics (goroutines, memory).

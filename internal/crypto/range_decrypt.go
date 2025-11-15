@@ -26,6 +26,7 @@ type rangeDecryptReader struct {
 	currentChunkIndex  int  // Absolute chunk index for IV derivation
 	sourceChunkIndex   int  // Relative index in the source stream (0, 1, 2, ...)
 	bytesReturned      int64
+	bufferPool         *BufferPool
 	closed             bool
 	err                error
 	isOptimized        bool // Whether source contains only needed chunks
@@ -38,6 +39,7 @@ func newRangeDecryptReader(
 	manifest *ChunkManifest,
 	baseIV []byte,
 	plaintextStart, plaintextEnd int64,
+	bufferPool *BufferPool,
 ) (*rangeDecryptReader, error) {
 	// Calculate which chunks we need
 	startChunk, endChunk, startOffset, endOffset := calculateChunkRangeFromPlaintext(
@@ -85,6 +87,7 @@ func newRangeDecryptReader(
 		currentChunkIndex:  startChunk, // Start from startChunk
 		sourceChunkIndex:   0,
 		bytesReturned:      0,
+		bufferPool:         bufferPool,
 		closed:             false,
 		err:                nil,
 		isOptimized:        false, // Assume not optimized for backward compatibility

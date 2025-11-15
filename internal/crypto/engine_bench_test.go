@@ -6,6 +6,8 @@ import (
 	"testing"
 )
 
+// BenchmarkEngine_Encrypt_Small benchmarks small encryption operations.
+// Buffer pooling is enabled to reduce memory allocations in crypto operations.
 func BenchmarkEngine_Encrypt_Small(b *testing.B) {
 	engine, err := NewEngine("test-password-12345")
 	if err != nil {
