@@ -372,7 +372,20 @@ rate_limit:
 - **Network Security**: Deploy behind TLS termination (e.g., Kubernetes Ingress) or enable built-in TLS
 - **Access Control**: Restrict gateway access to authorized clients using network policies, firewalls, or API gateways
 - **Rate Limiting**: Enable rate limiting in production environments to prevent abuse and ensure fair resource usage
-- **Audit Logging**: Enable audit logging for compliance and security monitoring
+
+### Multipart Upload Encryption
+
+**Important Security Notice**: Multipart uploads are **not encrypted** by the S3 Encryption Gateway due to fundamental architectural limitations.
+
+- **Why not encrypted**: S3 concatenates multipart upload parts server-side. Encrypting each part individually creates multiple invalid encrypted streams when combined.
+- **Security impact**: Data uploaded via multipart operations is stored unencrypted on the S3 backend.
+- **Recommended alternatives**:
+  - Use client-side encryption before sending data to the gateway
+  - Encrypt files at the application level before upload
+  - Use single-part uploads for sensitive data
+  - Consider using a different encryption strategy for large files
+
+For encrypted multipart uploads, implement encryption in your application or S3 client before sending data to the gateway.
 
 ### Encryption Details
 
@@ -380,6 +393,7 @@ rate_limit:
 - **Key Derivation**: PBKDF2 with 100,000+ iterations
 - **Encryption Mode**: Chunked encryption with per-chunk IVs for streaming support
 - **Range Requests**: Optimized for chunked format - fetches only needed encrypted chunks
+- **Multipart Limitation**: Multipart uploads bypass encryption due to S3 concatenation behavior
 
 ## Contributing
 

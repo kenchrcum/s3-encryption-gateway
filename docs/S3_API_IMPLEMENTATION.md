@@ -38,7 +38,12 @@ The S3 Encryption Gateway must maintain full compatibility with the Amazon S3 AP
   - Parts are forwarded to backend without encryption to avoid concatenation issues
   - Preserve ordering and part ETags
   - Complete uploads by passing part list to backend
-  - Multipart uploads bypass encryption for compatibility with S3 providers
+  - Multipart uploads bypass encryption for S3 provider compatibility
+- **Security Considerations**:
+  - **Multipart uploads are not encrypted** due to fundamental architectural limitations
+  - Each part cannot be encrypted individually because S3 concatenates parts server-side
+  - Encrypting parts separately creates multiple invalid encrypted streams when combined
+  - For encrypted multipart uploads, use client-side encryption before sending to the gateway
 - **Security Features (V0.4)**:
   - Robust XML parsing with 10MB size limits to prevent DoS
   - Comprehensive validation of part numbers (1-10000 range)
