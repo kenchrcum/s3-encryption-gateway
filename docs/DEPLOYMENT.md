@@ -686,6 +686,86 @@ curl http://localhost:8080/metrics
 - Monitor encryption metrics for performance
 - Consider compression for compressible data
 
+## Streaming and Backpressure Configuration
+
+### Recommended Limits for Production
+
+#### Chunk Size Configuration
+```yaml
+# In environment variables or ConfigMap
+ENCRYPTION_CHUNK_SIZE: "65536"  # 64KB chunks for optimal throughput
+# Alternative values based on workload:
+# - Large files (>1GB): 131072 (128KB)
+# - Small files (<1MB): 32768 (32KB)
+# - Network-constrained: 16384 (16KB)
+```
+
+#### Buffer Pool Configuration
+The gateway uses intelligent buffer pooling to reduce allocations:
+
+- **Small buffers (4-32 bytes)**: For cryptographic metadata and IVs
+- **Chunk buffers (64KB)**: For streaming encryption/decryption
+- **Bounded queues**: For backpressure management in streaming pipelines
+
+#### Backpressure Limits
+```yaml
+# Recommended queue sizes based on throughput
+STREAMING_QUEUE_SIZE: "1048576"  # 1MB queue for 10Gbps networks
+# Alternative values:
+# - High throughput (40Gbps): 4194304 (4MB)
+# - Low latency: 262144 (256KB)
+# - Memory constrained: 65536 (64KB)
+```
+
+#### Context Timeouts
+```yaml
+# Request-level timeouts (recommended)
+REQUEST_TIMEOUT: "300s"  # 5 minutes for large objects
+STREAMING_TIMEOUT: "60s"  # 1 minute per streaming operation
+
+# Chunk-level timeouts (for very large objects)
+CHUNK_TIMEOUT: "30s"  # 30 seconds per 64KB chunk
+```
+
+### Performance Tuning Guidelines
+
+#### Memory Usage Estimation
+```
+Per-connection memory ≈ (chunk_size × 2) + queue_size + overhead
+Example for 64KB chunks, 1MB queue:
+Per-connection ≈ 128KB + 1MB + 64KB = ~1.2MB
+For 100 concurrent connections: ~120MB
+```
+
+#### CPU Usage Optimization
+- **Chunk size**: Larger chunks reduce CPU overhead but increase latency
+- **Buffer pools**: Reuse buffers to minimize GC pressure
+- **Context cancellation**: Prevents resource leaks on client disconnects
+
+#### Network Optimization
+- **Queue sizing**: Match queue size to network bandwidth × latency
+- **Timeout tuning**: Set timeouts based on expected transfer times
+- **Backpressure**: Prevents memory exhaustion under load
+
+### Monitoring Streaming Performance
+
+#### Key Metrics to Monitor
+```prometheus
+# Queue utilization
+streaming_queue_size_bytes / streaming_queue_max_bytes
+
+# Context cancellation rate
+rate(streaming_context_cancellations_total[5m])
+
+# Chunk processing latency
+histogram_quantile(0.95, rate(chunk_processing_duration_seconds_bucket[5m]))
+```
+
+#### Alerting Thresholds
+- Queue utilization > 80%: Increase queue size or reduce concurrency
+- Context cancellations > 5%: Check for client timeouts or network issues
+- P95 chunk latency > 10s: Review chunk size or CPU resources
+
 ## Additional Resources
 
 - **Architecture**: See [`ARCHITECTURE.md`](ARCHITECTURE.md)

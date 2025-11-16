@@ -1,6 +1,7 @@
 package crypto
 
 import (
+	"context"
 	"sync"
 )
 
@@ -217,4 +218,176 @@ func (p *BufferPool) Reset() {
 	p.misses32 = 0
 	p.hits64K = 0
 	p.misses64K = 0
+}
+
+// BoundedQueue provides a bounded queue for streaming data with backpressure.
+// It supports context-aware cancellation and blocking/non-blocking operations.
+type BoundedQueue struct {
+	buffer   []byte
+	size     int
+	maxSize  int
+	pos      int
+	mu       sync.Mutex
+	notEmpty *sync.Cond
+	notFull  *sync.Cond
+	closed   bool
+	ctx      context.Context
+	cancel   context.CancelFunc
+}
+
+// NewBoundedQueue creates a new bounded queue with the specified maximum size.
+func NewBoundedQueue(maxSize int) *BoundedQueue {
+	ctx, cancel := context.WithCancel(context.Background())
+	q := &BoundedQueue{
+		buffer:  make([]byte, maxSize),
+		maxSize: maxSize,
+		ctx:     ctx,
+		cancel:  cancel,
+	}
+	q.notEmpty = sync.NewCond(&q.mu)
+	q.notFull = sync.NewCond(&q.mu)
+	return q
+}
+
+// NewBoundedQueueWithContext creates a new bounded queue with context support.
+func NewBoundedQueueWithContext(ctx context.Context, maxSize int) *BoundedQueue {
+	ctx, cancel := context.WithCancel(ctx)
+	q := &BoundedQueue{
+		buffer:  make([]byte, maxSize),
+		maxSize: maxSize,
+		ctx:     ctx,
+		cancel:  cancel,
+	}
+	q.notEmpty = sync.NewCond(&q.mu)
+	q.notFull = sync.NewCond(&q.mu)
+	return q
+}
+
+// Write adds data to the queue, blocking if the queue is full.
+// Returns the number of bytes written and any error.
+func (q *BoundedQueue) Write(p []byte) (int, error) {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+
+	totalWritten := 0
+
+	for len(p) > 0 {
+		// Wait for space or context cancellation
+		for q.size == q.maxSize && !q.closed {
+			select {
+			case <-q.ctx.Done():
+				return totalWritten, q.ctx.Err()
+			default:
+				q.notFull.Wait()
+			}
+		}
+
+		if q.closed {
+			return totalWritten, context.Canceled
+		}
+
+		// Calculate how much we can write
+		available := q.maxSize - q.size
+		if available == 0 {
+			continue // Should not happen due to wait above
+		}
+
+		toWrite := len(p)
+		if toWrite > available {
+			toWrite = available
+		}
+
+		// Write to buffer (circular)
+		endPos := (q.pos + q.size) % q.maxSize
+		copyLen := toWrite
+		if endPos+copyLen > q.maxSize {
+			copyLen = q.maxSize - endPos
+		}
+
+		copy(q.buffer[endPos:], p[:copyLen])
+		q.size += copyLen
+		totalWritten += copyLen
+		p = p[copyLen:]
+
+		// Signal readers
+		q.notEmpty.Signal()
+	}
+
+	return totalWritten, nil
+}
+
+// Read reads data from the queue, blocking if the queue is empty.
+// Returns the number of bytes read and any error.
+func (q *BoundedQueue) Read(p []byte) (int, error) {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+
+	totalRead := 0
+
+	for len(p) > 0 {
+		// Wait for data or context cancellation
+		for q.size == 0 && !q.closed {
+			select {
+			case <-q.ctx.Done():
+				return totalRead, q.ctx.Err()
+			default:
+				q.notEmpty.Wait()
+			}
+		}
+
+		if q.closed && q.size == 0 {
+			return totalRead, context.Canceled
+		}
+
+		// Calculate how much we can read
+		toRead := len(p)
+		if toRead > q.size {
+			toRead = q.size
+		}
+
+		if toRead == 0 {
+			break
+		}
+
+		// Read from buffer (circular)
+		copyLen := toRead
+		if q.pos+copyLen > q.maxSize {
+			copyLen = q.maxSize - q.pos
+		}
+
+		copy(p[:copyLen], q.buffer[q.pos:])
+		q.pos = (q.pos + copyLen) % q.maxSize
+		q.size -= copyLen
+		totalRead += copyLen
+		p = p[copyLen:]
+
+		// Signal writers
+		q.notFull.Signal()
+	}
+
+	return totalRead, nil
+}
+
+// Close closes the queue, unblocking all waiting operations.
+func (q *BoundedQueue) Close() {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	q.closed = true
+	q.cancel()
+	q.notEmpty.Broadcast()
+	q.notFull.Broadcast()
+}
+
+// Size returns the current number of bytes in the queue.
+func (q *BoundedQueue) Size() int {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	return q.size
+}
+
+// IsClosed returns true if the queue is closed.
+func (q *BoundedQueue) IsClosed() bool {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	return q.closed
 }

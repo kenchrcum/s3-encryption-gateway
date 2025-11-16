@@ -1,6 +1,7 @@
 package crypto
 
 import (
+	"context"
 	"crypto/cipher"
 	"encoding/binary"
 	"encoding/json"
@@ -52,11 +53,18 @@ type chunkedEncryptReader struct {
 	bufferPool   *BufferPool
 	closed       bool
 	err          error
+	ctx          context.Context // Context for cancellation
 }
 
 // newChunkedEncryptReader creates a new chunked encryption reader.
 // It generates a base IV and derives per-chunk IVs deterministically.
 func newChunkedEncryptReader(source io.Reader, aead cipher.AEAD, baseIV []byte, chunkSize int, bufferPool *BufferPool) (*chunkedEncryptReader, *ChunkManifest) {
+	return newChunkedEncryptReaderWithContext(context.Background(), source, aead, baseIV, chunkSize, bufferPool)
+}
+
+// newChunkedEncryptReaderWithContext creates a new chunked encryption reader with context support.
+// It generates a base IV and derives per-chunk IVs deterministically.
+func newChunkedEncryptReaderWithContext(ctx context.Context, source io.Reader, aead cipher.AEAD, baseIV []byte, chunkSize int, bufferPool *BufferPool) (*chunkedEncryptReader, *ChunkManifest) {
 	if chunkSize < MinChunkSize {
 		chunkSize = MinChunkSize
 	}
@@ -80,6 +88,7 @@ func newChunkedEncryptReader(source io.Reader, aead cipher.AEAD, baseIV []byte, 
 		chunkIndex:   0,
 		manifest:     manifest,
 		bufferPool:   bufferPool,
+		ctx:          ctx,
 	}, manifest
 }
 
@@ -112,9 +121,28 @@ func (r *chunkedEncryptReader) Read(p []byte) (int, error) {
 		return 0, r.err
 	}
 
+	// Check for context cancellation
+	select {
+	case <-r.ctx.Done():
+		r.err = r.ctx.Err()
+		return 0, r.err
+	default:
+	}
+
 	totalRead := 0
 
 	for len(p) > totalRead {
+		// Check for context cancellation in the loop
+		select {
+		case <-r.ctx.Done():
+			r.err = r.ctx.Err()
+			if totalRead > 0 {
+				return totalRead, nil // Return what we have so far
+			}
+			return 0, r.err
+		default:
+		}
+
 		// If we have encrypted data in currentChunk, return it
 		if len(r.currentChunk) > 0 {
 			n := copy(p[totalRead:], r.currentChunk)
@@ -204,10 +232,16 @@ type chunkedDecryptReader struct {
 	bufferPool   *BufferPool
 	closed       bool
 	err          error
+	ctx          context.Context // Context for cancellation
 }
 
 // newChunkedDecryptReader creates a new chunked decryption reader.
 func newChunkedDecryptReader(source io.Reader, aead cipher.AEAD, manifest *ChunkManifest, bufferPool *BufferPool) (*chunkedDecryptReader, error) {
+	return newChunkedDecryptReaderWithContext(context.Background(), source, aead, manifest, bufferPool)
+}
+
+// newChunkedDecryptReaderWithContext creates a new chunked decryption reader with context support.
+func newChunkedDecryptReaderWithContext(ctx context.Context, source io.Reader, aead cipher.AEAD, manifest *ChunkManifest, bufferPool *BufferPool) (*chunkedDecryptReader, error) {
 	baseIV, err := decodeBase64(manifest.BaseIV)
 	if err != nil {
 		return nil, fmt.Errorf("failed to decode base IV: %w", err)
@@ -223,6 +257,7 @@ func newChunkedDecryptReader(source io.Reader, aead cipher.AEAD, manifest *Chunk
 		currentChunk: nil,
 		chunkIndex:   0,
 		bufferPool:   bufferPool,
+		ctx:          ctx,
 	}, nil
 }
 
@@ -250,9 +285,28 @@ func (r *chunkedDecryptReader) Read(p []byte) (int, error) {
 		return 0, r.err
 	}
 
+	// Check for context cancellation
+	select {
+	case <-r.ctx.Done():
+		r.err = r.ctx.Err()
+		return 0, r.err
+	default:
+	}
+
 	totalRead := 0
 
 	for len(p) > totalRead {
+		// Check for context cancellation in the loop
+		select {
+		case <-r.ctx.Done():
+			r.err = r.ctx.Err()
+			if totalRead > 0 {
+				return totalRead, nil // Return what we have so far
+			}
+			return 0, r.err
+		default:
+		}
+
 		// If we have decrypted data, return it
 		if len(r.currentChunk) > 0 {
 			n := copy(p[totalRead:], r.currentChunk)
