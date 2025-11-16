@@ -46,9 +46,12 @@ test-load-prometheus:
 	@echo "Running load tests with Prometheus metrics..."
 	@cd test && ./run_load_tests.sh --prometheus http://localhost:9090
 
-# Run load tests with automatic MinIO management
+# Run load tests with automatic MinIO and Gateway management
 test-load-minio:
-	@echo "Running load tests with MinIO environment management..."
+	@echo "Running load tests with automatic MinIO and Gateway management..."
+	@echo "This will start MinIO, the S3 Encryption Gateway, run tests, and clean up everything automatically."
+	@echo "The environment will be completely removed even if tests are interrupted."
+	@echo ""
 	@cd test && ./run_load_tests.sh --manage-minio
 
 # Build load test binary
@@ -130,7 +133,7 @@ help:
 	@echo "  test-load-multipart- Run multipart operation load tests"
 	@echo "  test-load-baseline - Run load tests and update baselines"
 	@echo "  test-load-prometheus-Run load tests with Prometheus metrics"
-	@echo "  test-load-minio    - Run load tests with MinIO environment management"
+	@echo "  test-load-minio    - Run load tests with MinIO environment management (auto cleanup)"
 	@echo "  build-loadtest     - Build load test binary"
 	@echo "  test-all           - Run all tests including integration"
 	@echo "  test-coverage      - Run tests with HTML coverage report"

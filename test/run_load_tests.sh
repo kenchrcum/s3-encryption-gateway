@@ -20,7 +20,7 @@ PROMETHEUS_URL="${PROMETHEUS_URL:-}"
 VERBOSE="${VERBOSE:-false}"
 UPDATE_BASELINE="${UPDATE_BASELINE:-false}"
 MANAGE_MINIO="${MANAGE_MINIO:-false}"
-MINIO_COMPOSE="${MINIO_COMPOSE:-test/docker-compose.yml}"
+MINIO_COMPOSE="${MINIO_COMPOSE:-docker-compose.yml}"
 
 # Colors for output
 RED='\033[0;31m'

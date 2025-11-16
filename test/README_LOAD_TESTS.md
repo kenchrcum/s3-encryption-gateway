@@ -33,8 +33,28 @@ cd test && ./run_load_tests.sh --manage-minio --test-type range
 The tests will:
 1. Start MinIO using `docker-compose up -d`
 2. Wait for MinIO to become healthy
-3. Run the load tests against the MinIO instance
-4. Stop and clean up MinIO environment after tests complete
+3. Create the test bucket using AWS CLI
+4. Start the S3 Encryption Gateway with MinIO configuration
+5. Run the load tests against the gateway
+6. **Automatically clean up** - Stop gateway and MinIO, remove containers and volumes with `docker-compose down -v`
+
+### Robust Cleanup
+
+The test environment includes robust cleanup mechanisms:
+
+- **Automatic cleanup**: Environment is cleaned up when tests complete normally
+- **Signal handling**: Cleanup runs even when tests are interrupted (Ctrl+C, timeout, etc.)
+- **Complete removal**: Uses `docker-compose down -v` to remove containers, networks, and volumes
+- **Error resilience**: Cleanup continues even if individual components fail to stop
+
+### Manual Cleanup
+
+If needed, you can manually clean up the MinIO environment:
+
+```bash
+cd test
+docker-compose down -v
+```
 
 ### Running Range Load Tests
 

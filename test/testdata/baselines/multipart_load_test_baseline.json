@@ -1,0 +1,26 @@
+{
+  "timestamp": "2025-11-16T11:44:54.639355142+01:00",
+  "test_name": "multipart_load_test",
+  "duration": 38157176013,
+  "total_requests": 59,
+  "successful_requests": 59,
+  "failed_requests": 0,
+  "p50_latency": 2884701516,
+  "p95_latency": 3277086147,
+  "p99_latency": 3331468728,
+  "avg_latency": 2973717355,
+  "min_latency": 2437194673,
+  "max_latency": 3331740801,
+  "throughput_req_per_sec": 1.5462360207133499,
+  "total_bytes_sent": 3093299200,
+  "total_bytes_received": 0,
+  "error_rate": 0,
+  "multipart_specific": {
+    "total_uploads": 59,
+    "avg_parts_per_upload": 0,
+    "avg_part_size": 618659840,
+    "upload_time_avg": 175449323947,
+    "upload_time_p95": 175449323947,
+    "failed_parts": 0
+  }
+}

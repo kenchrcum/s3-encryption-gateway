@@ -1,0 +1,28 @@
+{
+  "timestamp": "2025-11-16T11:15:48.232208484+01:00",
+  "test_name": "range_load_test",
+  "duration": 20299494391,
+  "total_requests": 382,
+  "successful_requests": 382,
+  "failed_requests": 0,
+  "p50_latency": 266104883,
+  "p95_latency": 300994575,
+  "p99_latency": 314481875,
+  "avg_latency": 262074538,
+  "min_latency": 119612264,
+  "max_latency": 321443717,
+  "throughput_req_per_sec": 18.818202692248523,
+  "total_bytes_sent": 0,
+  "total_bytes_received": 812926440,
+  "error_rate": 0,
+  "range_specific": {
+    "first_byte_ranges": 65,
+    "last_byte_ranges": 65,
+    "suffix_ranges": 65,
+    "cross_chunk_ranges": 64,
+    "invalid_ranges": 61,
+    "avg_range_size": 0,
+    "time_to_first_byte_avg": 100112473736,
+    "time_to_first_byte_p95": 100112473736
+  }
+}

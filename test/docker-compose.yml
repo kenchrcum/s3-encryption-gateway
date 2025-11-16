@@ -10,6 +10,7 @@ services:
     environment:
       MINIO_ROOT_USER: minioadmin
       MINIO_ROOT_PASSWORD: minioadmin
+      MINIO_SITE_REGION: us-east-1
     command: server /data --console-address ":9001"
     volumes:
       - minio-data:/data
@@ -21,3 +22,7 @@ services:
 
 volumes:
   minio-data:
+
+networks:
+  default:
+    name: s3-encryption-gateway-test
