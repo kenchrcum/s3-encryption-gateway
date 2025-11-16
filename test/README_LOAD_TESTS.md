@@ -15,6 +15,27 @@ The load testing suite provides:
 
 ## Quick Start
 
+## MinIO Test Environment Integration
+
+The load tests can automatically manage a MinIO test environment using Docker Compose:
+
+```bash
+# Run tests with automatic MinIO management
+make test-load-minio
+
+# Or use the shell script
+cd test && ./run_load_tests.sh --manage-minio
+
+# Run specific test types with MinIO
+cd test && ./run_load_tests.sh --manage-minio --test-type range
+```
+
+The tests will:
+1. Start MinIO using `docker-compose up -d`
+2. Wait for MinIO to become healthy
+3. Run the load tests against the MinIO instance
+4. Stop and clean up MinIO environment after tests complete
+
 ### Running Range Load Tests
 
 ```go
@@ -86,6 +107,53 @@ PrintLoadTestResults(results)
 | `PartSize` | Size of each upload part | Required |
 | `BaselineFile` | Path to save/load baseline metrics | Optional |
 | `RegressionThreshold` | Max allowed regression percentage | 10.0 |
+
+## Command-Line Interface
+
+### Basic Usage
+
+```bash
+# Build the load test binary
+make build-loadtest
+
+# Run basic load tests
+./bin/loadtest
+
+# Run range tests only
+./bin/loadtest --test-type range
+
+# Run with automatic MinIO management
+./bin/loadtest --manage-minio
+
+# Run with custom configuration and MinIO
+./bin/loadtest --manage-minio --workers 20 --qps 100 --duration 120s
+
+# Use custom docker-compose file
+./bin/loadtest --manage-minio --minio-compose path/to/custom/docker-compose.yml
+
+# Update baselines
+./bin/loadtest --update-baseline --manage-minio
+```
+
+### Available Flags
+
+| Flag | Description | Default |
+|------|-------------|---------|
+| `--gateway-url` | S3 Encryption Gateway URL | `http://localhost:8080` |
+| `--test-type` | Test type: range, multipart, or both | `both` |
+| `--duration` | Test duration | `30s` |
+| `--workers` | Number of worker goroutines | `5` |
+| `--qps` | Queries per second per worker | `25` |
+| `--object-size` | Object size in bytes | `52428800` (50MB) |
+| `--chunk-size` | Encryption chunk size | `65536` (64KB) |
+| `--part-size` | Multipart part size | `10485760` (10MB) |
+| `--baseline-dir` | Directory for baseline files | `testdata/baselines` |
+| `--threshold` | Regression threshold percentage | `10.0` |
+| `--prometheus-url` | Prometheus URL for additional metrics | None |
+| `--verbose` | Enable verbose logging | `false` |
+| `--update-baseline` | Update baseline files | `false` |
+| `--manage-minio` | Auto start/stop MinIO environment | `false` |
+| `--minio-compose` | Path to MinIO docker-compose file | `test/docker-compose.yml` |
 
 ## Test Scenarios
 

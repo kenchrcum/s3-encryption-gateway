@@ -46,6 +46,11 @@ test-load-prometheus:
 	@echo "Running load tests with Prometheus metrics..."
 	@cd test && ./run_load_tests.sh --prometheus http://localhost:9090
 
+# Run load tests with automatic MinIO management
+test-load-minio:
+	@echo "Running load tests with MinIO environment management..."
+	@cd test && ./run_load_tests.sh --manage-minio
+
 # Build load test binary
 build-loadtest:
 	@echo "Building load test binary..."
@@ -125,6 +130,7 @@ help:
 	@echo "  test-load-multipart- Run multipart operation load tests"
 	@echo "  test-load-baseline - Run load tests and update baselines"
 	@echo "  test-load-prometheus-Run load tests with Prometheus metrics"
+	@echo "  test-load-minio    - Run load tests with MinIO environment management"
 	@echo "  build-loadtest     - Build load test binary"
 	@echo "  test-all           - Run all tests including integration"
 	@echo "  test-coverage      - Run tests with HTML coverage report"

@@ -19,6 +19,8 @@ THRESHOLD="${THRESHOLD:-10.0}"
 PROMETHEUS_URL="${PROMETHEUS_URL:-}"
 VERBOSE="${VERBOSE:-false}"
 UPDATE_BASELINE="${UPDATE_BASELINE:-false}"
+MANAGE_MINIO="${MANAGE_MINIO:-false}"
+MINIO_COMPOSE="${MINIO_COMPOSE:-test/docker-compose.yml}"
 
 # Colors for output
 RED='\033[0;31m'
@@ -67,6 +69,8 @@ OPTIONS:
     --prometheus URL            Prometheus URL for metrics
     -v, --verbose               Enable verbose logging
     --update-baseline           Update baseline files instead of checking regression
+    --manage-minio              Automatically start/stop MinIO test environment
+    --minio-compose FILE        Path to MinIO docker-compose file (default: test/docker-compose.yml)
 
 ENVIRONMENT VARIABLES:
     GATEWAY_URL                 Gateway URL
@@ -82,6 +86,8 @@ ENVIRONMENT VARIABLES:
     PROMETHEUS_URL              Prometheus URL
     VERBOSE                     Enable verbose logging
     UPDATE_BASELINE             Update baseline files
+    MANAGE_MINIO                Automatically manage MinIO environment
+    MINIO_COMPOSE               Path to MinIO docker-compose file
 
 EXAMPLES:
     # Run basic load tests
@@ -101,6 +107,12 @@ EXAMPLES:
 
     # Run verbose tests for debugging
     $0 --verbose
+
+    # Run tests with automatic MinIO management
+    $0 --manage-minio
+
+    # Run tests with custom MinIO compose file
+    $0 --manage-minio --minio-compose path/to/custom/docker-compose.yml
 EOF
 }
 
@@ -163,6 +175,14 @@ while [[ $# -gt 0 ]]; do
             UPDATE_BASELINE=true
             shift
             ;;
+        --manage-minio)
+            MANAGE_MINIO=true
+            shift
+            ;;
+        --minio-compose)
+            MINIO_COMPOSE="$2"
+            shift 2
+            ;;
         *)
             log_error "Unknown option: $1"
             log_info "Use -h or --help for usage information"
@@ -206,6 +226,12 @@ if [[ "$UPDATE_BASELINE" == "true" ]]; then
     ARGS+=("--update-baseline")
 fi
 
+if [[ "$MANAGE_MINIO" == "true" ]]; then
+    ARGS+=("--manage-minio")
+fi
+
+ARGS+=("--minio-compose" "$MINIO_COMPOSE")
+
 # Print configuration
 log_info "Starting load tests with configuration:"
 echo "  Gateway URL: $GATEWAY_URL"
@@ -223,6 +249,8 @@ if [[ -n "$PROMETHEUS_URL" ]]; then
 fi
 echo "  Verbose: $VERBOSE"
 echo "  Update Baseline: $UPDATE_BASELINE"
+echo "  Manage MinIO: $MANAGE_MINIO"
+echo "  MinIO Compose: $MINIO_COMPOSE"
 echo
 
 # Check if gateway is accessible
