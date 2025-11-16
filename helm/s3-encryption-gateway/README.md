@@ -220,7 +220,7 @@ config:
 |-----------|-------------|---------|
 | `replicaCount` | Number of replicas | `1` |
 | `image.repository` | Image repository | `kenchrcum/s3-encryption-gateway` |
-| `image.tag` | Image tag | `"0.3.10"` |
+| `image.tag` | Image tag | `"0.4.0"` |
 | `image.pullPolicy` | Image pull policy | `IfNotPresent` |
 | `imagePullSecrets` | Image pull secrets | `[]` |
 | `podAnnotations` | Additional pod annotations | `{}` |
