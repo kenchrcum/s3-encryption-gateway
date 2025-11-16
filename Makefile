@@ -1,4 +1,4 @@
-.PHONY: build test lint clean run docker-build docker-push help
+.PHONY: build test test-comprehensive lint clean run docker-build docker-push help
 
 # Variables
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo "dev")
@@ -61,6 +61,16 @@ build-loadtest:
 
 # Run all tests including integration
 test-all: test test-integration
+
+# Run comprehensive test suite (code tests, integration tests, and load tests)
+test-comprehensive:
+	@echo "Running comprehensive test suite..."
+	@echo "1. Running code tests..."
+	@go test ./internal/* -v
+	@echo "2. Running integration tests..."
+	@go test ./test -v
+	@echo "3. Running load tests..."
+	@make test-load-minio
 
 # Run tests with coverage
 test-coverage: test
@@ -136,6 +146,7 @@ help:
 	@echo "  test-load-minio    - Run load tests with MinIO environment management (auto cleanup)"
 	@echo "  build-loadtest     - Build load test binary"
 	@echo "  test-all           - Run all tests including integration"
+	@echo "  test-comprehensive - Run comprehensive test suite (code, integration, and load tests)"
 	@echo "  test-coverage      - Run tests with HTML coverage report"
 	@echo "  lint               - Run linter"
 	@echo "  fmt                - Format code"

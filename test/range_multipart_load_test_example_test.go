@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"testing"
 	"time"
 
 	"github.com/sirupsen/logrus"
@@ -91,8 +92,8 @@ func ExampleRunMultipartLoadTest() {
 	}
 }
 
-// TestComprehensiveLoadTestSuite runs both range and multipart tests and provides a summary.
-func ExampleComprehensiveLoadTestSuite() {
+// TestRunLoadTests demonstrates running both range and multipart tests.
+func TestRunLoadTests(t *testing.T) {
 	logger := logrus.New()
 	logger.SetLevel(logrus.InfoLevel)
 
@@ -103,7 +104,7 @@ func ExampleComprehensiveLoadTestSuite() {
 		return
 	}
 
-	fmt.Println("=== Running Comprehensive Load Test Suite ===\n")
+	fmt.Println("=== Running Comprehensive Load Test Suite ===")
 
 	// Range load test
 	fmt.Println("1. Running Range Load Test")
@@ -206,8 +207,8 @@ func checkRegression(testName string, results *LoadTestMetrics, baselineFile str
 	}
 }
 
-// TestLoadTestWithPrometheusMetrics demonstrates integration with Prometheus metrics.
-func ExampleLoadTestWithPrometheusMetrics() {
+// TestRunLoadTestWithPrometheus demonstrates integration with Prometheus metrics.
+func TestRunLoadTestWithPrometheus(t *testing.T) {
 	logger := logrus.New()
 	logger.SetLevel(logrus.InfoLevel)
 

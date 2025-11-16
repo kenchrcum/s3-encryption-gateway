@@ -193,8 +193,8 @@ func RunLoadTest(config LoadTestConfig, logger *logrus.Logger) (*LoadTestResults
 	return results, nil
 }
 
-// PrintLoadTestResults prints load test results in a formatted way.
-func PrintLoadTestResults(results *LoadTestResults) {
+// PrintBasicLoadTestResults prints load test results in a formatted way.
+func PrintBasicLoadTestResults(results *LoadTestResults) {
 	fmt.Printf("\n=== Load Test Results ===\n")
 	fmt.Printf("Duration: %v\n", results.TotalDuration)
 	fmt.Printf("Total Requests: %d\n", results.TotalRequests)
@@ -456,7 +456,7 @@ func recordLatency(latencies *[]time.Duration, mu *sync.Mutex, latency time.Dura
 
 // PrintStreamingLoadTestResults prints streaming-specific load test results.
 func PrintStreamingLoadTestResults(results *StreamingLoadTestResults) {
-	PrintLoadTestResults(&results.LoadTestResults)
+	PrintBasicLoadTestResults(&results.LoadTestResults)
 
 	fmt.Printf("=== Streaming Test Results ===\n")
 	fmt.Printf("Range Requests: %d\n", results.RangeRequestCount)
