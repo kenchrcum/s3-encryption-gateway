@@ -1,6 +1,6 @@
 # S3 Encryption Gateway
 
-![Version](https://img.shields.io/badge/version-0.4.1-blue.svg)
+![Version](https://img.shields.io/badge/version-0.4.0-blue.svg)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 [![Artifact Hub](https://img.shields.io/endpoint?url=https://artifacthub.io/badge/repository/s3-encryption-gateway)](https://artifacthub.io/packages/search?repo=s3-encryption-gateway)
 
