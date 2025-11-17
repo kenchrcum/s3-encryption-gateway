@@ -1,6 +1,7 @@
 package metrics
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"time"
@@ -39,12 +40,25 @@ func HealthHandler() http.HandlerFunc {
 }
 
 // ReadinessHandler returns a handler for readiness checks.
-func ReadinessHandler() http.HandlerFunc {
+// If a KeyManager health checker is provided, it will be checked as part of readiness.
+func ReadinessHandler(keyManagerHealthCheck func(context.Context) error) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		ctx := r.Context()
 		status := HealthStatus{
 			Status:    "ready",
 			Timestamp: time.Now(),
 			Version:   version,
+		}
+
+		// Check KMS health if a health checker is provided
+		if keyManagerHealthCheck != nil {
+			if err := keyManagerHealthCheck(ctx); err != nil {
+				status.Status = "not_ready"
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusServiceUnavailable)
+				json.NewEncoder(w).Encode(status)
+				return
+			}
 		}
 
 		w.Header().Set("Content-Type", "application/json")

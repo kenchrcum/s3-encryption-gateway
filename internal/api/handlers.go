@@ -473,9 +473,25 @@ func (h *Handler) handleHealth(w http.ResponseWriter, r *http.Request) {
 // handleReady handles readiness check requests.
 func (h *Handler) handleReady(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
-	handler := metrics.ReadinessHandler()
+	
+	// Create health check function if key manager is enabled
+	var healthCheck func(context.Context) error
+	if h.keyManager != nil {
+		healthCheck = h.keyManager.HealthCheck
+	}
+	
+	// Check KMS health before calling handler
+	statusCode := http.StatusOK
+	if healthCheck != nil {
+		if err := healthCheck(r.Context()); err != nil {
+			statusCode = http.StatusServiceUnavailable
+		}
+	}
+	
+	handler := metrics.ReadinessHandler(healthCheck)
 	handler(w, r)
-	h.metrics.RecordHTTPRequest("GET", "/ready", http.StatusOK, time.Since(start), 0)
+	
+	h.metrics.RecordHTTPRequest("GET", "/ready", statusCode, time.Since(start), 0)
 }
 
 // handleLive handles liveness check requests.

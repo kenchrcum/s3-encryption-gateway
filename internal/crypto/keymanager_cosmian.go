@@ -143,20 +143,13 @@ func (m *cosmianKMIPManager) WrapKey(ctx context.Context, plaintext []byte, _ ma
 	defer cancel()
 	active := m.state.opts.Keys[0]
 
-	// Try to verify the key exists before using it (for debugging)
-	_, getErr := m.client.Get(active.ID).ExecContext(ctx)
-	if getErr != nil {
-		// Log but don't fail - the key might still work for Encrypt
-		// This helps diagnose "key not found" issues
-	}
-
 	resp, err := m.client.
 		Encrypt(active.ID).
 		WithCryptographicParameters(m.defaultCryptoParams()).
 		Data(plaintext).
 		ExecContext(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("kms: encrypt failed (key ID: %s, get check: %v): %w", active.ID, getErr, err)
+		return nil, fmt.Errorf("kms: encrypt failed (key ID: %s): %w", active.ID, err)
 	}
 
 	keyID := resp.UniqueIdentifier
@@ -229,6 +222,28 @@ func (m *cosmianKMIPManager) ActiveKeyVersion(_ context.Context) (int, error) {
 		return 0, errors.New("kms: no keys configured")
 	}
 	return m.state.opts.Keys[0].Version, nil
+}
+
+// HealthCheck implements KeyManager.
+func (m *cosmianKMIPManager) HealthCheck(ctx context.Context) error {
+	if m.client == nil {
+		return errors.New("kms: client not initialized")
+	}
+	if len(m.state.opts.Keys) == 0 {
+		return errors.New("kms: no keys configured")
+	}
+
+	ctx, cancel := m.state.withTimeout(ctx)
+	defer cancel()
+
+	// Perform a lightweight Get operation on the first key to verify connectivity
+	// This doesn't perform encryption/decryption, just verifies the KMS is reachable
+	active := m.state.opts.Keys[0]
+	_, err := m.client.Get(active.ID).ExecContext(ctx)
+	if err != nil {
+		return fmt.Errorf("kms: health check failed (key ID: %s): %w", active.ID, err)
+	}
+	return nil
 }
 
 // Close implements KeyManager.

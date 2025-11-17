@@ -7,6 +7,16 @@ import "context"
 //
 // Implementations must never expose plaintext master keys and must ensure that all
 // cryptographic operations happen within the KMS (for example via KMIP, AWS KMS, Vault Transit, etc).
+//
+// Current implementations:
+//   - Cosmian KMIP (v0.5): Fully implemented and tested
+//
+// Planned implementations (v1.0):
+//   - AWS KMS: Deferred due to cloud provider access requirements for testing
+//   - HashiCorp Vault Transit: Deferred due to Enterprise license requirements
+//
+// See docs/KMS_COMPATIBILITY.md for implementation status and docs/issues/v1.0-issues.md
+// for planned implementations.
 type KeyManager interface {
 	// Provider returns a short identifier (e.g. "cosmian-kmip") used for diagnostics and metadata.
 	Provider() string
@@ -20,6 +30,11 @@ type KeyManager interface {
 
 	// ActiveKeyVersion returns the version identifier of the primary wrapping key.
 	ActiveKeyVersion(ctx context.Context) (int, error)
+
+	// HealthCheck verifies that the KMS is accessible and operational.
+	// Returns an error if the KMS is unavailable or unhealthy.
+	// This should be a lightweight operation that doesn't perform actual encryption/decryption.
+	HealthCheck(ctx context.Context) error
 
 	// Close releases any underlying resources.
 	Close(ctx context.Context) error

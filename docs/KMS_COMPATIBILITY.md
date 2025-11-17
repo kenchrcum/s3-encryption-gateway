@@ -16,6 +16,30 @@ The S3 Encryption Gateway supports two key management modes:
    - Multiple key versions for backward compatibility
    - Suitable for enterprise deployments
 
+## Implementation Status
+
+### Currently Supported (v0.5)
+
+- ✅ **Cosmian KMIP**: Fully implemented and tested
+  - Binary and JSON protocol support
+  - Dual-read window for key rotation
+  - Health checks integrated into readiness endpoint
+  - Integration tests with Docker-based Cosmian KMS server
+
+### Planned for v1.0
+
+- 🔜 **AWS KMS**: Planned for v1.0 (see [V1.0-KMS-2](../issues/v1.0-issues.md#v10-kms-2-aws-kms-adapter))
+  - Deferred from v0.5 due to cloud provider access requirements for testing
+  - Will use AWS SDK v2
+  - Support for key aliases, ARNs, and key versioning
+
+- 🔜 **HashiCorp Vault Transit**: Planned for v1.0 (see [V1.0-KMS-3](../issues/v1.0-issues.md#v10-kms-3-hashicorp-vault-transit-adapter))
+  - Deferred from v0.5 due to Enterprise license requirements for Transit engine
+  - Will support multiple authentication methods
+  - Support for key versioning via Vault's key rotation
+
+**Note**: The examples below for AWS KMS and Vault Transit are **conceptual only** and demonstrate the interface pattern. They are not currently implemented and should not be used in production.
+
 ## Key Manager Interface
 
 The gateway uses the `KeyManager` interface from `internal/crypto/keymanager.go`:
@@ -30,7 +54,7 @@ type KeyManager interface {
 }
 ```
 
-> **Testing status:** Cosmian's KMIP server is the only backend exercised in our automated suite for v0.5. AWS KMS and Vault Transit adapters share the same interface but are not yet validated in CI—you should treat them as experimental until we add upstream coverage.
+> **Current Support (v0.5):** Only **Cosmian KMIP** is currently implemented and tested. The `KeyManager` interface is designed to support multiple backends, but AWS KMS and Vault Transit adapters are planned for v1.0. See the [Implementation Status](#implementation-status) section below for details.
 
 The envelope returned by `WrapKey` is persisted alongside object metadata:
 
@@ -129,9 +153,11 @@ Your KMS can:
 - Use passwords provided by administrators
 - Derive passwords from other sources (master keys, etc.)
 
-## Example: AWS KMS Integration
+## Example: AWS KMS Integration (Conceptual - Not Yet Implemented)
 
-Here's a conceptual example of integrating with AWS KMS:
+> **⚠️ This is a conceptual example only.** AWS KMS adapter is planned for v1.0. See [V1.0-KMS-2](../issues/v1.0-issues.md#v10-kms-2-aws-kms-adapter) for implementation details.
+
+Here's a conceptual example of how AWS KMS integration would work:
 
 ```go
 package awskms
@@ -184,7 +210,9 @@ func (k *AWSKMSManager) RotateKey(newPassword string, deactivateOld bool) error 
 }
 ```
 
-## Example: HashiCorp Vault Integration
+## Example: HashiCorp Vault Integration (Conceptual - Not Yet Implemented)
+
+> **⚠️ This is a conceptual example only.** Vault Transit adapter is planned for v1.0. See [V1.0-KMS-3](../issues/v1.0-issues.md#v10-kms-3-hashicorp-vault-transit-adapter) for implementation details.
 
 ```go
 package vaultkms

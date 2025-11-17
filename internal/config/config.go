@@ -60,11 +60,23 @@ type EncryptionConfig struct {
 }
 
 // KeyManagerConfig holds key manager (KMS) configuration.
+//
+// Currently supported providers:
+//   - "cosmian" or "cosmian-kmip": Cosmian KMIP (fully implemented in v0.5)
+//
+// Planned providers (v1.0):
+//   - "aws" or "aws-kms": AWS KMS (see V1.0-KMS-2)
+//   - "vault" or "vault-transit": HashiCorp Vault Transit (see V1.0-KMS-3)
+//
+// See docs/KMS_COMPATIBILITY.md for implementation status.
 type KeyManagerConfig struct {
 	Enabled        bool          `yaml:"enabled" env:"KEY_MANAGER_ENABLED"`
 	Provider       string        `yaml:"provider" env:"KEY_MANAGER_PROVIDER"`
 	DualReadWindow int           `yaml:"dual_read_window" env:"KEY_MANAGER_DUAL_READ_WINDOW"`
 	Cosmian        CosmianConfig `yaml:"cosmian"`
+	// TODO(v1.0): Add AWS and Vault config fields when adapters are implemented
+	// AWS        AWSKMSConfig  `yaml:"aws"`
+	// Vault      VaultConfig   `yaml:"vault"`
 }
 
 // CosmianConfig captures settings for the Cosmian KMIP integration.

@@ -154,6 +154,48 @@ func (m *cosmianKMIPJSONManager) ActiveKeyVersion(_ context.Context) (int, error
 	return m.state.opts.Keys[0].Version, nil
 }
 
+func (m *cosmianKMIPJSONManager) HealthCheck(ctx context.Context) error {
+	if m.client == nil {
+		return errors.New("kms: client not initialized")
+	}
+	if len(m.state.opts.Keys) == 0 {
+		return errors.New("kms: no keys configured")
+	}
+
+	ctx, cancel := m.state.withTimeout(ctx)
+	defer cancel()
+
+	// For JSON protocol, we'll do a lightweight Get operation via HTTP
+	// This verifies connectivity without performing encryption/decryption
+	active := m.state.opts.Keys[0]
+	req := kmipJSONRequestNode{
+		Tag: "Get",
+		Value: []kmipJSONRequestNode{
+			textStringNode("UniqueIdentifier", active.ID),
+		},
+	}
+
+	resp, err := m.doRequest(ctx, req)
+	if err != nil {
+		return fmt.Errorf("kms: health check failed (key ID: %s): %w", active.ID, err)
+	}
+
+	// Verify we got a valid response (not an error)
+	if strings.EqualFold(resp.Tag, "Error") || strings.EqualFold(resp.Tag, "ErrorResponse") {
+		children, _ := resp.children()
+		msgNode := findKMIPChild(children, "Message")
+		msg := "unknown error"
+		if msgNode != nil {
+			if v, err := msgNode.stringValue(); err == nil {
+				msg = v
+			}
+		}
+		return fmt.Errorf("kms: health check failed (key ID: %s): %s", active.ID, msg)
+	}
+
+	return nil
+}
+
 func (m *cosmianKMIPJSONManager) Close(context.Context) error {
 	if tr, ok := m.client.Transport.(*http.Transport); ok {
 		tr.CloseIdleConnections()
