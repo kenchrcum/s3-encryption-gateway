@@ -14,6 +14,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/s3/types"
 
 	"github.com/kenneth/s3-encryption-gateway/internal/config"
+	"github.com/kenneth/s3-encryption-gateway/internal/debug"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
@@ -241,7 +242,7 @@ func (c *s3Client) PutObject(ctx context.Context, bucket, key string, reader io.
 
 	// Debug: log critical encryption metadata values being sent to SDK
 	// Check both full keys (if compaction didn't happen) and compacted keys
-	if len(convertedMeta) > 0 {
+	if debug.Enabled() && len(convertedMeta) > 0 {
 		// Try full keys first, then compacted keys
 		keyMappings := map[string][]string{
 			"salt": {"encryption-key-salt", "s"},
@@ -316,7 +317,7 @@ func (c *s3Client) GetObject(ctx context.Context, bucket, key string, versionID 
 	
 	// Debug: log critical encryption metadata values for troubleshooting
 	// Check both full keys and compacted keys (after expansion)
-	if len(metadata) > 0 {
+	if debug.Enabled() && len(metadata) > 0 {
 		keyMappings := map[string][]string{
 			"salt": {"x-amz-meta-encryption-key-salt", "x-amz-meta-s"},
 			"iv":   {"x-amz-meta-encryption-iv", "x-amz-meta-i"},

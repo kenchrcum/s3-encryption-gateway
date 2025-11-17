@@ -14,6 +14,7 @@ import (
 	"io"
 	"strconv"
 
+	"github.com/kenneth/s3-encryption-gateway/internal/debug"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
@@ -44,6 +45,7 @@ const (
 	MetaWrappedKeyCiphertext    = "x-amz-meta-encryption-wrapped-key"
 	MetaKMSKeyID                = "x-amz-meta-encryption-kms-id"
 	MetaKMSProvider             = "x-amz-meta-encryption-kms-provider"
+	MetaContentType             = "x-amz-meta-encryption-content-type"
 
 	// Fallback metadata storage keys
 	MetaFallbackMode    = "x-amz-meta-encryption-fallback"
@@ -401,16 +403,22 @@ func (e *engine) Encrypt(reader io.Reader, metadata map[string]string) (io.Reade
 	}
 
 	// Build AAD to bind critical metadata
-	aad := buildAAD(algorithm, salt, nonce, map[string]string{
+	aadMeta := map[string]string{
 		"Content-Type":   contentType,
 		MetaKeyVersion:   metadata[MetaKeyVersion],
 		MetaOriginalSize: fmt.Sprintf("%d", originalSize),
-	})
+	}
+	aad := buildAAD(algorithm, salt, nonce, aadMeta)
+	// Debug: log AAD for troubleshooting
+	if debug.Enabled() {
+		fmt.Printf("DEBUG Encrypt AAD: algorithm=%s, salt=%x, iv=%x, contentType=%s, keyVersion=%s, originalSize=%s, aad=%x\n",
+			algorithm, salt, nonce, contentType, aadMeta[MetaKeyVersion], aadMeta[MetaOriginalSize], aad)
+	}
 	// Encrypt the data using AEAD with AAD
 	ciphertext := gcm.Seal(nil, nonce, dataToEncrypt, aad)
 	
 	// Debug: log encryption info for troubleshooting
-	if len(ciphertext) > 0 {
+	if debug.Enabled() && len(ciphertext) > 0 {
 		preview := ""
 		if len(ciphertext) <= 32 {
 			preview = fmt.Sprintf("%x", ciphertext)
@@ -457,6 +465,10 @@ func (e *engine) Encrypt(reader io.Reader, metadata map[string]string) (io.Reade
 	encMetadata[MetaIV] = encodeBase64(nonce)
 	encMetadata[MetaOriginalSize] = fmt.Sprintf("%d", originalSize)
 	encMetadata[MetaOriginalETag] = originalETag
+	// Store Content-Type in encryption metadata so it survives S3 round-trip
+	if contentType != "" {
+		encMetadata[MetaContentType] = contentType
+	}
 	if envelope != nil {
 		encMetadata[MetaKeyVersion] = fmt.Sprintf("%d", envelope.KeyVersion)
 		if envelope.KeyID != "" {
@@ -612,27 +624,41 @@ func (e *engine) Decrypt(reader io.Reader, metadata map[string]string) (io.Reade
 		return nil, nil, fmt.Errorf("failed to read encrypted data: %w", err)
 	}
 	// Debug: log decryption parameters
-	saltB64 := expandedMetadata[MetaKeySalt]
-	ivB64 := expandedMetadata[MetaIV]
-	if saltB64 != "" && ivB64 != "" {
-		saltPreview := saltB64
-		if len(saltPreview) > 20 {
-			saltPreview = saltPreview[:20]
+	if debug.Enabled() {
+		saltB64 := expandedMetadata[MetaKeySalt]
+		ivB64 := expandedMetadata[MetaIV]
+		if saltB64 != "" && ivB64 != "" {
+			saltPreview := saltB64
+			if len(saltPreview) > 20 {
+				saltPreview = saltPreview[:20]
+			}
+			ivPreview := ivB64
+			if len(ivPreview) > 20 {
+				ivPreview = ivPreview[:20]
+			}
+			fmt.Printf("DEBUG Decrypt: ciphertext len=%d, salt=%s..., iv=%s..., algorithm=%s\n", 
+				len(ciphertext), saltPreview, ivPreview, algorithm)
 		}
-		ivPreview := ivB64
-		if len(ivPreview) > 20 {
-			ivPreview = ivPreview[:20]
-		}
-		fmt.Printf("DEBUG Decrypt: ciphertext len=%d, salt=%s..., iv=%s..., algorithm=%s\n", 
-			len(ciphertext), saltPreview, ivPreview, algorithm)
 	}
 
 	// Build AAD from expanded metadata
-	aad := buildAAD(algorithm, salt, iv, map[string]string{
+	// Use Content-Type from encryption metadata (MetaContentType) if available,
+	// otherwise fall back to Content-Type from S3 response
+	contentType := expandedMetadata[MetaContentType]
+	if contentType == "" {
+		contentType = expandedMetadata["Content-Type"]
+	}
+	aadMeta := map[string]string{
 		MetaKeyVersion:   expandedMetadata[MetaKeyVersion],
 		MetaOriginalSize: expandedMetadata[MetaOriginalSize],
-		"Content-Type":   expandedMetadata["Content-Type"],
-	})
+		"Content-Type":   contentType,
+	}
+	aad := buildAAD(algorithm, salt, iv, aadMeta)
+	// Debug: log AAD for troubleshooting
+	if debug.Enabled() {
+		fmt.Printf("DEBUG Decrypt AAD: algorithm=%s, salt=%x, iv=%x, contentType=%s, keyVersion=%s, originalSize=%s, aad=%x\n",
+			algorithm, salt, iv, aadMeta["Content-Type"], aadMeta[MetaKeyVersion], aadMeta[MetaOriginalSize], aad)
+	}
 
 	// Attempt decrypt with current key and AAD
 	plaintext, openErr := gcm.Open(nil, iv, ciphertext, aad)
@@ -1521,7 +1547,12 @@ func (e *engine) decryptWithMetadataFallback(reader io.Reader, metadata map[stri
 	}
 
 	// Build AAD from available metadata
-	contentType := metadata["Content-Type"]
+	// Use Content-Type from encryption metadata (MetaContentType) if available,
+	// otherwise fall back to Content-Type from S3 response
+	contentType := metadata[MetaContentType]
+	if contentType == "" {
+		contentType = metadata["Content-Type"]
+	}
 	originalSize := metadata[MetaOriginalSize]
 	aad := buildAAD(algorithm, salt, iv, map[string]string{
 		"Content-Type":   contentType,
@@ -1623,6 +1654,7 @@ func isEncryptionMetadata(key string) bool {
 		key == MetaAuthTag ||
 		key == MetaOriginalSize ||
 		key == MetaOriginalETag ||
+		key == MetaContentType ||
 		key == MetaChunkedFormat ||
 		key == MetaChunkSize ||
 		key == MetaChunkCount ||

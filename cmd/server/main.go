@@ -18,6 +18,7 @@ import (
 	"github.com/kenneth/s3-encryption-gateway/internal/cache"
 	"github.com/kenneth/s3-encryption-gateway/internal/config"
 	"github.com/kenneth/s3-encryption-gateway/internal/crypto"
+	"github.com/kenneth/s3-encryption-gateway/internal/debug"
 	"github.com/kenneth/s3-encryption-gateway/internal/metrics"
 	"github.com/kenneth/s3-encryption-gateway/internal/middleware"
 	"github.com/kenneth/s3-encryption-gateway/internal/s3"
@@ -70,6 +71,7 @@ func (a *ConfigChangeApplier) ApplyConfigChanges(oldConfig, newConfig *config.Co
 			a.logger.WithError(err).Warn("Invalid log level in reloaded config, keeping current level")
 		} else {
 			a.logger.SetLevel(level)
+			debug.InitFromLogLevel(newConfig.LogLevel)
 			changes = append(changes, fmt.Sprintf("log_level: %s -> %s", oldConfig.LogLevel, newConfig.LogLevel))
 		}
 	}
@@ -387,6 +389,9 @@ func main() {
 		level = logrus.InfoLevel
 	}
 	logger.SetLevel(level)
+	
+	// Initialize debug logging based on log level
+	debug.InitFromLogLevel(cfg.LogLevel)
 
 	logger.WithFields(logrus.Fields{
 		"version": version,
