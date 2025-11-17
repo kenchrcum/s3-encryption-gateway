@@ -127,6 +127,81 @@ config:
 | `config.encryption.preferredAlgorithm` | Preferred algorithm (AES256-GCM, ChaCha20-Poly1305) | `"AES256-GCM"` |
 | `config.encryption.supportedAlgorithms` | Comma-separated list of supported algorithms | `"AES256-GCM,ChaCha20-Poly1305"` |
 | `config.encryption.keyManager.enabled` | Enable key manager/KMS mode | `"false"` |
+| `config.encryption.keyManager.provider` | KMS provider: "cosmian" (supported), "aws", "vault" (planned) | `"cosmian"` |
+| `config.encryption.keyManager.dualReadWindow` | Number of previous key versions to try during rotation | `"1"` |
+| `config.encryption.keyManager.cosmian.endpoint` | Cosmian KMIP endpoint (JSON/HTTP recommended: `http://host:port/kmip/2_1` or binary: `host:port`) | `""` |
+| `config.encryption.keyManager.cosmian.timeout` | KMS operation timeout | `"10s"` |
+| `config.encryption.keyManager.cosmian.keys` | Comma-separated keys (format: "key1:1,key2:2") | `""` |
+| `config.encryption.keyManager.cosmian.caCert` | CA certificate path for TLS (use valueFrom) | `""` |
+| `config.encryption.keyManager.cosmian.clientCert` | Client certificate path for TLS (use valueFrom) | `""` |
+| `config.encryption.keyManager.cosmian.clientKey` | Client key path for TLS (use valueFrom) | `""` |
+| `config.encryption.keyManager.cosmian.insecureSkipVerify` | Skip TLS verification (testing only) | `"false"` |
+
+**Key Manager (KMS) Configuration**: When `config.encryption.keyManager.enabled` is set to `"true"`, the gateway uses external KMS for envelope encryption. Currently, only **Cosmian KMIP** is fully supported.
+
+**Protocol Selection**:
+- **JSON/HTTP (Recommended)**: 
+  - Full URL format (recommended): `http://host:9998/kmip/2_1`
+  - Base URL format (also works): `http://host:9998` (path `/kmip/2_1` is automatically appended)
+  - Fully tested and verified in CI
+- **Binary KMIP (Advanced)**: Use `host:5696` format - requires proper TLS certificates (not fully tested in CI)
+
+See the [KMS Compatibility Guide](../../docs/KMS_COMPATIBILITY.md) for details.
+
+**Example KMS Configuration**:
+
+```yaml
+config:
+  encryption:
+    password:
+      valueFrom:
+        secretKeyRef:
+          name: s3-encryption-gateway-secrets
+          key: encryption-password
+    keyManager:
+      enabled:
+        value: "true"
+      provider:
+        value: "cosmian"
+      dualReadWindow:
+        value: "1"
+      cosmian:
+        endpoint:
+          # RECOMMENDED: JSON/HTTP endpoint (tested and verified)
+          # Full URL format (recommended for clarity):
+          value: "http://cosmian-kms:9998/kmip/2_1"
+          # Base URL format (also works - path /kmip/2_1 is auto-appended):
+          # value: "http://cosmian-kms:9998"
+          # ADVANCED: Binary KMIP (requires TLS certificates: caCert, clientCert, clientKey)
+          # value: "cosmian-kms:5696"
+        timeout:
+          value: "10s"
+        keys:
+          # Format: "key1:version1,key2:version2" (comma-separated)
+          # Example: "wrapping-key-1:1" or "wrapping-key-1:1,wrapping-key-2:2" for rotation
+          value: "wrapping-key-1:1"
+        # TLS configuration
+        # - For HTTP (testing): Not required
+        # - For HTTPS (production): caCert recommended for server verification
+        # - For binary KMIP: caCert, clientCert, clientKey all required (mutual TLS)
+        caCert:
+          valueFrom:
+            secretKeyRef:
+              name: cosmian-kms-certs
+              key: ca-cert
+        clientCert:
+          valueFrom:
+            secretKeyRef:
+              name: cosmian-kms-certs
+              key: client-cert
+        clientKey:
+          valueFrom:
+            secretKeyRef:
+              name: cosmian-kms-certs
+              key: client-key
+        insecureSkipVerify:
+          value: "false"
+```
 
 #### Compression Configuration
 
@@ -426,6 +501,105 @@ kubectl create secret generic s3-encryption-gateway-secrets \
 helm install my-gateway s3-encryption-gateway/s3-encryption-gateway \
   --namespace default
 ```
+
+### KMS Mode with Cosmian KMIP
+
+Deploy the gateway with external KMS (Cosmian KMIP) for envelope encryption and key rotation:
+
+```bash
+# Create secrets for backend and encryption password
+kubectl create secret generic s3-encryption-gateway-secrets \
+  --from-literal=backend-access-key='YOUR_ACCESS_KEY' \
+  --from-literal=backend-secret-key='YOUR_SECRET_KEY' \
+  --from-literal=encryption-password='fallback-password-123456' \
+  --from-literal=cosmian-kms-endpoint='cosmian-kms:5696' \
+  --from-literal=cosmian-kms-keys='wrapping-key-1:1'
+
+# If using TLS, also create certificate secrets
+kubectl create secret generic cosmian-kms-certs \
+  --from-file=ca-cert=/path/to/ca.pem \
+  --from-file=client-cert=/path/to/client.crt \
+  --from-file=client-key=/path/to/client.key
+```
+
+Deploy with KMS enabled:
+
+```yaml
+config:
+  backend:
+    endpoint:
+      value: "https://s3.amazonaws.com"
+    region:
+      value: "us-east-1"
+    accessKey:
+      valueFrom:
+        secretKeyRef:
+          name: s3-encryption-gateway-secrets
+          key: backend-access-key
+    secretKey:
+      valueFrom:
+        secretKeyRef:
+          name: s3-encryption-gateway-secrets
+          key: backend-secret-key
+  encryption:
+    password:
+      valueFrom:
+        secretKeyRef:
+          name: s3-encryption-gateway-secrets
+          key: encryption-password
+    keyManager:
+      enabled:
+        value: "true"
+      provider:
+        value: "cosmian"
+      dualReadWindow:
+        value: "1"
+      cosmian:
+        endpoint:
+          valueFrom:
+            secretKeyRef:
+              name: s3-encryption-gateway-secrets
+              key: cosmian-kms-endpoint
+        timeout:
+          value: "10s"
+        keys:
+          valueFrom:
+            secretKeyRef:
+              name: s3-encryption-gateway-secrets
+              key: cosmian-kms-keys
+        # TLS configuration (optional, for production)
+        caCert:
+          valueFrom:
+            secretKeyRef:
+              name: cosmian-kms-certs
+              key: ca-cert
+        clientCert:
+          valueFrom:
+            secretKeyRef:
+              name: cosmian-kms-certs
+              key: client-cert
+        clientKey:
+          valueFrom:
+            secretKeyRef:
+              name: cosmian-kms-certs
+              key: client-key
+        insecureSkipVerify:
+          value: "false"
+```
+
+**Notes:**
+- The `encryption.password` is still required as a fallback for objects encrypted before KMS was enabled
+- The `cosmian-kms-keys` format is: `"key1:version1,key2:version2"` (comma-separated)
+- **JSON/HTTP endpoint (recommended)**: 
+  - Full URL format (recommended): `http://cosmian-kms:9998/kmip/2_1`
+  - Base URL format (also works): `http://cosmian-kms:9998` (path `/kmip/2_1` is automatically appended)
+  - Fully tested and verified in CI
+  - No TLS client certificates required for HTTP
+  - TLS `caCert` recommended for HTTPS in production
+- **Binary KMIP endpoint (advanced)**: Use `host:port` format (e.g., `cosmian-kms:5696`)
+  - Requires proper TLS configuration: `caCert`, `clientCert`, `clientKey` (mutual TLS)
+  - Not fully tested in CI - use with caution
+- Health checks automatically verify KMS connectivity via the `/ready` endpoint
 
 ### Single Bucket Proxy Mode
 

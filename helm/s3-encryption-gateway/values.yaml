@@ -178,6 +178,73 @@ config:
         #   configMapKeyRef:
         #     name: s3-encryption-gateway-config
         #     key: key-manager-enabled
+      provider:
+        value: "cosmian"
+        # valueFrom:
+        #   configMapKeyRef:
+        #     name: s3-encryption-gateway-config
+        #     key: key-manager-provider
+      dualReadWindow:
+        value: "1"
+        # valueFrom:
+        #   configMapKeyRef:
+        #     name: s3-encryption-gateway-config
+        #     key: key-manager-dual-read-window
+      cosmian:
+        endpoint:
+          # RECOMMENDED: JSON/HTTP endpoint (tested and verified in CI)
+          # Full URL format (recommended): "http://host:9998/kmip/2_1" or "https://host:9998/kmip/2_1"
+          # Base URL format (also works): "http://host:9998" (path /kmip/2_1 is auto-appended)
+          # ADVANCED: Binary KMIP endpoint (requires TLS certificates)
+          # Format: "host:5696" - requires caCert, clientCert, clientKey
+          value: ""
+          # valueFrom:
+          #   secretKeyRef:
+          #     name: s3-encryption-gateway-secrets
+          #     key: cosmian-kms-endpoint
+        timeout:
+          value: "10s"
+          # valueFrom:
+          #   configMapKeyRef:
+          #     name: s3-encryption-gateway-config
+          #     key: cosmian-kms-timeout
+        keys:
+          # Keys can be specified via environment variable (comma-separated: "key1:1,key2:2")
+          # Format: "key1:version1,key2:version2"
+          # Example: "wrapping-key-1:1" or "wrapping-key-1:1,wrapping-key-2:2" for rotation
+          value: ""
+          # valueFrom:
+          #   secretKeyRef:
+          #     name: s3-encryption-gateway-secrets
+          #     key: cosmian-kms-keys
+        caCert:
+          # TLS CA certificate (recommended for HTTPS, required for binary KMIP)
+          value: ""
+          # valueFrom:
+          #   secretKeyRef:
+          #     name: s3-encryption-gateway-secrets
+          #     key: cosmian-kms-ca-cert
+        clientCert:
+          # TLS client certificate (required for binary KMIP mutual TLS)
+          value: ""
+          # valueFrom:
+          #   secretKeyRef:
+          #     name: s3-encryption-gateway-secrets
+          #     key: cosmian-kms-client-cert
+        clientKey:
+          # TLS client key (required for binary KMIP mutual TLS)
+          value: ""
+          # valueFrom:
+          #   secretKeyRef:
+          #     name: s3-encryption-gateway-secrets
+          #     key: cosmian-kms-client-key
+        insecureSkipVerify:
+          # Skip TLS verification (testing only - not recommended for production)
+          value: "false"
+          # valueFrom:
+          #   configMapKeyRef:
+          #     name: s3-encryption-gateway-config
+          #     key: cosmian-kms-insecure-skip-verify
 
   # Compression configuration
   compression:

@@ -86,6 +86,29 @@ spec:
         {{- include "s3-encryption-gateway.envVar" (dict "name" "ENCRYPTION_SUPPORTED_ALGORITHMS" "value" .Values.config.encryption.supportedAlgorithms.value "valueFrom" .Values.config.encryption.supportedAlgorithms.valueFrom) | nindent 8 }}
         {{- end }}
         {{- include "s3-encryption-gateway.envVar" (dict "name" "KEY_MANAGER_ENABLED" "value" .Values.config.encryption.keyManager.enabled.value "valueFrom" .Values.config.encryption.keyManager.enabled.valueFrom) | nindent 8 }}
+        {{- if or (eq .Values.config.encryption.keyManager.enabled.value "true") (eq .Values.config.encryption.keyManager.enabled.value "1") }}
+        {{- include "s3-encryption-gateway.envVar" (dict "name" "KEY_MANAGER_PROVIDER" "value" .Values.config.encryption.keyManager.provider.value "valueFrom" .Values.config.encryption.keyManager.provider.valueFrom) | nindent 8 }}
+        {{- include "s3-encryption-gateway.envVar" (dict "name" "KEY_MANAGER_DUAL_READ_WINDOW" "value" .Values.config.encryption.keyManager.dualReadWindow.value "valueFrom" .Values.config.encryption.keyManager.dualReadWindow.valueFrom) | nindent 8 }}
+        {{- if or .Values.config.encryption.keyManager.cosmian.endpoint.value .Values.config.encryption.keyManager.cosmian.endpoint.valueFrom }}
+        {{- include "s3-encryption-gateway.envVar" (dict "name" "COSMIAN_KMS_ENDPOINT" "value" .Values.config.encryption.keyManager.cosmian.endpoint.value "valueFrom" .Values.config.encryption.keyManager.cosmian.endpoint.valueFrom) | nindent 8 }}
+        {{- end }}
+        {{- if or .Values.config.encryption.keyManager.cosmian.timeout.value .Values.config.encryption.keyManager.cosmian.timeout.valueFrom }}
+        {{- include "s3-encryption-gateway.envVar" (dict "name" "COSMIAN_KMS_TIMEOUT" "value" .Values.config.encryption.keyManager.cosmian.timeout.value "valueFrom" .Values.config.encryption.keyManager.cosmian.timeout.valueFrom) | nindent 8 }}
+        {{- end }}
+        {{- if or .Values.config.encryption.keyManager.cosmian.keys.value .Values.config.encryption.keyManager.cosmian.keys.valueFrom }}
+        {{- include "s3-encryption-gateway.envVar" (dict "name" "COSMIAN_KMS_KEYS" "value" .Values.config.encryption.keyManager.cosmian.keys.value "valueFrom" .Values.config.encryption.keyManager.cosmian.keys.valueFrom) | nindent 8 }}
+        {{- end }}
+        {{- if or .Values.config.encryption.keyManager.cosmian.caCert.value .Values.config.encryption.keyManager.cosmian.caCert.valueFrom }}
+        {{- include "s3-encryption-gateway.envVar" (dict "name" "COSMIAN_KMS_CA_CERT" "value" .Values.config.encryption.keyManager.cosmian.caCert.value "valueFrom" .Values.config.encryption.keyManager.cosmian.caCert.valueFrom) | nindent 8 }}
+        {{- end }}
+        {{- if or .Values.config.encryption.keyManager.cosmian.clientCert.value .Values.config.encryption.keyManager.cosmian.clientCert.valueFrom }}
+        {{- include "s3-encryption-gateway.envVar" (dict "name" "COSMIAN_KMS_CLIENT_CERT" "value" .Values.config.encryption.keyManager.cosmian.clientCert.value "valueFrom" .Values.config.encryption.keyManager.cosmian.clientCert.valueFrom) | nindent 8 }}
+        {{- end }}
+        {{- if or .Values.config.encryption.keyManager.cosmian.clientKey.value .Values.config.encryption.keyManager.cosmian.clientKey.valueFrom }}
+        {{- include "s3-encryption-gateway.envVar" (dict "name" "COSMIAN_KMS_CLIENT_KEY" "value" .Values.config.encryption.keyManager.cosmian.clientKey.value "valueFrom" .Values.config.encryption.keyManager.cosmian.clientKey.valueFrom) | nindent 8 }}
+        {{- end }}
+        {{- include "s3-encryption-gateway.envVar" (dict "name" "COSMIAN_KMS_INSECURE_SKIP_VERIFY" "value" .Values.config.encryption.keyManager.cosmian.insecureSkipVerify.value "valueFrom" .Values.config.encryption.keyManager.cosmian.insecureSkipVerify.valueFrom) | nindent 8 }}
+        {{- end }}
         {{- include "s3-encryption-gateway.envVar" (dict "name" "COMPRESSION_ENABLED" "value" .Values.config.compression.enabled.value "valueFrom" .Values.config.compression.enabled.valueFrom) | nindent 8 }}
         {{- if .Values.config.compression.enabled.value }}
         {{- include "s3-encryption-gateway.envVar" (dict "name" "COMPRESSION_MIN_SIZE" "value" .Values.config.compression.minSize.value "valueFrom" .Values.config.compression.minSize.valueFrom) | nindent 8 }}
