@@ -133,7 +133,7 @@ S3-compatible backend storage configuration.
 | `use_ssl` | bool | `true` | `BACKEND_USE_SSL` | Use HTTPS for backend connections |
 | `use_path_style` | bool | `false` | `BACKEND_USE_PATH_STYLE` | Use path-style URLs instead of virtual-hosted style |
 | `filter_metadata_keys` | []string | - | `BACKEND_FILTER_METADATA_KEYS` | Comma-separated list of metadata keys to filter out |
-| `use_client_credentials` | bool | `false` | `BACKEND_USE_CLIENT_CREDENTIALS` | Extract and use credentials from client requests |
+| `use_client_credentials` | bool | `false` | `BACKEND_USE_CLIENT_CREDENTIALS` | Extract and use credentials from client requests. **Note**: Only query parameter authentication (`?AWSAccessKeyId=...&AWSSecretAccessKey=...`) is supported. AWS Signature V4 (Authorization header) is NOT supported when this is enabled. |
 
 **Provider Examples:**
 
@@ -222,7 +222,7 @@ Optional compression before encryption.
 | `enabled` | bool | `false` | `COMPRESSION_ENABLED` | Enable compression before encryption |
 | `min_size` | int64 | `1024` | `COMPRESSION_MIN_SIZE` | Minimum object size for compression (bytes) |
 | `content_types` | []string | `[text/plain, application/json, application/xml]` | `COMPRESSION_CONTENT_TYPES` | Content types to compress |
-| `algorithm` | string | `gzip` | `COMPRESSION_ALGORITHM` | Compression algorithm (gzip, deflate) |
+| `algorithm` | string | `gzip` | `COMPRESSION_ALGORITHM` | Compression algorithm (gzip only) |
 | `level` | int | `6` | `COMPRESSION_LEVEL` | Compression level (1-9, gzip-specific) |
 
 ```yaml

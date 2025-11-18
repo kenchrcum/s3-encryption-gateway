@@ -113,15 +113,18 @@ type S3Response struct {
 ## Authentication and Authorization
 
 ### Strategy
-- **Transparent pass-through**: Forward original authentication headers
+- **Default mode**: Gateway uses its own configured backend credentials for all requests
+- **Client credentials mode** (`use_client_credentials: true`): Gateway extracts credentials from client requests
+  - **Supported**: Query parameter authentication (`?AWSAccessKeyId=...&AWSSecretAccessKey=...`)
+  - **NOT supported**: AWS Signature V4 (Authorization header) - signature includes Host header which prevents forwarding
 - **No additional auth**: Gateway trusts client authentication
-- **Backend credentials**: Gateway uses its own credentials for backend access
 - **Future enhancement**: Support for gateway-specific authentication
 
 ### Implementation
 ```go
-// Forward Authorization header as-is
-// Use configured backend credentials for S3 client
+// Default mode: Use configured backend credentials for S3 client
+// Client credentials mode: Extract credentials from request query parameters
+// Note: Signature V4 (Authorization header) is not supported in client credentials mode
 backendClient := s3.New(session.Must(session.NewSession(&aws.Config{
     Credentials: credentials.NewStaticCredentials(accessKey, secretKey, ""),
 })))

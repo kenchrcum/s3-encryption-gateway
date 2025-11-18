@@ -151,7 +151,7 @@ data:
 - **LOG_LEVEL**: Logging verbosity (debug, info, warn, error)
 - **COMPRESSION_ENABLED**: Enable/disable compression (default: false)
 - **COMPRESSION_MIN_SIZE**: Minimum object size to compress in bytes (default: 1024)
-- **COMPRESSION_ALGORITHM**: Compression algorithm (gzip, zstd, default: gzip)
+- **COMPRESSION_ALGORITHM**: Compression algorithm (gzip only, default: gzip)
 - **COMPRESSION_LEVEL**: Compression level 1-9 (default: 6)
 - **COMPRESSION_CONTENT_TYPES**: Comma-separated list of compressible content types/prefixes
 

@@ -112,9 +112,10 @@ config:
 | `config.backend.usePathStyle` | Use path-style bucket addressing | `"false"` |
 | `config.backend.useClientCredentials` | Use credentials from client requests | `"false"` |
 
-**Note on `useClientCredentials`**: When set to `"true"`, the gateway extracts credentials from client requests (query parameters or Authorization header) instead of using configured backend credentials. In this mode:
+**Note on `useClientCredentials`**: When set to `"true"`, the gateway extracts credentials from client requests instead of using configured backend credentials. In this mode:
 - `config.backend.accessKey` and `config.backend.secretKey` are **NOT required** and will be excluded from the deployment
-- Clients must provide credentials in every request
+- Clients must provide credentials in every request via **query parameters only** (`?AWSAccessKeyId=...&AWSSecretAccessKey=...`)
+- **AWS Signature V4 (Authorization header) is NOT supported** - the signature includes the Host header, which prevents forwarding requests to the backend
 - Requests without valid credentials will fail with `AccessDenied`
 - Useful for providers like Hetzner that don't support per-bucket access keys
 
@@ -656,9 +657,10 @@ config:
           key: encryption-password
 ```
 
-In this mode, clients must include credentials in requests:
+In this mode, clients must include credentials in requests via **query parameters only**:
 - Query parameters: `?AWSAccessKeyId=...&AWSSecretAccessKey=...`
-- Or via Authorization header (Signature V4)
+
+**Important**: AWS Signature V4 (Authorization header) is **NOT supported** when `useClientCredentials` is enabled. The signature includes the Host header, which prevents forwarding requests to the backend because the signature was created for the gateway's hostname, not the backend's.
 
 Requests without valid credentials will be rejected with `AccessDenied`.
 
