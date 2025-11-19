@@ -7,6 +7,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"runtime"
+	"sync"
 )
 
 const (
@@ -54,6 +56,23 @@ type chunkedEncryptReader struct {
 	closed       bool
 	err          error
 	ctx          context.Context // Context for cancellation
+
+	// Parallel processing
+	parallel   bool
+	pending    chan *cryptoJob // Channel of jobs in order
+	workerPool chan struct{}   // Semaphore for concurrency control
+	startOnce  sync.Once       // Ensure pipeline starts only once (on first Read)
+	
+	// Buffer management for recycling
+	recycleBuf []byte
+}
+
+type cryptoJob struct {
+	index  int
+	input  []byte
+	output []byte
+	err    error
+	done   chan struct{}
 }
 
 // newChunkedEncryptReader creates a new chunked encryption reader.
@@ -89,6 +108,7 @@ func newChunkedEncryptReaderWithContext(ctx context.Context, source io.Reader, a
 		manifest:     manifest,
 		bufferPool:   bufferPool,
 		ctx:          ctx,
+		parallel:     true,
 	}, manifest
 }
 
@@ -121,6 +141,9 @@ func (r *chunkedEncryptReader) Read(p []byte) (int, error) {
 		return 0, r.err
 	}
 
+	// Ensure pipeline is started
+	r.startOnce.Do(r.startPipeline)
+
 	// Check for context cancellation
 	select {
 	case <-r.ctx.Done():
@@ -148,68 +171,170 @@ func (r *chunkedEncryptReader) Read(p []byte) (int, error) {
 			n := copy(p[totalRead:], r.currentChunk)
 			r.currentChunk = r.currentChunk[n:]
 			totalRead += n
-			continue
-		}
-
-		// Read next chunk from source
-		n, err := io.ReadFull(r.source, r.buffer)
-		if err == io.EOF {
-			// No more data from source
-			if n == 0 {
-				// Nothing left to encrypt
-				if totalRead > 0 {
-					return totalRead, nil
+			
+			// If current chunk is fully consumed, recycle buffer
+			if len(r.currentChunk) == 0 && r.recycleBuf != nil {
+				if r.bufferPool != nil {
+					r.bufferPool.Put(r.recycleBuf)
 				}
-				r.closed = true
-				return 0, io.EOF
-			}
-			// Partial chunk at end - still encrypt it
-			r.encryptChunk(r.buffer[:n])
-			if r.err != nil {
-				return totalRead, r.err
+				r.recycleBuf = nil
 			}
 			continue
-		}
-		if err == io.ErrUnexpectedEOF {
-			// Partial read - encrypt what we got
-			r.encryptChunk(r.buffer[:n])
-			if r.err != nil {
-				return totalRead, r.err
-			}
-			continue
-		}
-		if err != nil {
-			r.err = err
-			return totalRead, err
 		}
 
-		// Encrypt the chunk
-		r.encryptChunk(r.buffer[:n])
-		if r.err != nil {
+		// Get next job from pipeline
+		job, ok := <-r.pending
+		if !ok {
+			// Pipeline closed (EOF from source)
+			if totalRead > 0 {
+				return totalRead, nil
+			}
+			r.closed = true
+			return 0, io.EOF
+		}
+
+		// Wait for job to complete
+		select {
+		case <-job.done:
+		case <-r.ctx.Done():
+			r.err = r.ctx.Err()
 			return totalRead, r.err
+		}
+
+		// Check job error
+		if job.err != nil {
+			r.err = job.err
+			return totalRead, r.err
+		}
+
+		// Process successful job
+		r.currentChunk = job.output
+		r.manifest.ChunkCount++
+		
+		// Keep reference to original buffer for recycling
+		// We only recycle if it came from pool (which we assume for now if pool exists)
+		if r.bufferPool != nil {
+			r.recycleBuf = job.output
 		}
 	}
 
 	return totalRead, nil
 }
 
-// encryptChunk encrypts a single chunk of plaintext.
-func (r *chunkedEncryptReader) encryptChunk(plaintext []byte) {
+func (r *chunkedEncryptReader) startPipeline() {
+	concurrency := runtime.NumCPU()
+	if concurrency < 2 {
+		concurrency = 2
+	}
+	// Create buffered channel to hold pending jobs in order
+	// Buffer size allows reading ahead while workers process
+	r.pending = make(chan *cryptoJob, concurrency*2)
+	r.workerPool = make(chan struct{}, concurrency)
+
+	go r.feeder()
+}
+
+func (r *chunkedEncryptReader) feeder() {
+	defer close(r.pending)
+
+	chunkIdx := 0
+
+	for {
+		// Check context
+		select {
+		case <-r.ctx.Done():
+			return
+		default:
+		}
+
+		// Allocate buffer
+		var buf []byte
+		if r.bufferPool != nil {
+			buf = r.bufferPool.Get(r.chunkSize)
+		} else {
+			buf = make([]byte, r.chunkSize)
+		}
+
+		// Read chunk
+		n, err := io.ReadFull(r.source, buf)
+		
+		// Handle read result
+		if n > 0 {
+			job := &cryptoJob{
+				index: chunkIdx,
+				input: buf[:n], // Slice to actual size
+				done:  make(chan struct{}),
+			}
+			chunkIdx++
+
+			// Send to pending queue (blocks if full, providing backpressure)
+			select {
+			case r.pending <- job:
+			case <-r.ctx.Done():
+				return
+			}
+
+			// Acquire worker (blocks if max concurrency reached)
+			select {
+			case r.workerPool <- struct{}{}:
+			case <-r.ctx.Done():
+				return
+			}
+
+			// Dispatch worker
+			go func(j *cryptoJob, buffer []byte) {
+				defer func() { <-r.workerPool }()
+				defer close(j.done)
+
+				// Reuse bufferPool for output to avoid allocation in Seal
+				var outBuf []byte
+				if r.bufferPool != nil {
+					// We need chunk size + tag size
+					// Seal appends, so we need capacity but length 0
+					reqSize := len(j.input) + tagSize
+					outBuf = r.bufferPool.Get(reqSize)
+					outBuf = outBuf[:0]
+				}
+				
+				j.output = r.encryptChunkParallel(j.index, j.input, outBuf)
+				
+				if r.bufferPool != nil {
+					r.bufferPool.Put(buffer)
+				}
+			}(job, buf)
+		}
+
+		if err != nil {
+			if err != io.EOF && err != io.ErrUnexpectedEOF {
+				// Report error via a job
+				job := &cryptoJob{
+					err:  err,
+					done: make(chan struct{}),
+				}
+				close(job.done)
+				select {
+				case r.pending <- job:
+				case <-r.ctx.Done():
+				}
+			}
+			return
+		}
+	}
+}
+
+// encryptChunkParallel encrypts a single chunk of plaintext.
+// It is safe for concurrent use.
+func (r *chunkedEncryptReader) encryptChunkParallel(index int, plaintext, outBuf []byte) []byte {
 	if len(plaintext) == 0 {
-		return
+		return nil
 	}
 
 	// Derive IV for this chunk
-	chunkIV := r.deriveChunkIV(r.chunkIndex)
+	chunkIV := r.deriveChunkIV(index)
 
 	// Encrypt the chunk
-	ciphertext := r.aead.Seal(nil, chunkIV, plaintext, nil)
-
-	// Store encrypted chunk for Read() to return
-	r.currentChunk = append(r.currentChunk, ciphertext...)
-
-	r.chunkIndex++
-	r.manifest.ChunkCount++
+	// Seal appends to dst. Use outBuf if provided.
+	return r.aead.Seal(outBuf, chunkIV, plaintext, nil)
 }
 
 // Close finalizes the encryption and returns the manifest.
@@ -233,6 +358,15 @@ type chunkedDecryptReader struct {
 	closed       bool
 	err          error
 	ctx          context.Context // Context for cancellation
+
+	// Parallel processing
+	parallel   bool
+	pending    chan *cryptoJob
+	workerPool chan struct{}
+	startOnce  sync.Once
+	
+	// Buffer management for recycling
+	recycleBuf []byte
 }
 
 // newChunkedDecryptReader creates a new chunked decryption reader.
@@ -258,6 +392,7 @@ func newChunkedDecryptReaderWithContext(ctx context.Context, source io.Reader, a
 		chunkIndex:   0,
 		bufferPool:   bufferPool,
 		ctx:          ctx,
+		parallel:     true,
 	}, nil
 }
 
@@ -284,6 +419,8 @@ func (r *chunkedDecryptReader) Read(p []byte) (int, error) {
 	if r.err != nil {
 		return 0, r.err
 	}
+
+	r.startOnce.Do(r.startPipeline)
 
 	// Check for context cancellation
 	select {
@@ -312,78 +449,162 @@ func (r *chunkedDecryptReader) Read(p []byte) (int, error) {
 			n := copy(p[totalRead:], r.currentChunk)
 			r.currentChunk = r.currentChunk[n:]
 			totalRead += n
-			continue
-		}
-
-		// Read next encrypted chunk from source
-		// Each encrypted chunk is: plaintext_size + tagSize
-		// For non-final chunks: chunkSize + tagSize
-		// For final chunk: may be smaller
-		expectedSize := r.chunkSize + tagSize
-		maxRead := len(r.buffer)
-		if expectedSize > maxRead {
-			expectedSize = maxRead
-		}
-
-		n, err := io.ReadFull(r.source, r.buffer[:expectedSize])
-		if err == io.EOF {
-			if n == 0 {
-				if totalRead > 0 {
-					return totalRead, nil
+			
+			// Recycle buffer if fully consumed
+			if len(r.currentChunk) == 0 && r.recycleBuf != nil {
+				if r.bufferPool != nil {
+					r.bufferPool.Put(r.recycleBuf)
 				}
-				r.closed = true
-				return 0, io.EOF
-			}
-			// Partial read at end - try to decrypt
-			r.decryptChunk(r.buffer[:n])
-			if r.err != nil {
-				return totalRead, r.err
+				r.recycleBuf = nil
 			}
 			continue
-		}
-		if err == io.ErrUnexpectedEOF {
-			// Partial read - try to decrypt what we got (may be last chunk)
-			r.decryptChunk(r.buffer[:n])
-			if r.err != nil {
-				return totalRead, r.err
-			}
-			continue
-		}
-		if err != nil {
-			r.err = err
-			return totalRead, err
 		}
 
-		// Decrypt the chunk
-		r.decryptChunk(r.buffer[:n])
-		if r.err != nil {
+		// Get next job from pipeline
+		job, ok := <-r.pending
+		if !ok {
+			// Pipeline closed (EOF from source)
+			if totalRead > 0 {
+				return totalRead, nil
+			}
+			r.closed = true
+			return 0, io.EOF
+		}
+
+		// Wait for job to complete
+		select {
+		case <-job.done:
+		case <-r.ctx.Done():
+			r.err = r.ctx.Err()
 			return totalRead, r.err
+		}
+
+		// Check job error
+		if job.err != nil {
+			r.err = job.err
+			return totalRead, r.err
+		}
+
+		// Process successful job
+		r.currentChunk = job.output
+
+		// Store reference for recycling
+		if r.bufferPool != nil {
+			r.recycleBuf = job.output
 		}
 	}
 
 	return totalRead, nil
 }
 
-// decryptChunk decrypts a single chunk of ciphertext.
-func (r *chunkedDecryptReader) decryptChunk(ciphertext []byte) {
+func (r *chunkedDecryptReader) startPipeline() {
+	concurrency := runtime.NumCPU()
+	if concurrency < 2 {
+		concurrency = 2
+	}
+	r.pending = make(chan *cryptoJob, concurrency*2)
+	r.workerPool = make(chan struct{}, concurrency)
+	go r.feeder()
+}
+
+func (r *chunkedDecryptReader) feeder() {
+	defer close(r.pending)
+	chunkIdx := 0
+
+	for {
+		select {
+		case <-r.ctx.Done():
+			return
+		default:
+		}
+
+		// Allocate buffer for encrypted chunk
+		// Needs to be chunkSize + tagSize
+		expectedSize := r.chunkSize + tagSize
+		var buf []byte
+		if r.bufferPool != nil {
+			buf = r.bufferPool.Get(expectedSize)
+		} else {
+			buf = make([]byte, expectedSize)
+		}
+
+		// Read encrypted chunk
+		n, err := io.ReadFull(r.source, buf)
+
+		if n > 0 {
+			job := &cryptoJob{
+				index: chunkIdx,
+				input: buf[:n],
+				done:  make(chan struct{}),
+			}
+			chunkIdx++
+
+			select {
+			case r.pending <- job:
+			case <-r.ctx.Done():
+				return
+			}
+
+			select {
+			case r.workerPool <- struct{}{}:
+			case <-r.ctx.Done():
+				return
+			}
+
+			go func(j *cryptoJob, buffer []byte) {
+				defer func() { <-r.workerPool }()
+				defer close(j.done)
+
+				// Reuse buffer for output? 
+				// Decryption: Open(dst, nonce, ciphertext, additionalData)
+				// If we use buffer pool for output, we avoid allocation
+				var outBuf []byte
+				if r.bufferPool != nil {
+					// Decrypted size is input size - tag size
+					reqSize := len(j.input) - tagSize
+					if reqSize > 0 {
+						outBuf = r.bufferPool.Get(reqSize)
+						outBuf = outBuf[:0]
+					}
+				}
+
+				var parallelErr error
+				j.output, parallelErr = r.decryptChunkParallel(j.index, j.input, outBuf)
+				if parallelErr != nil {
+					j.err = fmt.Errorf("failed to decrypt chunk %d: %w", j.index, parallelErr)
+				}
+
+				if r.bufferPool != nil {
+					r.bufferPool.Put(buffer)
+				}
+			}(job, buf)
+		}
+
+		if err != nil {
+			if err != io.EOF && err != io.ErrUnexpectedEOF {
+				job := &cryptoJob{
+					err:  err,
+					done: make(chan struct{}),
+				}
+				close(job.done)
+				select {
+				case r.pending <- job:
+				case <-r.ctx.Done():
+				}
+			}
+			return
+		}
+	}
+}
+
+// decryptChunkParallel decrypts a single chunk of ciphertext.
+func (r *chunkedDecryptReader) decryptChunkParallel(index int, ciphertext, outBuf []byte) ([]byte, error) {
 	if len(ciphertext) == 0 {
-		return
+		return nil, nil
 	}
 
-	// Derive IV for this chunk
-	chunkIV := r.deriveChunkIV(r.chunkIndex)
-
-	// Decrypt the chunk
-	plaintext, err := r.aead.Open(nil, chunkIV, ciphertext, nil)
-	if err != nil {
-		r.err = fmt.Errorf("failed to decrypt chunk %d: %w", r.chunkIndex, err)
-		return
-	}
-
-	// Store decrypted chunk for Read() to return
-	r.currentChunk = append(r.currentChunk, plaintext...)
-
-	r.chunkIndex++
+	chunkIV := r.deriveChunkIV(index)
+	return r.aead.Open(outBuf, chunkIV, ciphertext, nil)
 }
 
 // Close finalizes the decryption.

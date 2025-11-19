@@ -3,6 +3,7 @@ package crypto
 import (
 	"context"
 	"sync"
+	"sync/atomic"
 )
 
 // BufferPool provides thread-safe pooling of byte buffers to reduce allocations.
@@ -11,14 +12,13 @@ type BufferPool struct {
 	pool4   *sync.Pool // 4-byte buffers (metadata lengths, chunk indices)
 	pool12  *sync.Pool // 12-byte buffers (GCM nonces)
 	pool32  *sync.Pool // 32-byte buffers (AES keys, salts)
-	pool64K *sync.Pool // 64KB buffers (chunk buffers)
+	pool64K *sync.Pool // 64KB+ buffers (chunk buffers)
 
 	// Metrics for monitoring pool performance
 	hits4, misses4     int64
 	hits12, misses12   int64
 	hits32, misses32   int64
 	hits64K, misses64K int64
-	mu                 sync.RWMutex // Protects metrics
 }
 
 // Global buffer pool instance
@@ -33,7 +33,7 @@ var globalBufferPool = &BufferPool{
 		New: func() interface{} { return make([]byte, 32) },
 	},
 	pool64K: &sync.Pool{
-		New: func() interface{} { return make([]byte, 64*1024) },
+		New: func() interface{} { return make([]byte, 64*1024+128) }, // Slightly larger for overhead/tags
 	},
 }
 
@@ -42,17 +42,63 @@ func GetGlobalBufferPool() *BufferPool {
 	return globalBufferPool
 }
 
+// Get returns a buffer of the requested size from the appropriate pool if available.
+// If no pool matches the size, a new buffer is allocated.
+func (p *BufferPool) Get(size int) []byte {
+	// Check common sizes
+	if size == 32 {
+		return p.Get32()
+	}
+	if size == 12 {
+		return p.Get12()
+	}
+	if size == 4 {
+		return p.Get4()
+	}
+	
+	// For chunk buffers, we support anything up to the pool size
+	// This covers default chunks (64KB) plus encryption overhead
+	if size <= 64*1024+128 && size > 32 {
+		buf := p.Get64K()
+		if cap(buf) >= size {
+			return buf[:size]
+		}
+		// If we got a buffer that's too small (shouldn't happen with correct New), discard it
+	}
+
+	return make([]byte, size)
+}
+
+// Put returns a buffer to the appropriate pool if it matches a pool size.
+// The buffer is zeroized before being returned to the pool.
+func (p *BufferPool) Put(buf []byte) {
+	c := cap(buf)
+	if c >= 64*1024 && c <= 64*1024+128 {
+		p.Put64K(buf)
+		return
+	}
+	if c == 32 {
+		p.Put32(buf)
+		return
+	}
+	if c == 12 {
+		p.Put12(buf)
+		return
+	}
+	if c == 4 {
+		p.Put4(buf)
+		return
+	}
+	// If size doesn't match any pool, let GC handle it
+}
+
 // Get4 returns a 4-byte buffer from the pool.
 func (p *BufferPool) Get4() []byte {
 	if buf := p.pool4.Get(); buf != nil {
-		p.mu.Lock()
-		p.hits4++
-		p.mu.Unlock()
+		atomic.AddInt64(&p.hits4, 1)
 		return buf.([]byte)
 	}
-	p.mu.Lock()
-	p.misses4++
-	p.mu.Unlock()
+	atomic.AddInt64(&p.misses4, 1)
 	return make([]byte, 4)
 }
 
@@ -71,14 +117,10 @@ func (p *BufferPool) Put4(buf []byte) {
 // Get12 returns a 12-byte buffer from the pool.
 func (p *BufferPool) Get12() []byte {
 	if buf := p.pool12.Get(); buf != nil {
-		p.mu.Lock()
-		p.hits12++
-		p.mu.Unlock()
+		atomic.AddInt64(&p.hits12, 1)
 		return buf.([]byte)
 	}
-	p.mu.Lock()
-	p.misses12++
-	p.mu.Unlock()
+	atomic.AddInt64(&p.misses12, 1)
 	return make([]byte, 12)
 }
 
@@ -97,14 +139,10 @@ func (p *BufferPool) Put12(buf []byte) {
 // Get32 returns a 32-byte buffer from the pool.
 func (p *BufferPool) Get32() []byte {
 	if buf := p.pool32.Get(); buf != nil {
-		p.mu.Lock()
-		p.hits32++
-		p.mu.Unlock()
+		atomic.AddInt64(&p.hits32, 1)
 		return buf.([]byte)
 	}
-	p.mu.Lock()
-	p.misses32++
-	p.mu.Unlock()
+	atomic.AddInt64(&p.misses32, 1)
 	return make([]byte, 32)
 }
 
@@ -123,20 +161,16 @@ func (p *BufferPool) Put32(buf []byte) {
 // Get64K returns a 64KB buffer from the pool.
 func (p *BufferPool) Get64K() []byte {
 	if buf := p.pool64K.Get(); buf != nil {
-		p.mu.Lock()
-		p.hits64K++
-		p.mu.Unlock()
+		atomic.AddInt64(&p.hits64K, 1)
 		return buf.([]byte)
 	}
-	p.mu.Lock()
-	p.misses64K++
-	p.mu.Unlock()
+	atomic.AddInt64(&p.misses64K, 1)
 	return make([]byte, 64*1024)
 }
 
 // Put64K returns a 64KB buffer to the pool after zeroizing it.
 func (p *BufferPool) Put64K(buf []byte) {
-	if cap(buf) != 64*1024 {
+	if cap(buf) < 64*1024 {
 		return // Don't pool incorrectly sized buffers
 	}
 	// Zeroize buffer to prevent data leakage
@@ -148,17 +182,15 @@ func (p *BufferPool) Put64K(buf []byte) {
 
 // GetMetrics returns current pool metrics.
 func (p *BufferPool) GetMetrics() BufferPoolMetrics {
-	p.mu.RLock()
-	defer p.mu.RUnlock()
 	return BufferPoolMetrics{
-		Hits4:   p.hits4,
-		Misses4: p.misses4,
-		Hits12:  p.hits12,
-		Misses12: p.misses12,
-		Hits32:  p.hits32,
-		Misses32: p.misses32,
-		Hits64K:  p.hits64K,
-		Misses64K: p.misses64K,
+		Hits4:     atomic.LoadInt64(&p.hits4),
+		Misses4:   atomic.LoadInt64(&p.misses4),
+		Hits12:    atomic.LoadInt64(&p.hits12),
+		Misses12:  atomic.LoadInt64(&p.misses12),
+		Hits32:    atomic.LoadInt64(&p.hits32),
+		Misses32:  atomic.LoadInt64(&p.misses32),
+		Hits64K:   atomic.LoadInt64(&p.hits64K),
+		Misses64K: atomic.LoadInt64(&p.misses64K),
 	}
 }
 
@@ -208,16 +240,14 @@ func (m BufferPoolMetrics) HitRate64K() float64 {
 
 // Reset resets all metrics counters to zero.
 func (p *BufferPool) Reset() {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	p.hits4 = 0
-	p.misses4 = 0
-	p.hits12 = 0
-	p.misses12 = 0
-	p.hits32 = 0
-	p.misses32 = 0
-	p.hits64K = 0
-	p.misses64K = 0
+	atomic.StoreInt64(&p.hits4, 0)
+	atomic.StoreInt64(&p.misses4, 0)
+	atomic.StoreInt64(&p.hits12, 0)
+	atomic.StoreInt64(&p.misses12, 0)
+	atomic.StoreInt64(&p.hits32, 0)
+	atomic.StoreInt64(&p.misses32, 0)
+	atomic.StoreInt64(&p.hits64K, 0)
+	atomic.StoreInt64(&p.misses64K, 0)
 }
 
 // BoundedQueue provides a bounded queue for streaming data with backpressure.
