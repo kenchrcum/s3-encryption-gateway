@@ -61,7 +61,11 @@ func TestRecordRotatedRead_MultipleCalls(t *testing.T) {
 
 func TestRotatedReadsMetric_Description(t *testing.T) {
 	reg := prometheus.NewRegistry()
-	_ = NewMetricsWithRegistry(reg)
+	m := NewMetricsWithRegistry(reg)
+
+	// Ensure metric is initialized by recording a zero value
+	// This ensures it appears in Gather() even if unused (depending on client version/settings)
+	m.RecordRotatedRead(0, 0)
 
 	// Verify metric is registered
 	metrics, err := reg.Gather()

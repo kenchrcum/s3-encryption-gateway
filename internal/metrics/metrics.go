@@ -36,6 +36,7 @@ type Metrics struct {
 	goroutines           prometheus.Gauge
 	memoryAllocBytes     prometheus.Gauge
 	memorySysBytes       prometheus.Gauge
+	hardwareAccelerationEnabled *prometheus.GaugeVec
 }
 
 // NewMetrics creates a new metrics instance.
@@ -171,7 +172,33 @@ func newMetricsWithRegistry(reg prometheus.Registerer) *Metrics {
 				Help: "Total bytes of memory obtained from OS",
 			},
 		),
+		hardwareAccelerationEnabled: factory.NewGaugeVec(
+			prometheus.GaugeOpts{
+				Name: "hardware_acceleration_enabled",
+				Help: "Hardware acceleration status (1=enabled, 0=disabled)",
+			},
+			[]string{"type"},
+		),
 	}
+}
+
+// SetHardwareAccelerationStatus sets the hardware acceleration status metric.
+func (m *Metrics) SetHardwareAccelerationStatus(accelType string, enabled bool) {
+	val := 0.0
+	if enabled {
+		val = 1.0
+	}
+	m.hardwareAccelerationEnabled.WithLabelValues(accelType).Set(val)
+}
+
+// GetHardwareAccelerationEnabledMetric returns the hardware acceleration enabled metric (for testing).
+func (m *Metrics) GetHardwareAccelerationEnabledMetric() *prometheus.GaugeVec {
+	return m.hardwareAccelerationEnabled
+}
+
+// GetRotatedReadsMetric returns the rotated reads metric (for testing).
+func (m *Metrics) GetRotatedReadsMetric() *prometheus.CounterVec {
+	return m.rotatedReads
 }
 
 // RecordHTTPRequest records an HTTP request metric.

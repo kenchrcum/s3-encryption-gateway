@@ -2,45 +2,57 @@ package crypto
 
 import (
 	"runtime"
+
+	"github.com/kenneth/s3-encryption-gateway/internal/config"
+	"golang.org/x/sys/cpu"
 )
 
-// HasAESHardwareSupport checks if the CPU supports AES hardware acceleration (AES-NI).
-// This uses CPU feature detection available in Go's runtime.
+// HasAESHardwareSupport checks if the CPU supports AES hardware acceleration.
+// This uses CPU feature detection available in golang.org/x/sys/cpu.
 func HasAESHardwareSupport() bool {
-	// Check for AES hardware support by attempting to detect CPU features
-	// Go's crypto packages automatically use hardware acceleration when available,
-	// but we can still check for it explicitly for logging/monitoring purposes
-
-	// On x86/x86_64, AES-NI is typically available on modern CPUs (2010+)
-	// On ARM, ARMv8 includes AES instructions (AES extensions)
-	// Go's crypto/aes automatically uses these when available
-
-	// For now, we'll use a simple heuristic based on architecture
-	// In production, you might want to use CPUID or similar detection
-	arch := runtime.GOARCH
-
-	// x86_64 and amd64 architectures typically have AES-NI support
-	// (though not guaranteed - would need CPUID for certainty)
-	switch arch {
+	switch runtime.GOARCH {
 	case "amd64", "386":
-		// Likely has AES-NI support (modern x86 CPUs)
-		return true
-	case "arm64", "arm":
-		// ARMv8+ has AES instructions
-		// This is a best-effort check
-		return true
+		return cpu.X86.HasAES
+	case "arm64":
+		return cpu.ARM64.HasAES
+	case "s390x":
+		return cpu.S390X.HasAES
 	default:
-		// Unknown architecture - assume no hardware support
 		return false
 	}
 }
 
-// GetHardwareAccelerationInfo returns information about hardware acceleration support.
-func GetHardwareAccelerationInfo() map[string]interface{} {
-	return map[string]interface{}{
-		"aes_hardware_support": HasAESHardwareSupport(),
-		"architecture":          runtime.GOARCH,
-		"goos":                  runtime.GOOS,
-		"go_version":            runtime.Version(),
+// IsHardwareAccelerationEnabled checks if hardware acceleration is supported AND enabled in config.
+func IsHardwareAccelerationEnabled(cfg config.HardwareConfig) bool {
+	if !HasAESHardwareSupport() {
+		return false
 	}
+
+	switch runtime.GOARCH {
+	case "amd64", "386":
+		return cfg.EnableAESNI
+	case "arm64":
+		return cfg.EnableARMv8AES
+	default:
+		// If supported (e.g. s390x) but no specific flag, assume enabled
+		return true
+	}
+}
+
+// GetHardwareAccelerationInfo returns information about hardware acceleration support.
+func GetHardwareAccelerationInfo(cfg *config.HardwareConfig) map[string]interface{} {
+	info := map[string]interface{}{
+		"aes_hardware_support": HasAESHardwareSupport(),
+		"architecture":         runtime.GOARCH,
+		"goos":                 runtime.GOOS,
+		"go_version":           runtime.Version(),
+	}
+
+	if cfg != nil {
+		info["aes_ni_enabled"] = cfg.EnableAESNI
+		info["armv8_aes_enabled"] = cfg.EnableARMv8AES
+		info["hardware_acceleration_active"] = IsHardwareAccelerationEnabled(*cfg)
+	}
+
+	return info
 }

@@ -28,12 +28,9 @@ func TestRotationMetrics(t *testing.T) {
 	reg := prometheus.NewRegistry()
 	m := metrics.NewMetricsWithRegistry(reg)
 
-	// Create audit logger
-	auditLogger := audit.NewLogger(100, nil)
-
 	// Create mock key manager that simulates rotation
 	keyManager := &mockRotatingKeyManager{
-		activeVersion: 2,
+		activeVersion: 1, // Start with version 1
 		keys: map[int][]byte{
 			1: []byte("key-version-1"),
 			2: []byte("key-version-2"),
@@ -83,7 +80,7 @@ func TestRotationMetrics(t *testing.T) {
 	}
 
 	// Verify rotated read metric
-	count := testutil.ToFloat64(m.rotatedReads.WithLabelValues("1", "2"))
+	count := testutil.ToFloat64(m.GetRotatedReadsMetric().WithLabelValues("1", "2"))
 	require.Equal(t, 1.0, count, "Should have recorded 1 rotated read")
 
 	// Decrypt version 2 object (should NOT trigger rotated read)
@@ -96,7 +93,7 @@ func TestRotationMetrics(t *testing.T) {
 	require.Equal(t, plaintext2, decrypted2New)
 
 	// Verify no additional rotated read for version 2
-	count = testutil.ToFloat64(m.rotatedReads.WithLabelValues("2", "2"))
+	count = testutil.ToFloat64(m.GetRotatedReadsMetric().WithLabelValues("2", "2"))
 	require.Equal(t, 0.0, count, "Should not have recorded rotated read for active version")
 }
 

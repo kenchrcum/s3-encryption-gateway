@@ -57,6 +57,18 @@ type EncryptionConfig struct {
 	KeyManager          KeyManagerConfig `yaml:"key_manager"`
 	ChunkedMode         bool             `yaml:"chunked_mode" env:"ENCRYPTION_CHUNKED_MODE"` // Enable chunked/streaming encryption
 	ChunkSize           int              `yaml:"chunk_size" env:"ENCRYPTION_CHUNK_SIZE"`     // Size of each encryption chunk in bytes
+	Hardware            HardwareConfig   `yaml:"hardware"`
+}
+
+// HardwareConfig holds hardware acceleration configuration.
+type HardwareConfig struct {
+	// EnableAESNI enables AES-NI hardware acceleration on x86_64 architectures.
+	// Default: true
+	EnableAESNI bool `yaml:"enable_aesni" env:"HARDWARE_ENABLE_AESNI"`
+
+	// EnableARMv8AES enables ARMv8 AES hardware acceleration on ARM64 architectures.
+	// Default: true
+	EnableARMv8AES bool `yaml:"enable_armv8_aes" env:"HARDWARE_ENABLE_ARMV8_AES"`
 }
 
 // KeyManagerConfig holds key manager (KMS) configuration.
@@ -70,11 +82,11 @@ type EncryptionConfig struct {
 //
 // See docs/KMS_COMPATIBILITY.md for implementation status.
 type KeyManagerConfig struct {
-	Enabled        bool              `yaml:"enabled" env:"KEY_MANAGER_ENABLED"`
-	Provider       string            `yaml:"provider" env:"KEY_MANAGER_PROVIDER"`
-	DualReadWindow int               `yaml:"dual_read_window" env:"KEY_MANAGER_DUAL_READ_WINDOW"`
+	Enabled        bool                 `yaml:"enabled" env:"KEY_MANAGER_ENABLED"`
+	Provider       string               `yaml:"provider" env:"KEY_MANAGER_PROVIDER"`
+	DualReadWindow int                  `yaml:"dual_read_window" env:"KEY_MANAGER_DUAL_READ_WINDOW"`
 	RotationPolicy RotationPolicyConfig `yaml:"rotation_policy"`
-	Cosmian        CosmianConfig     `yaml:"cosmian"`
+	Cosmian        CosmianConfig        `yaml:"cosmian"`
 	// TODO(v1.0): Add AWS and Vault config fields when adapters are implemented
 	// AWS        AWSKMSConfig  `yaml:"aws"`
 	// Vault      VaultConfig   `yaml:"vault"`
@@ -188,6 +200,10 @@ func LoadConfig(path string) (*Config, error) {
 					GraceWindow: 0, // Use DualReadWindow by default
 				},
 			},
+			Hardware: HardwareConfig{
+				EnableAESNI:    true,
+				EnableARMv8AES: true,
+			},
 		},
 		Backend: BackendConfig{
 			Endpoint: "", // Leave empty for AWS default, or set for any S3-compatible endpoint
@@ -253,12 +269,23 @@ func LoadConfig(path string) (*Config, error) {
 	// Override with environment variables
 	loadFromEnv(config)
 
+	// Set default hardware acceleration flags if not specified (default true)
+	// This logic is now handled by initialization values above, but we check env vars here
+	// if they were set to override default initialization.
+	// Actually, loadFromEnv handles it.
+
 	// Validate configuration
 	if err := config.Validate(); err != nil {
 		return nil, fmt.Errorf("invalid configuration: %w", err)
 	}
 
 	return config, nil
+}
+
+// isEnvSet checks if an environment variable is set
+func isEnvSet(key string) bool {
+	_, ok := os.LookupEnv(key)
+	return ok
 }
 
 // loadFromEnv loads configuration values from environment variables.
@@ -294,6 +321,9 @@ func loadFromEnv(config *Config) {
 			config.Backend.FilterMetadataKeys[i] = strings.TrimSpace(config.Backend.FilterMetadataKeys[i])
 		}
 	}
+	if v := os.Getenv("BACKEND_USE_CLIENT_CREDENTIALS"); v != "" {
+		config.Backend.UseClientCredentials = v == "true" || v == "1"
+	}
 	if v := os.Getenv("ENCRYPTION_PASSWORD"); v != "" {
 		config.Encryption.Password = v
 	}
@@ -309,6 +339,12 @@ func loadFromEnv(config *Config) {
 		for i := range config.Encryption.SupportedAlgorithms {
 			config.Encryption.SupportedAlgorithms[i] = strings.TrimSpace(config.Encryption.SupportedAlgorithms[i])
 		}
+	}
+	if v := os.Getenv("HARDWARE_ENABLE_AESNI"); v != "" {
+		config.Encryption.Hardware.EnableAESNI = v == "true" || v == "1"
+	}
+	if v := os.Getenv("HARDWARE_ENABLE_ARMV8_AES"); v != "" {
+		config.Encryption.Hardware.EnableARMv8AES = v == "true" || v == "1"
 	}
 	if v := os.Getenv("KEY_MANAGER_ENABLED"); v != "" {
 		config.Encryption.KeyManager.Enabled = v == "true" || v == "1"
@@ -436,10 +472,6 @@ func loadFromEnv(config *Config) {
 	// Proxied bucket configuration
 	if v := os.Getenv("PROXIED_BUCKET"); v != "" {
 		config.ProxiedBucket = v
-	}
-	// Backend credential passthrough configuration
-	if v := os.Getenv("BACKEND_USE_CLIENT_CREDENTIALS"); v != "" {
-		config.Backend.UseClientCredentials = v == "true" || v == "1"
 	}
 	// Tracing configuration
 	if v := os.Getenv("TRACING_ENABLED"); v != "" {
@@ -783,6 +815,12 @@ func (r *ConfigReloader) validateReloadSafety(old, new *Config) error {
 	}
 	if old.Encryption.ChunkSize != new.Encryption.ChunkSize {
 		return fmt.Errorf("encryption.chunk_size cannot be changed during hot reload")
+	}
+	if old.Encryption.Hardware.EnableAESNI != new.Encryption.Hardware.EnableAESNI {
+		return fmt.Errorf("encryption.hardware.enable_aesni cannot be changed during hot reload")
+	}
+	if old.Encryption.Hardware.EnableARMv8AES != new.Encryption.Hardware.EnableARMv8AES {
+		return fmt.Errorf("encryption.hardware.enable_armv8_aes cannot be changed during hot reload")
 	}
 
 	// Compression settings - changing these could affect existing encrypted data

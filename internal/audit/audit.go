@@ -55,6 +55,9 @@ type Logger interface {
 	
 	// LogAccess logs a general access operation.
 	LogAccess(eventType, bucket, key, clientIP, userAgent, requestID string, success bool, err error, duration time.Duration)
+
+	// GetEvents returns all audit events (for testing/querying).
+	GetEvents() []*AuditEvent
 }
 
 // auditLogger implements the Logger interface.

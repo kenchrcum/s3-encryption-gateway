@@ -492,11 +492,23 @@ func main() {
 	}
 
 	// Log hardware acceleration info
-	hwInfo := crypto.GetHardwareAccelerationInfo()
+	hwInfo := crypto.GetHardwareAccelerationInfo(&cfg.Encryption.Hardware)
 	logger.WithFields(logrus.Fields{
 		"aes_hardware_support": hwInfo["aes_hardware_support"],
 		"architecture":         hwInfo["architecture"],
+		"active":               hwInfo["hardware_acceleration_active"],
 	}).Info("Hardware acceleration status")
+
+	// Set hardware acceleration metric
+	if active, ok := hwInfo["hardware_acceleration_active"].(bool); ok {
+		accelType := "unknown"
+		if strings.Contains(hwInfo["architecture"].(string), "amd64") || strings.Contains(hwInfo["architecture"].(string), "386") {
+			accelType = "aes-ni"
+		} else if strings.Contains(hwInfo["architecture"].(string), "arm") {
+			accelType = "armv8-aes"
+		}
+		m.SetHardwareAccelerationStatus(accelType, active)
+	}
 
 	// Initialize encryption engine with compression, algorithm support, chunked mode, and key resolver (if KMS mode)
 	var encryptionEngine crypto.EncryptionEngine
