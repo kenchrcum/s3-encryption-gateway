@@ -29,6 +29,7 @@ type Config struct {
 	Server        ServerConfig      `yaml:"server"`
 	RateLimit     RateLimitConfig   `yaml:"rate_limit"`
 	Tracing       TracingConfig     `yaml:"tracing"`
+	Metrics       MetricsConfig     `yaml:"metrics"`
 	Logging       LoggingConfig     `yaml:"logging"`
 }
 
@@ -180,6 +181,11 @@ type TracingConfig struct {
 	RedactSensitive bool    `yaml:"redact_sensitive" env:"TRACING_REDACT_SENSITIVE"` // Redact sensitive data in spans
 }
 
+// MetricsConfig holds metrics configuration.
+type MetricsConfig struct {
+	EnableBucketLabel bool `yaml:"enable_bucket_label" env:"METRICS_ENABLE_BUCKET_LABEL"`
+}
+
 // LoggingConfig holds access logging configuration.
 type LoggingConfig struct {
 	AccessLogFormat string   `yaml:"access_log_format" env:"LOGGING_ACCESS_LOG_FORMAT"` // Access log format: default, json, clf
@@ -246,6 +252,9 @@ func LoadConfig(path string) (*Config, error) {
 			Exporter:        "stdout",
 			SamplingRatio:   1.0,
 			RedactSensitive: true,
+		},
+		Metrics: MetricsConfig{
+			EnableBucketLabel: true,
 		},
 		Logging: LoggingConfig{
 			AccessLogFormat: "default",
@@ -499,6 +508,10 @@ func loadFromEnv(config *Config) {
 	}
 	if v := os.Getenv("TRACING_REDACT_SENSITIVE"); v != "" {
 		config.Tracing.RedactSensitive = v == "true" || v == "1"
+	}
+	// Metrics configuration
+	if v := os.Getenv("METRICS_ENABLE_BUCKET_LABEL"); v != "" {
+		config.Metrics.EnableBucketLabel = v == "true" || v == "1"
 	}
 	// Logging configuration
 	if v := os.Getenv("LOGGING_ACCESS_LOG_FORMAT"); v != "" {

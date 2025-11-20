@@ -76,7 +76,7 @@ func TestRotationMetrics(t *testing.T) {
 	keyVersionUsed := 1
 	activeKeyVersion := 2
 	if keyVersionUsed > 0 && activeKeyVersion > 0 && keyVersionUsed != activeKeyVersion {
-		m.RecordRotatedRead(keyVersionUsed, activeKeyVersion)
+		m.RecordRotatedRead(context.Background(), keyVersionUsed, activeKeyVersion)
 	}
 
 	// Verify rotated read metric

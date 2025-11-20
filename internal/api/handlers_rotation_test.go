@@ -125,7 +125,7 @@ func TestHandler_RecordRotatedRead(t *testing.T) {
 			if handler.keyManager != nil {
 				activeKeyVersion = handler.currentKeyVersion(context.Background())
 				if keyVersionUsed > 0 && activeKeyVersion > 0 && keyVersionUsed != activeKeyVersion {
-					handler.metrics.RecordRotatedRead(keyVersionUsed, activeKeyVersion)
+					handler.metrics.RecordRotatedRead(context.Background(), keyVersionUsed, activeKeyVersion)
 				}
 			}
 

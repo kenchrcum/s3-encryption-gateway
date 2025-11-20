@@ -419,7 +419,10 @@ func main() {
 	}
 
 	// Initialize metrics
-	m := metrics.NewMetrics()
+	metricsConfig := metrics.Config{
+		EnableBucketLabel: cfg.Metrics.EnableBucketLabel,
+	}
+	m := metrics.NewMetricsWithConfig(metricsConfig)
 	metrics.SetVersion(version)
 
 	// Start system metrics collector

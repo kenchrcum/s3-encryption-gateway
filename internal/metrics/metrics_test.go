@@ -1,6 +1,7 @@
 package metrics
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -13,7 +14,7 @@ import (
 func TestNewMetrics(t *testing.T) {
 	// Use a custom registry to avoid duplicate registration issues in tests
 	reg := prometheus.NewRegistry()
-	m := newMetricsWithRegistry(reg)
+	m := newMetricsWithRegistry(reg, Config{EnableBucketLabel: true})
 	if m == nil {
 		t.Fatal("NewMetrics returned nil")
 	}
@@ -33,9 +34,9 @@ func TestNewMetrics(t *testing.T) {
 
 func TestMetrics_RecordHTTPRequest(t *testing.T) {
 	reg := prometheus.NewRegistry()
-	m := newMetricsWithRegistry(reg)
+	m := newMetricsWithRegistry(reg, Config{EnableBucketLabel: true})
 
-	m.RecordHTTPRequest("GET", "/test", http.StatusOK, 100*time.Millisecond, 1024)
+	m.RecordHTTPRequest(context.Background(), "GET", "/test", http.StatusOK, 100*time.Millisecond, 1024)
 
 	// Metrics are registered with prometheus, verify they don't panic
 	// The actual metric values are tested through Prometheus endpoint
@@ -43,29 +44,29 @@ func TestMetrics_RecordHTTPRequest(t *testing.T) {
 
 func TestMetrics_RecordS3Operation(t *testing.T) {
 	reg := prometheus.NewRegistry()
-	m := newMetricsWithRegistry(reg)
+	m := newMetricsWithRegistry(reg, Config{EnableBucketLabel: true})
 
-	m.RecordS3Operation("PutObject", "test-bucket", 50*time.Millisecond)
+	m.RecordS3Operation(context.Background(), "PutObject", "test-bucket", 50*time.Millisecond)
 
 	// Metrics are registered with prometheus, verify they don't panic
 }
 
 func TestMetrics_RecordS3Error(t *testing.T) {
 	reg := prometheus.NewRegistry()
-	m := newMetricsWithRegistry(reg)
+	m := newMetricsWithRegistry(reg, Config{EnableBucketLabel: true})
 
-	m.RecordS3Error("GetObject", "test-bucket", "NoSuchKey")
+	m.RecordS3Error(context.Background(), "GetObject", "test-bucket", "NoSuchKey")
 
 	// Metrics are registered with prometheus, verify they don't panic
 }
 
 func TestMetrics_Handler(t *testing.T) {
 	reg := prometheus.NewRegistry()
-	m := newMetricsWithRegistry(reg)
+	m := newMetricsWithRegistry(reg, Config{EnableBucketLabel: true})
 	
 	// Record some metrics first so they appear in output
-	m.RecordHTTPRequest("GET", "/test", http.StatusOK, 100*time.Millisecond, 1024)
-	m.RecordS3Operation("PutObject", "test-bucket", 50*time.Millisecond)
+	m.RecordHTTPRequest(context.Background(), "GET", "/test", http.StatusOK, 100*time.Millisecond, 1024)
+	m.RecordS3Operation(context.Background(), "PutObject", "test-bucket", 50*time.Millisecond)
 
 	handler := promhttp.HandlerFor(reg, promhttp.HandlerOpts{})
 

@@ -1,6 +1,7 @@
 package metrics
 
 import (
+	"context"
 	"net/http"
 	"runtime"
 	"strconv"
@@ -10,6 +11,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promauto"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
+	"go.opentelemetry.io/otel/trace"
 )
 
 var (
@@ -17,8 +19,14 @@ var (
 	defaultRegistry = prometheus.DefaultRegisterer
 )
 
+// Config holds metrics configuration.
+type Config struct {
+	EnableBucketLabel bool
+}
+
 // Metrics holds all application metrics.
 type Metrics struct {
+	config               Config
 	httpRequestsTotal    *prometheus.CounterVec
 	httpRequestDuration  *prometheus.HistogramVec
 	httpRequestBytes     *prometheus.CounterVec
@@ -39,21 +47,27 @@ type Metrics struct {
 	hardwareAccelerationEnabled *prometheus.GaugeVec
 }
 
-// NewMetrics creates a new metrics instance.
+// NewMetrics creates a new metrics instance with default configuration.
 func NewMetrics() *Metrics {
-	return newMetricsWithRegistry(defaultRegistry)
+	return NewMetricsWithConfig(Config{EnableBucketLabel: true})
+}
+
+// NewMetricsWithConfig creates a new metrics instance with the provided configuration.
+func NewMetricsWithConfig(cfg Config) *Metrics {
+	return newMetricsWithRegistry(defaultRegistry, cfg)
 }
 
 // NewMetricsWithRegistry creates a new metrics instance with a custom registry.
 // This is useful for testing to avoid metric registration conflicts.
 func NewMetricsWithRegistry(reg prometheus.Registerer) *Metrics {
-	return newMetricsWithRegistry(reg)
+	return newMetricsWithRegistry(reg, Config{EnableBucketLabel: true})
 }
 
 // newMetricsWithRegistry creates a new metrics instance with a custom registry (for testing).
-func newMetricsWithRegistry(reg prometheus.Registerer) *Metrics {
+func newMetricsWithRegistry(reg prometheus.Registerer, cfg Config) *Metrics {
 	factory := promauto.With(reg)
 	return &Metrics{
+		config: cfg,
 		httpRequestsTotal: factory.NewCounterVec(
 			prometheus.CounterOpts{
 				Name: "http_requests_total",
@@ -202,11 +216,29 @@ func (m *Metrics) GetRotatedReadsMetric() *prometheus.CounterVec {
 }
 
 // RecordHTTPRequest records an HTTP request metric.
-func (m *Metrics) RecordHTTPRequest(method, path string, status int, duration time.Duration, bytes int64) {
-    label := sanitizePathLabel(path)
-    m.httpRequestsTotal.WithLabelValues(method, label, http.StatusText(status)).Inc()
-    m.httpRequestDuration.WithLabelValues(method, label, http.StatusText(status)).Observe(duration.Seconds())
-    m.httpRequestBytes.WithLabelValues(method, label).Add(float64(bytes))
+func (m *Metrics) RecordHTTPRequest(ctx context.Context, method, path string, status int, duration time.Duration, bytes int64) {
+	label := sanitizePathLabel(path)
+	labels := prometheus.Labels{"method": method, "path": label, "status": http.StatusText(status)}
+	
+	if exemplar := getExemplar(ctx); exemplar != nil {
+		if adder, ok := m.httpRequestsTotal.With(labels).(prometheus.ExemplarAdder); ok {
+			adder.AddWithExemplar(1, exemplar)
+		} else {
+			m.httpRequestsTotal.With(labels).Inc()
+		}
+		
+		if observer, ok := m.httpRequestDuration.With(labels).(prometheus.ExemplarObserver); ok {
+			observer.ObserveWithExemplar(duration.Seconds(), exemplar)
+		} else {
+			m.httpRequestDuration.With(labels).Observe(duration.Seconds())
+		}
+	} else {
+		m.httpRequestsTotal.With(labels).Inc()
+		m.httpRequestDuration.With(labels).Observe(duration.Seconds())
+	}
+	
+	// No exemplars for byte counters usually
+	m.httpRequestBytes.WithLabelValues(method, label).Add(float64(bytes))
 }
 
 // sanitizePathLabel reduces high-cardinality paths to stable labels.
@@ -214,50 +246,113 @@ func (m *Metrics) RecordHTTPRequest(method, path string, status int, duration ti
 // "/metrics" => "/metrics"
 // "/bucket/key/long/path" => "/bucket/*"
 func sanitizePathLabel(path string) string {
-    if path == "" || path == "/" {
-        return "/"
-    }
-    // Trim query if any (defensive; callers typically pass Path only)
-    if i := strings.IndexByte(path, '?'); i >= 0 {
-        path = path[:i]
-    }
-    // Split into segments
-    segs := strings.Split(strings.TrimPrefix(path, "/"), "/")
-    if len(segs) <= 1 {
-        return "/" + segs[0]
-    }
-    return "/" + segs[0] + "/*"
+	if path == "" || path == "/" {
+		return "/"
+	}
+	// Trim query if any (defensive; callers typically pass Path only)
+	if i := strings.IndexByte(path, '?'); i >= 0 {
+		path = path[:i]
+	}
+	// Split into segments
+	segs := strings.Split(strings.TrimPrefix(path, "/"), "/")
+	if len(segs) <= 1 {
+		return "/" + segs[0]
+	}
+	return "/" + segs[0] + "/*"
 }
 
 // RecordS3Operation records an S3 operation metric.
-func (m *Metrics) RecordS3Operation(operation, bucket string, duration time.Duration) {
-	m.s3OperationsTotal.WithLabelValues(operation, bucket).Inc()
-	m.s3OperationDuration.WithLabelValues(operation, bucket).Observe(duration.Seconds())
+func (m *Metrics) RecordS3Operation(ctx context.Context, operation, bucket string, duration time.Duration) {
+	bucketLabel := bucket
+	if !m.config.EnableBucketLabel {
+		bucketLabel = "*"
+	}
+
+	if exemplar := getExemplar(ctx); exemplar != nil {
+		if adder, ok := m.s3OperationsTotal.WithLabelValues(operation, bucketLabel).(prometheus.ExemplarAdder); ok {
+			adder.AddWithExemplar(1, exemplar)
+		} else {
+			m.s3OperationsTotal.WithLabelValues(operation, bucketLabel).Inc()
+		}
+
+		if observer, ok := m.s3OperationDuration.WithLabelValues(operation, bucketLabel).(prometheus.ExemplarObserver); ok {
+			observer.ObserveWithExemplar(duration.Seconds(), exemplar)
+		} else {
+			m.s3OperationDuration.WithLabelValues(operation, bucketLabel).Observe(duration.Seconds())
+		}
+	} else {
+		m.s3OperationsTotal.WithLabelValues(operation, bucketLabel).Inc()
+		m.s3OperationDuration.WithLabelValues(operation, bucketLabel).Observe(duration.Seconds())
+	}
 }
 
 // RecordS3Error records an S3 operation error.
-func (m *Metrics) RecordS3Error(operation, bucket, errorType string) {
-	m.s3OperationErrors.WithLabelValues(operation, bucket, errorType).Inc()
+func (m *Metrics) RecordS3Error(ctx context.Context, operation, bucket, errorType string) {
+	bucketLabel := bucket
+	if !m.config.EnableBucketLabel {
+		bucketLabel = "*"
+	}
+
+	if exemplar := getExemplar(ctx); exemplar != nil {
+		if adder, ok := m.s3OperationErrors.WithLabelValues(operation, bucketLabel, errorType).(prometheus.ExemplarAdder); ok {
+			adder.AddWithExemplar(1, exemplar)
+		} else {
+			m.s3OperationErrors.WithLabelValues(operation, bucketLabel, errorType).Inc()
+		}
+	} else {
+		m.s3OperationErrors.WithLabelValues(operation, bucketLabel, errorType).Inc()
+	}
 }
 
 // RecordEncryptionOperation records an encryption operation metric.
-func (m *Metrics) RecordEncryptionOperation(operation string, duration time.Duration, bytes int64) {
-	m.encryptionOperations.WithLabelValues(operation).Inc()
-	m.encryptionDuration.WithLabelValues(operation).Observe(duration.Seconds())
+func (m *Metrics) RecordEncryptionOperation(ctx context.Context, operation string, duration time.Duration, bytes int64) {
+	if exemplar := getExemplar(ctx); exemplar != nil {
+		if adder, ok := m.encryptionOperations.WithLabelValues(operation).(prometheus.ExemplarAdder); ok {
+			adder.AddWithExemplar(1, exemplar)
+		} else {
+			m.encryptionOperations.WithLabelValues(operation).Inc()
+		}
+
+		if observer, ok := m.encryptionDuration.WithLabelValues(operation).(prometheus.ExemplarObserver); ok {
+			observer.ObserveWithExemplar(duration.Seconds(), exemplar)
+		} else {
+			m.encryptionDuration.WithLabelValues(operation).Observe(duration.Seconds())
+		}
+	} else {
+		m.encryptionOperations.WithLabelValues(operation).Inc()
+		m.encryptionDuration.WithLabelValues(operation).Observe(duration.Seconds())
+	}
+	
 	m.encryptionBytes.WithLabelValues(operation).Add(float64(bytes))
 }
 
 // RecordEncryptionError records an encryption operation error.
-func (m *Metrics) RecordEncryptionError(operation, errorType string) {
-	m.encryptionErrors.WithLabelValues(operation, errorType).Inc()
+func (m *Metrics) RecordEncryptionError(ctx context.Context, operation, errorType string) {
+	if exemplar := getExemplar(ctx); exemplar != nil {
+		if adder, ok := m.encryptionErrors.WithLabelValues(operation, errorType).(prometheus.ExemplarAdder); ok {
+			adder.AddWithExemplar(1, exemplar)
+		} else {
+			m.encryptionErrors.WithLabelValues(operation, errorType).Inc()
+		}
+	} else {
+		m.encryptionErrors.WithLabelValues(operation, errorType).Inc()
+	}
 }
 
 // RecordRotatedRead records a decryption operation using a rotated (non-active) key version.
-func (m *Metrics) RecordRotatedRead(keyVersion, activeVersion int) {
-	m.rotatedReads.WithLabelValues(
-		strconv.Itoa(keyVersion),
-		strconv.Itoa(activeVersion),
-	).Inc()
+func (m *Metrics) RecordRotatedRead(ctx context.Context, keyVersion, activeVersion int) {
+	if exemplar := getExemplar(ctx); exemplar != nil {
+		if adder, ok := m.rotatedReads.WithLabelValues(strconv.Itoa(keyVersion), strconv.Itoa(activeVersion)).(prometheus.ExemplarAdder); ok {
+			adder.AddWithExemplar(1, exemplar)
+		} else {
+			m.rotatedReads.WithLabelValues(strconv.Itoa(keyVersion), strconv.Itoa(activeVersion)).Inc()
+		}
+	} else {
+		m.rotatedReads.WithLabelValues(
+			strconv.Itoa(keyVersion),
+			strconv.Itoa(activeVersion),
+		).Inc()
+	}
 }
 
 // RecordBufferPoolHit records a buffer pool hit.
@@ -303,4 +398,16 @@ func (m *Metrics) StartSystemMetricsCollector() {
 // Handler returns the HTTP handler for metrics endpoint.
 func (m *Metrics) Handler() http.Handler {
 	return promhttp.Handler()
+}
+
+// getExemplar extracts trace ID from context and returns prometheus Labels for exemplar.
+func getExemplar(ctx context.Context) prometheus.Labels {
+	if ctx == nil {
+		return nil
+	}
+	spanContext := trace.SpanFromContext(ctx).SpanContext()
+	if spanContext.IsValid() {
+		return prometheus.Labels{"trace_id": spanContext.TraceID().String()}
+	}
+	return nil
 }

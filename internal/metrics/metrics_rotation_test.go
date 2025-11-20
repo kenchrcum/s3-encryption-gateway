@@ -1,6 +1,7 @@
 package metrics
 
 import (
+	"context"
 	"testing"
 
 	"github.com/prometheus/client_golang/prometheus"
@@ -15,10 +16,10 @@ func TestRecordRotatedRead(t *testing.T) {
 	m := NewMetricsWithRegistry(reg)
 
 	// Record rotated reads
-	m.RecordRotatedRead(1, 2) // key version 1, active version 2
-	m.RecordRotatedRead(1, 2) // same combination
-	m.RecordRotatedRead(1, 3) // key version 1, active version 3
-	m.RecordRotatedRead(2, 3) // key version 2, active version 3
+	m.RecordRotatedRead(context.Background(),1, 2) // key version 1, active version 2
+	m.RecordRotatedRead(context.Background(),1, 2) // same combination
+	m.RecordRotatedRead(context.Background(),1, 3) // key version 1, active version 3
+	m.RecordRotatedRead(context.Background(),2, 3) // key version 2, active version 3
 
 	// Verify metrics
 	count := testutil.ToFloat64(m.rotatedReads.WithLabelValues("1", "2"))
@@ -36,8 +37,8 @@ func TestRecordRotatedRead_ZeroVersions(t *testing.T) {
 	m := NewMetricsWithRegistry(reg)
 
 	// Record with zero versions (should still work)
-	m.RecordRotatedRead(0, 0)
-	m.RecordRotatedRead(0, 1)
+	m.RecordRotatedRead(context.Background(),0, 0)
+	m.RecordRotatedRead(context.Background(),0, 1)
 
 	count := testutil.ToFloat64(m.rotatedReads.WithLabelValues("0", "0"))
 	assert.Equal(t, 1.0, count)
@@ -52,7 +53,7 @@ func TestRecordRotatedRead_MultipleCalls(t *testing.T) {
 
 	// Record many rotated reads
 	for i := 0; i < 100; i++ {
-		m.RecordRotatedRead(1, 2)
+		m.RecordRotatedRead(context.Background(),1, 2)
 	}
 
 	count := testutil.ToFloat64(m.rotatedReads.WithLabelValues("1", "2"))
@@ -65,7 +66,7 @@ func TestRotatedReadsMetric_Description(t *testing.T) {
 
 	// Ensure metric is initialized by recording a zero value
 	// This ensures it appears in Gather() even if unused (depending on client version/settings)
-	m.RecordRotatedRead(0, 0)
+	m.RecordRotatedRead(context.Background(),0, 0)
 
 	// Verify metric is registered
 	metrics, err := reg.Gather()
@@ -88,10 +89,10 @@ func TestRotatedReadsMetric_Labels(t *testing.T) {
 	m := NewMetricsWithRegistry(reg)
 
 	// Record with different label combinations
-	m.RecordRotatedRead(1, 2)
-	m.RecordRotatedRead(1, 3)
-	m.RecordRotatedRead(2, 3)
-	m.RecordRotatedRead(2, 4)
+	m.RecordRotatedRead(context.Background(),1, 2)
+	m.RecordRotatedRead(context.Background(),1, 3)
+	m.RecordRotatedRead(context.Background(),2, 3)
+	m.RecordRotatedRead(context.Background(),2, 4)
 
 	// Verify all label combinations exist by checking metric values
 	count1_2 := testutil.ToFloat64(m.rotatedReads.WithLabelValues("1", "2"))

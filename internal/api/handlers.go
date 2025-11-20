@@ -152,7 +152,7 @@ func (h *Handler) writeS3ClientError(w http.ResponseWriter, r *http.Request, err
 		}
 		
 		s3Err.WriteXML(w)
-		h.metrics.RecordHTTPRequest(method, r.URL.Path, s3Err.HTTPStatus, time.Since(start), 0)
+		h.metrics.RecordHTTPRequest(r.Context(),method, r.URL.Path, s3Err.HTTPStatus, time.Since(start), 0)
 		return
 	}
 	
@@ -164,7 +164,7 @@ func (h *Handler) writeS3ClientError(w http.ResponseWriter, r *http.Request, err
 		HTTPStatus: http.StatusInternalServerError,
 	}
 	s3Err.WriteXML(w)
-	h.metrics.RecordHTTPRequest(method, r.URL.Path, s3Err.HTTPStatus, time.Since(start), 0)
+	h.metrics.RecordHTTPRequest(r.Context(),method, r.URL.Path, s3Err.HTTPStatus, time.Since(start), 0)
 }
 
 // forwardSignatureV4Request forwards a Signature V4 request directly to the backend,
@@ -178,7 +178,7 @@ func (h *Handler) forwardSignatureV4Request(w http.ResponseWriter, r *http.Reque
 			HTTPStatus: http.StatusInternalServerError,
 		}
 		s3Err.WriteXML(w)
-		h.metrics.RecordHTTPRequest(method, r.URL.Path, s3Err.HTTPStatus, time.Since(start), 0)
+		h.metrics.RecordHTTPRequest(r.Context(),method, r.URL.Path, s3Err.HTTPStatus, time.Since(start), 0)
 		return
 	}
 
@@ -223,7 +223,7 @@ func (h *Handler) forwardSignatureV4Request(w http.ResponseWriter, r *http.Reque
 			HTTPStatus: http.StatusInternalServerError,
 		}
 		s3Err.WriteXML(w)
-		h.metrics.RecordHTTPRequest(method, r.URL.Path, s3Err.HTTPStatus, time.Since(start), 0)
+		h.metrics.RecordHTTPRequest(r.Context(),method, r.URL.Path, s3Err.HTTPStatus, time.Since(start), 0)
 		return
 	}
 
@@ -293,7 +293,7 @@ func (h *Handler) forwardSignatureV4Request(w http.ResponseWriter, r *http.Reque
 			HTTPStatus: http.StatusBadGateway,
 		}
 		s3Err.WriteXML(w)
-		h.metrics.RecordHTTPRequest(method, r.URL.Path, s3Err.HTTPStatus, time.Since(start), 0)
+		h.metrics.RecordHTTPRequest(r.Context(),method, r.URL.Path, s3Err.HTTPStatus, time.Since(start), 0)
 		return
 	}
 	defer backendResp.Body.Close()
@@ -387,7 +387,7 @@ func (h *Handler) forwardSignatureV4Request(w http.ResponseWriter, r *http.Reque
 	if contentLength < 0 {
 		contentLength = 0
 	}
-	h.metrics.RecordHTTPRequest(method, r.URL.Path, backendResp.StatusCode, time.Since(start), contentLength)
+	h.metrics.RecordHTTPRequest(r.Context(),method, r.URL.Path, backendResp.StatusCode, time.Since(start), contentLength)
 }
 
 // getS3Client returns the appropriate S3 client for the request.
@@ -467,7 +467,7 @@ func (h *Handler) handleHealth(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
 	handler := metrics.HealthHandler()
 	handler(w, r)
-	h.metrics.RecordHTTPRequest("GET", "/health", http.StatusOK, time.Since(start), 0)
+	h.metrics.RecordHTTPRequest(r.Context(),"GET", "/health", http.StatusOK, time.Since(start), 0)
 }
 
 // handleReady handles readiness check requests.
@@ -491,7 +491,7 @@ func (h *Handler) handleReady(w http.ResponseWriter, r *http.Request) {
 	handler := metrics.ReadinessHandler(healthCheck)
 	handler(w, r)
 	
-	h.metrics.RecordHTTPRequest("GET", "/ready", statusCode, time.Since(start), 0)
+	h.metrics.RecordHTTPRequest(r.Context(),"GET", "/ready", statusCode, time.Since(start), 0)
 }
 
 // handleLive handles liveness check requests.
@@ -499,7 +499,7 @@ func (h *Handler) handleLive(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
 	handler := metrics.LivenessHandler()
 	handler(w, r)
-	h.metrics.RecordHTTPRequest("GET", "/live", http.StatusOK, time.Since(start), 0)
+	h.metrics.RecordHTTPRequest(r.Context(),"GET", "/live", http.StatusOK, time.Since(start), 0)
 }
 
 // handleGetObject handles GET object requests.
@@ -518,7 +518,7 @@ func (h *Handler) handleGetObject(w http.ResponseWriter, r *http.Request) {
 		s3Err := ErrInvalidRequest
 		s3Err.Resource = r.URL.Path
 		s3Err.WriteXML(w)
-		h.metrics.RecordHTTPRequest("GET", r.URL.Path, s3Err.HTTPStatus, time.Since(start), 0)
+		h.metrics.RecordHTTPRequest(r.Context(),"GET", r.URL.Path, s3Err.HTTPStatus, time.Since(start), 0)
 		return
 	}
 
@@ -545,7 +545,7 @@ func (h *Handler) handleGetObject(w http.ResponseWriter, r *http.Request) {
 			}
 			w.WriteHeader(http.StatusOK)
 			w.Write(cachedEntry.Data)
-			h.metrics.RecordHTTPRequest("GET", r.URL.Path, http.StatusOK, time.Since(start), int64(len(cachedEntry.Data)))
+			h.metrics.RecordHTTPRequest(r.Context(),"GET", r.URL.Path, http.StatusOK, time.Since(start), int64(len(cachedEntry.Data)))
 			if h.auditLogger != nil {
 				h.auditLogger.LogAccess("get", bucket, key, getClientIP(r), r.UserAgent(), getRequestID(r), true, nil, time.Since(start))
 			}
@@ -580,7 +580,7 @@ func (h *Handler) handleGetObject(w http.ResponseWriter, r *http.Request) {
             HTTPStatus: http.StatusNotImplemented,
         }
         s3Err.WriteXML(w)
-        h.metrics.RecordHTTPRequest("GET", r.URL.Path, s3Err.HTTPStatus, time.Since(start), 0)
+        h.metrics.RecordHTTPRequest(r.Context(),"GET", r.URL.Path, s3Err.HTTPStatus, time.Since(start), 0)
         return
     }
 
@@ -640,8 +640,8 @@ func (h *Handler) handleGetObject(w http.ResponseWriter, r *http.Request) {
 			"bucket": bucket,
 			"key":    key,
 		}).Error("Failed to get object")
-		h.metrics.RecordS3Error("GetObject", bucket, s3Err.Code)
-		h.metrics.RecordHTTPRequest("GET", r.URL.Path, s3Err.HTTPStatus, time.Since(start), 0)
+		h.metrics.RecordS3Error(r.Context(),"GetObject", bucket, s3Err.Code)
+		h.metrics.RecordHTTPRequest(r.Context(),"GET", r.URL.Path, s3Err.HTTPStatus, time.Since(start), 0)
 		return
 	}
 	defer reader.Close()
@@ -683,7 +683,7 @@ func (h *Handler) handleGetObject(w http.ResponseWriter, r *http.Request) {
 			"bucket": bucket,
 			"key":    key,
 		}).Error("Failed to decrypt object")
-		h.metrics.RecordEncryptionError("decrypt", "decryption_failed")
+		h.metrics.RecordEncryptionError(r.Context(),"decrypt", "decryption_failed")
 		s3Err := &S3Error{
 			Code:       "InternalError",
 			Message:    "Failed to decrypt object",
@@ -691,7 +691,7 @@ func (h *Handler) handleGetObject(w http.ResponseWriter, r *http.Request) {
 			HTTPStatus: http.StatusInternalServerError,
 		}
 		s3Err.WriteXML(w)
-		h.metrics.RecordHTTPRequest("GET", r.URL.Path, s3Err.HTTPStatus, time.Since(start), 0)
+		h.metrics.RecordHTTPRequest(r.Context(),"GET", r.URL.Path, s3Err.HTTPStatus, time.Since(start), 0)
 		return
 	}
 
@@ -711,7 +711,7 @@ func (h *Handler) handleGetObject(w http.ResponseWriter, r *http.Request) {
                 HTTPStatus: http.StatusInternalServerError,
             }
             s3Err.WriteXML(w)
-            h.metrics.RecordHTTPRequest("GET", r.URL.Path, http.StatusInternalServerError, time.Since(start), 0)
+            h.metrics.RecordHTTPRequest(r.Context(),"GET", r.URL.Path, http.StatusInternalServerError, time.Since(start), 0)
             if h.auditLogger != nil {
                 alg := metadata[crypto.MetaAlgorithm]
                 if alg == "" {
@@ -728,7 +728,7 @@ func (h *Handler) handleGetObject(w http.ResponseWriter, r *http.Request) {
         // But we still need to read it to send it
         decryptedSize = plaintextEnd - plaintextStart + 1
     }
-    h.metrics.RecordEncryptionOperation("decrypt", decryptDuration, decryptedSize)
+    h.metrics.RecordEncryptionOperation(r.Context(),"decrypt", decryptDuration, decryptedSize)
 
 	// Get algorithm and key version from metadata for audit logging
 	algorithm := metadata[crypto.MetaAlgorithm]
@@ -750,7 +750,7 @@ func (h *Handler) handleGetObject(w http.ResponseWriter, r *http.Request) {
 		activeKeyVersion = h.currentKeyVersion(r.Context())
 		// Track rotated read if key version used differs from active version
 		if keyVersionUsed > 0 && activeKeyVersion > 0 && keyVersionUsed != activeKeyVersion {
-			h.metrics.RecordRotatedRead(keyVersionUsed, activeKeyVersion)
+			h.metrics.RecordRotatedRead(r.Context(),keyVersionUsed, activeKeyVersion)
 		}
 	}
 
@@ -798,7 +798,7 @@ func (h *Handler) handleGetObject(w http.ResponseWriter, r *http.Request) {
                     HTTPStatus: http.StatusInternalServerError,
                 }
                 s3Err.WriteXML(w)
-                h.metrics.RecordHTTPRequest("GET", r.URL.Path, s3Err.HTTPStatus, time.Since(start), 0)
+                h.metrics.RecordHTTPRequest(r.Context(),"GET", r.URL.Path, s3Err.HTTPStatus, time.Since(start), 0)
                 return
             }
             
@@ -832,7 +832,7 @@ func (h *Handler) handleGetObject(w http.ResponseWriter, r *http.Request) {
                     HTTPStatus: http.StatusRequestedRangeNotSatisfiable,
                 }
                 s3Err.WriteXML(w)
-                h.metrics.RecordHTTPRequest("GET", r.URL.Path, s3Err.HTTPStatus, time.Since(start), 0)
+                h.metrics.RecordHTTPRequest(r.Context(),"GET", r.URL.Path, s3Err.HTTPStatus, time.Since(start), 0)
                 return
             }
 
@@ -871,11 +871,11 @@ func (h *Handler) handleGetObject(w http.ResponseWriter, r *http.Request) {
         n64, err := io.Copy(w, decryptedReader)
         if err != nil {
             h.logger.WithError(err).Error("Failed to write response")
-            h.metrics.RecordHTTPRequest("GET", r.URL.Path, http.StatusInternalServerError, time.Since(start), n64)
+            h.metrics.RecordHTTPRequest(r.Context(),"GET", r.URL.Path, http.StatusInternalServerError, time.Since(start), n64)
             return
         }
-        h.metrics.RecordS3Operation("GetObject", bucket, time.Since(start))
-        h.metrics.RecordHTTPRequest("GET", r.URL.Path, http.StatusOK, time.Since(start), n64)
+        h.metrics.RecordS3Operation(r.Context(),"GetObject", bucket, time.Since(start))
+        h.metrics.RecordHTTPRequest(r.Context(),"GET", r.URL.Path, http.StatusOK, time.Since(start), n64)
         return
     }
 
@@ -883,12 +883,12 @@ func (h *Handler) handleGetObject(w http.ResponseWriter, r *http.Request) {
     n, err := w.Write(outputData)
     if err != nil {
         h.logger.WithError(err).Error("Failed to write response")
-        h.metrics.RecordHTTPRequest("GET", r.URL.Path, http.StatusInternalServerError, time.Since(start), int64(n))
+        h.metrics.RecordHTTPRequest(r.Context(),"GET", r.URL.Path, http.StatusInternalServerError, time.Since(start), int64(n))
         return
     }
 
-    h.metrics.RecordS3Operation("GetObject", bucket, time.Since(start))
-    h.metrics.RecordHTTPRequest("GET", r.URL.Path, http.StatusOK, time.Since(start), int64(n))
+    h.metrics.RecordS3Operation(r.Context(),"GetObject", bucket, time.Since(start))
+    h.metrics.RecordHTTPRequest(r.Context(),"GET", r.URL.Path, http.StatusOK, time.Since(start), int64(n))
 }
 
 // handlePutObject handles PUT object requests.
@@ -907,7 +907,7 @@ func (h *Handler) handlePutObject(w http.ResponseWriter, r *http.Request) {
 		s3Err := ErrInvalidRequest
 		s3Err.Resource = r.URL.Path
 		s3Err.WriteXML(w)
-		h.metrics.RecordHTTPRequest("PUT", r.URL.Path, s3Err.HTTPStatus, time.Since(start), 0)
+		h.metrics.RecordHTTPRequest(r.Context(),"PUT", r.URL.Path, s3Err.HTTPStatus, time.Since(start), 0)
 		return
 	}
 
@@ -978,7 +978,7 @@ func (h *Handler) handlePutObject(w http.ResponseWriter, r *http.Request) {
 			"bucket": bucket,
 			"key":    key,
 		}).Error("Failed to encrypt object")
-		h.metrics.RecordEncryptionError("encrypt", "encryption_failed")
+		h.metrics.RecordEncryptionError(r.Context(),"encrypt", "encryption_failed")
 		
 		// Audit logging for failed encryption
 		if h.auditLogger != nil {
@@ -992,7 +992,7 @@ func (h *Handler) handlePutObject(w http.ResponseWriter, r *http.Request) {
 			HTTPStatus: http.StatusInternalServerError,
 		}
 		s3Err.WriteXML(w)
-		h.metrics.RecordHTTPRequest("PUT", r.URL.Path, s3Err.HTTPStatus, time.Since(start), 0)
+		h.metrics.RecordHTTPRequest(r.Context(),"PUT", r.URL.Path, s3Err.HTTPStatus, time.Since(start), 0)
 		return
 	}
 
@@ -1007,7 +1007,7 @@ func (h *Handler) handlePutObject(w http.ResponseWriter, r *http.Request) {
 	}
 
     // Record encryption metrics using original bytes
-    h.metrics.RecordEncryptionOperation("encrypt", encryptDuration, originalBytes)
+    h.metrics.RecordEncryptionOperation(r.Context(),"encrypt", encryptDuration, originalBytes)
 
     // Debug logging for metadata before upload
     h.logger.WithFields(logrus.Fields{
@@ -1097,14 +1097,14 @@ func (h *Handler) handlePutObject(w http.ResponseWriter, r *http.Request) {
 			"key":    key,
 			"metadata_keys": metadataKeys,
 		}).Error("Failed to put object")
-		h.metrics.RecordS3Error("PutObject", bucket, s3Err.Code)
-		h.metrics.RecordHTTPRequest("PUT", r.URL.Path, s3Err.HTTPStatus, time.Since(start), 0)
+		h.metrics.RecordS3Error(r.Context(),"PutObject", bucket, s3Err.Code)
+		h.metrics.RecordHTTPRequest(r.Context(),"PUT", r.URL.Path, s3Err.HTTPStatus, time.Since(start), 0)
 		return
 	}
 
 	w.WriteHeader(http.StatusOK)
-	h.metrics.RecordS3Operation("PutObject", bucket, time.Since(start))
-	h.metrics.RecordHTTPRequest("PUT", r.URL.Path, http.StatusOK, time.Since(start), 0)
+	h.metrics.RecordS3Operation(r.Context(),"PutObject", bucket, time.Since(start))
+	h.metrics.RecordHTTPRequest(r.Context(),"PUT", r.URL.Path, http.StatusOK, time.Since(start), 0)
 }
 
 // isStandardMetadata checks if a header is a standard HTTP metadata header.
@@ -1134,7 +1134,7 @@ func (h *Handler) handleDeleteObject(w http.ResponseWriter, r *http.Request) {
 		s3Err := ErrInvalidRequest
 		s3Err.Resource = r.URL.Path
 		s3Err.WriteXML(w)
-		h.metrics.RecordHTTPRequest("DELETE", r.URL.Path, s3Err.HTTPStatus, time.Since(start), 0)
+		h.metrics.RecordHTTPRequest(r.Context(),"DELETE", r.URL.Path, s3Err.HTTPStatus, time.Since(start), 0)
 		return
 	}
 
@@ -1162,8 +1162,8 @@ func (h *Handler) handleDeleteObject(w http.ResponseWriter, r *http.Request) {
 			"bucket": bucket,
 			"key":    key,
 		}).Error("Failed to delete object")
-		h.metrics.RecordS3Error("DeleteObject", bucket, s3Err.Code)
-		h.metrics.RecordHTTPRequest("DELETE", r.URL.Path, s3Err.HTTPStatus, time.Since(start), 0)
+		h.metrics.RecordS3Error(r.Context(),"DeleteObject", bucket, s3Err.Code)
+		h.metrics.RecordHTTPRequest(r.Context(),"DELETE", r.URL.Path, s3Err.HTTPStatus, time.Since(start), 0)
 		if h.auditLogger != nil {
 			h.auditLogger.LogAccess("delete", bucket, key, getClientIP(r), r.UserAgent(), getRequestID(r), false, err, time.Since(start))
 		}
@@ -1181,8 +1181,8 @@ func (h *Handler) handleDeleteObject(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.WriteHeader(http.StatusNoContent)
-	h.metrics.RecordS3Operation("DeleteObject", bucket, time.Since(start))
-	h.metrics.RecordHTTPRequest("DELETE", r.URL.Path, http.StatusNoContent, time.Since(start), 0)
+	h.metrics.RecordS3Operation(r.Context(),"DeleteObject", bucket, time.Since(start))
+	h.metrics.RecordHTTPRequest(r.Context(),"DELETE", r.URL.Path, http.StatusNoContent, time.Since(start), 0)
 }
 
 // handleHeadObject handles HEAD object requests.
@@ -1196,7 +1196,7 @@ func (h *Handler) handleHeadObject(w http.ResponseWriter, r *http.Request) {
 		s3Err := ErrInvalidRequest
 		s3Err.Resource = r.URL.Path
 		s3Err.WriteXML(w)
-		h.metrics.RecordHTTPRequest("HEAD", r.URL.Path, s3Err.HTTPStatus, time.Since(start), 0)
+		h.metrics.RecordHTTPRequest(r.Context(),"HEAD", r.URL.Path, s3Err.HTTPStatus, time.Since(start), 0)
 		return
 	}
 
@@ -1224,8 +1224,8 @@ func (h *Handler) handleHeadObject(w http.ResponseWriter, r *http.Request) {
 			"bucket": bucket,
 			"key":    key,
 		}).Error("Failed to head object")
-		h.metrics.RecordS3Error("HeadObject", bucket, s3Err.Code)
-		h.metrics.RecordHTTPRequest("HEAD", r.URL.Path, s3Err.HTTPStatus, time.Since(start), 0)
+		h.metrics.RecordS3Error(r.Context(),"HeadObject", bucket, s3Err.Code)
+		h.metrics.RecordHTTPRequest(r.Context(),"HEAD", r.URL.Path, s3Err.HTTPStatus, time.Since(start), 0)
 		return
 	}
 
@@ -1261,8 +1261,8 @@ func (h *Handler) handleHeadObject(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.WriteHeader(http.StatusOK)
-	h.metrics.RecordS3Operation("HeadObject", bucket, time.Since(start))
-	h.metrics.RecordHTTPRequest("HEAD", r.URL.Path, http.StatusOK, time.Since(start), 0)
+	h.metrics.RecordS3Operation(r.Context(),"HeadObject", bucket, time.Since(start))
+	h.metrics.RecordHTTPRequest(r.Context(),"HEAD", r.URL.Path, http.StatusOK, time.Since(start), 0)
 }
 
 // isEncryptionMetadata checks if a metadata key is related to encryption.
@@ -1338,7 +1338,7 @@ func (h *Handler) handleListObjects(w http.ResponseWriter, r *http.Request) {
 		s3Err := ErrInvalidBucketName
 		s3Err.Resource = r.URL.Path
 		s3Err.WriteXML(w)
-		h.metrics.RecordHTTPRequest("GET", r.URL.Path, s3Err.HTTPStatus, time.Since(start), 0)
+		h.metrics.RecordHTTPRequest(r.Context(),"GET", r.URL.Path, s3Err.HTTPStatus, time.Since(start), 0)
 		return
 	}
 
@@ -1374,8 +1374,8 @@ func (h *Handler) handleListObjects(w http.ResponseWriter, r *http.Request) {
 			"bucket": bucket,
 			"prefix": prefix,
 		}).Error("Failed to list objects")
-		h.metrics.RecordS3Error("ListObjects", bucket, s3Err.Code)
-		h.metrics.RecordHTTPRequest("GET", r.URL.Path, s3Err.HTTPStatus, time.Since(start), 0)
+		h.metrics.RecordS3Error(r.Context(),"ListObjects", bucket, s3Err.Code)
+		h.metrics.RecordHTTPRequest(r.Context(),"GET", r.URL.Path, s3Err.HTTPStatus, time.Since(start), 0)
 		return
 	}
 
@@ -1415,8 +1415,8 @@ func (h *Handler) handleListObjects(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 	w.Write([]byte(xmlResponse))
 
-	h.metrics.RecordS3Operation("ListObjects", bucket, time.Since(start))
-	h.metrics.RecordHTTPRequest("GET", r.URL.Path, http.StatusOK, time.Since(start), int64(len(xmlResponse)))
+	h.metrics.RecordS3Operation(r.Context(),"ListObjects", bucket, time.Since(start))
+	h.metrics.RecordHTTPRequest(r.Context(),"GET", r.URL.Path, http.StatusOK, time.Since(start), int64(len(xmlResponse)))
 }
 
 // applyRangeRequest applies a Range header request to data.
@@ -1525,7 +1525,7 @@ func (h *Handler) handleCreateMultipartUpload(w http.ResponseWriter, r *http.Req
 		s3Err := ErrInvalidRequest
 		s3Err.Resource = r.URL.Path
 		s3Err.WriteXML(w)
-		h.metrics.RecordHTTPRequest("POST", r.URL.Path, s3Err.HTTPStatus, time.Since(start), 0)
+		h.metrics.RecordHTTPRequest(r.Context(),"POST", r.URL.Path, s3Err.HTTPStatus, time.Since(start), 0)
 		return
 	}
 
@@ -1538,7 +1538,7 @@ func (h *Handler) handleCreateMultipartUpload(w http.ResponseWriter, r *http.Req
 			HTTPStatus: http.StatusNotImplemented,
 		}
 		s3Err.WriteXML(w)
-		h.metrics.RecordHTTPRequest("POST", r.URL.Path, s3Err.HTTPStatus, time.Since(start), 0)
+		h.metrics.RecordHTTPRequest(r.Context(),"POST", r.URL.Path, s3Err.HTTPStatus, time.Since(start), 0)
 		return
 	}
 
@@ -1572,8 +1572,8 @@ func (h *Handler) handleCreateMultipartUpload(w http.ResponseWriter, r *http.Req
 			"bucket": bucket,
 			"key":    key,
 		}).Error("Failed to create multipart upload")
-		h.metrics.RecordS3Error("CreateMultipartUpload", bucket, s3Err.Code)
-		h.metrics.RecordHTTPRequest("POST", r.URL.Path, s3Err.HTTPStatus, time.Since(start), 0)
+		h.metrics.RecordS3Error(r.Context(),"CreateMultipartUpload", bucket, s3Err.Code)
+		h.metrics.RecordHTTPRequest(r.Context(),"POST", r.URL.Path, s3Err.HTTPStatus, time.Since(start), 0)
 		return
 	}
 
@@ -1595,8 +1595,8 @@ func (h *Handler) handleCreateMultipartUpload(w http.ResponseWriter, r *http.Req
 	w.WriteHeader(http.StatusOK)
 	xml.NewEncoder(w).Encode(result)
 
-	h.metrics.RecordS3Operation("CreateMultipartUpload", bucket, time.Since(start))
-	h.metrics.RecordHTTPRequest("POST", r.URL.Path, http.StatusOK, time.Since(start), 0)
+	h.metrics.RecordS3Operation(r.Context(),"CreateMultipartUpload", bucket, time.Since(start))
+	h.metrics.RecordHTTPRequest(r.Context(),"POST", r.URL.Path, http.StatusOK, time.Since(start), 0)
 }
 
 // CompleteMultipartUpload represents the XML structure for completing multipart uploads.
@@ -1756,7 +1756,7 @@ func (h *Handler) handleUploadPart(w http.ResponseWriter, r *http.Request) {
 		s3Err := ErrInvalidRequest
 		s3Err.Resource = r.URL.Path
 		s3Err.WriteXML(w)
-		h.metrics.RecordHTTPRequest("PUT", r.URL.Path, s3Err.HTTPStatus, time.Since(start), 0)
+		h.metrics.RecordHTTPRequest(r.Context(),"PUT", r.URL.Path, s3Err.HTTPStatus, time.Since(start), 0)
 		return
 	}
 
@@ -1769,7 +1769,7 @@ func (h *Handler) handleUploadPart(w http.ResponseWriter, r *http.Request) {
 			HTTPStatus: http.StatusNotImplemented,
 		}
 		s3Err.WriteXML(w)
-		h.metrics.RecordHTTPRequest("PUT", r.URL.Path, s3Err.HTTPStatus, time.Since(start), 0)
+		h.metrics.RecordHTTPRequest(r.Context(),"PUT", r.URL.Path, s3Err.HTTPStatus, time.Since(start), 0)
 		return
 	}
 
@@ -1782,7 +1782,7 @@ func (h *Handler) handleUploadPart(w http.ResponseWriter, r *http.Request) {
 			HTTPStatus: http.StatusBadRequest,
 		}
 		s3Err.WriteXML(w)
-		h.metrics.RecordHTTPRequest("PUT", r.URL.Path, s3Err.HTTPStatus, time.Since(start), 0)
+		h.metrics.RecordHTTPRequest(r.Context(),"PUT", r.URL.Path, s3Err.HTTPStatus, time.Since(start), 0)
 		return
 	}
 
@@ -1829,7 +1829,7 @@ func (h *Handler) handleUploadPart(w http.ResponseWriter, r *http.Request) {
 				HTTPStatus: http.StatusInternalServerError,
 			}
 			s3Err.WriteXML(w)
-			h.metrics.RecordHTTPRequest("PUT", r.URL.Path, s3Err.HTTPStatus, time.Since(start), 0)
+			h.metrics.RecordHTTPRequest(r.Context(),"PUT", r.URL.Path, s3Err.HTTPStatus, time.Since(start), 0)
 			return
 		}
 
@@ -1863,7 +1863,7 @@ func (h *Handler) handleUploadPart(w http.ResponseWriter, r *http.Request) {
 				HTTPStatus: http.StatusInternalServerError,
 			}
 			s3Err.WriteXML(w)
-			h.metrics.RecordHTTPRequest("PUT", r.URL.Path, s3Err.HTTPStatus, time.Since(start), 0)
+			h.metrics.RecordHTTPRequest(r.Context(),"PUT", r.URL.Path, s3Err.HTTPStatus, time.Since(start), 0)
 			return
 		}
 		encryptedReader = bytes.NewReader(partData)
@@ -1882,15 +1882,15 @@ func (h *Handler) handleUploadPart(w http.ResponseWriter, r *http.Request) {
 			"uploadID":  uploadID,
 			"partNumber": partNumber,
 		}).Error("Failed to upload part")
-		h.metrics.RecordS3Error("UploadPart", bucket, s3Err.Code)
-		h.metrics.RecordHTTPRequest("PUT", r.URL.Path, s3Err.HTTPStatus, time.Since(start), 0)
+		h.metrics.RecordS3Error(r.Context(),"UploadPart", bucket, s3Err.Code)
+		h.metrics.RecordHTTPRequest(r.Context(),"PUT", r.URL.Path, s3Err.HTTPStatus, time.Since(start), 0)
 		return
 	}
 
 	w.Header().Set("ETag", etag)
 	w.WriteHeader(http.StatusOK)
-	h.metrics.RecordS3Operation("UploadPart", bucket, time.Since(start))
-	h.metrics.RecordHTTPRequest("PUT", r.URL.Path, http.StatusOK, time.Since(start), 0)
+	h.metrics.RecordS3Operation(r.Context(),"UploadPart", bucket, time.Since(start))
+	h.metrics.RecordHTTPRequest(r.Context(),"PUT", r.URL.Path, http.StatusOK, time.Since(start), 0)
 }
 
 // handleCompleteMultipartUpload handles completing a multipart upload.
@@ -1906,7 +1906,7 @@ func (h *Handler) handleCompleteMultipartUpload(w http.ResponseWriter, r *http.R
 		s3Err := ErrInvalidRequest
 		s3Err.Resource = r.URL.Path
 		s3Err.WriteXML(w)
-		h.metrics.RecordHTTPRequest("POST", r.URL.Path, s3Err.HTTPStatus, time.Since(start), 0)
+		h.metrics.RecordHTTPRequest(r.Context(),"POST", r.URL.Path, s3Err.HTTPStatus, time.Since(start), 0)
 		return
 	}
 
@@ -1919,7 +1919,7 @@ func (h *Handler) handleCompleteMultipartUpload(w http.ResponseWriter, r *http.R
 			HTTPStatus: http.StatusNotImplemented,
 		}
 		s3Err.WriteXML(w)
-		h.metrics.RecordHTTPRequest("POST", r.URL.Path, s3Err.HTTPStatus, time.Since(start), 0)
+		h.metrics.RecordHTTPRequest(r.Context(),"POST", r.URL.Path, s3Err.HTTPStatus, time.Since(start), 0)
 		return
 	}
 
@@ -1949,7 +1949,7 @@ func (h *Handler) handleCompleteMultipartUpload(w http.ResponseWriter, r *http.R
 			}
 		}
 		s3Err.WriteXML(w)
-		h.metrics.RecordHTTPRequest("POST", r.URL.Path, s3Err.HTTPStatus, time.Since(start), 0)
+		h.metrics.RecordHTTPRequest(r.Context(),"POST", r.URL.Path, s3Err.HTTPStatus, time.Since(start), 0)
 		return
 	}
 
@@ -1971,8 +1971,8 @@ func (h *Handler) handleCompleteMultipartUpload(w http.ResponseWriter, r *http.R
 			"key":      key,
 			"uploadID": uploadID,
 		}).Error("Failed to complete multipart upload")
-		h.metrics.RecordS3Error("CompleteMultipartUpload", bucket, s3Err.Code)
-		h.metrics.RecordHTTPRequest("POST", r.URL.Path, s3Err.HTTPStatus, time.Since(start), 0)
+		h.metrics.RecordS3Error(r.Context(),"CompleteMultipartUpload", bucket, s3Err.Code)
+		h.metrics.RecordHTTPRequest(r.Context(),"POST", r.URL.Path, s3Err.HTTPStatus, time.Since(start), 0)
 		return
 	}
 
@@ -1996,8 +1996,8 @@ func (h *Handler) handleCompleteMultipartUpload(w http.ResponseWriter, r *http.R
 	w.WriteHeader(http.StatusOK)
 	xml.NewEncoder(w).Encode(result)
 
-	h.metrics.RecordS3Operation("CompleteMultipartUpload", bucket, time.Since(start))
-	h.metrics.RecordHTTPRequest("POST", r.URL.Path, http.StatusOK, time.Since(start), 0)
+	h.metrics.RecordS3Operation(r.Context(),"CompleteMultipartUpload", bucket, time.Since(start))
+	h.metrics.RecordHTTPRequest(r.Context(),"POST", r.URL.Path, http.StatusOK, time.Since(start), 0)
 }
 
 // handleAbortMultipartUpload handles aborting a multipart upload.
@@ -2012,7 +2012,7 @@ func (h *Handler) handleAbortMultipartUpload(w http.ResponseWriter, r *http.Requ
 		s3Err := ErrInvalidRequest
 		s3Err.Resource = r.URL.Path
 		s3Err.WriteXML(w)
-		h.metrics.RecordHTTPRequest("DELETE", r.URL.Path, s3Err.HTTPStatus, time.Since(start), 0)
+		h.metrics.RecordHTTPRequest(r.Context(),"DELETE", r.URL.Path, s3Err.HTTPStatus, time.Since(start), 0)
 		return
 	}
 
@@ -2025,7 +2025,7 @@ func (h *Handler) handleAbortMultipartUpload(w http.ResponseWriter, r *http.Requ
 			HTTPStatus: http.StatusNotImplemented,
 		}
 		s3Err.WriteXML(w)
-		h.metrics.RecordHTTPRequest("DELETE", r.URL.Path, s3Err.HTTPStatus, time.Since(start), 0)
+		h.metrics.RecordHTTPRequest(r.Context(),"DELETE", r.URL.Path, s3Err.HTTPStatus, time.Since(start), 0)
 		return
 	}
 
@@ -2048,14 +2048,14 @@ func (h *Handler) handleAbortMultipartUpload(w http.ResponseWriter, r *http.Requ
 			"key":      key,
 			"uploadID": uploadID,
 		}).Error("Failed to abort multipart upload")
-		h.metrics.RecordS3Error("AbortMultipartUpload", bucket, s3Err.Code)
-		h.metrics.RecordHTTPRequest("DELETE", r.URL.Path, s3Err.HTTPStatus, time.Since(start), 0)
+		h.metrics.RecordS3Error(r.Context(),"AbortMultipartUpload", bucket, s3Err.Code)
+		h.metrics.RecordHTTPRequest(r.Context(),"DELETE", r.URL.Path, s3Err.HTTPStatus, time.Since(start), 0)
 		return
 	}
 
 	w.WriteHeader(http.StatusNoContent)
-	h.metrics.RecordS3Operation("AbortMultipartUpload", bucket, time.Since(start))
-	h.metrics.RecordHTTPRequest("DELETE", r.URL.Path, http.StatusNoContent, time.Since(start), 0)
+	h.metrics.RecordS3Operation(r.Context(),"AbortMultipartUpload", bucket, time.Since(start))
+	h.metrics.RecordHTTPRequest(r.Context(),"DELETE", r.URL.Path, http.StatusNoContent, time.Since(start), 0)
 }
 
 // handleListParts handles listing parts of a multipart upload.
@@ -2071,7 +2071,7 @@ func (h *Handler) handleListParts(w http.ResponseWriter, r *http.Request) {
 		s3Err := ErrInvalidRequest
 		s3Err.Resource = r.URL.Path
 		s3Err.WriteXML(w)
-		h.metrics.RecordHTTPRequest("GET", r.URL.Path, s3Err.HTTPStatus, time.Since(start), 0)
+		h.metrics.RecordHTTPRequest(r.Context(),"GET", r.URL.Path, s3Err.HTTPStatus, time.Since(start), 0)
 		return
 	}
 
@@ -2084,7 +2084,7 @@ func (h *Handler) handleListParts(w http.ResponseWriter, r *http.Request) {
 			HTTPStatus: http.StatusNotImplemented,
 		}
 		s3Err.WriteXML(w)
-		h.metrics.RecordHTTPRequest("GET", r.URL.Path, s3Err.HTTPStatus, time.Since(start), 0)
+		h.metrics.RecordHTTPRequest(r.Context(),"GET", r.URL.Path, s3Err.HTTPStatus, time.Since(start), 0)
 		return
 	}
 
@@ -2107,8 +2107,8 @@ func (h *Handler) handleListParts(w http.ResponseWriter, r *http.Request) {
 			"key":      key,
 			"uploadID": uploadID,
 		}).Error("Failed to list parts")
-		h.metrics.RecordS3Error("ListParts", bucket, s3Err.Code)
-		h.metrics.RecordHTTPRequest("GET", r.URL.Path, s3Err.HTTPStatus, time.Since(start), 0)
+		h.metrics.RecordS3Error(r.Context(),"ListParts", bucket, s3Err.Code)
+		h.metrics.RecordHTTPRequest(r.Context(),"GET", r.URL.Path, s3Err.HTTPStatus, time.Since(start), 0)
 		return
 	}
 
@@ -2149,8 +2149,8 @@ func (h *Handler) handleListParts(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 	xml.NewEncoder(w).Encode(result)
 
-	h.metrics.RecordS3Operation("ListParts", bucket, time.Since(start))
-	h.metrics.RecordHTTPRequest("GET", r.URL.Path, http.StatusOK, time.Since(start), 0)
+	h.metrics.RecordS3Operation(r.Context(),"ListParts", bucket, time.Since(start))
+	h.metrics.RecordHTTPRequest(r.Context(),"GET", r.URL.Path, http.StatusOK, time.Since(start), 0)
 }
 
 // handleCopyObject handles PUT Object Copy requests.
@@ -2165,7 +2165,7 @@ func (h *Handler) handleCopyObject(w http.ResponseWriter, r *http.Request, dstBu
 			HTTPStatus: http.StatusBadRequest,
 		}
 		s3Err.WriteXML(w)
-		h.metrics.RecordHTTPRequest("PUT", r.URL.Path, s3Err.HTTPStatus, time.Since(start), 0)
+		h.metrics.RecordHTTPRequest(r.Context(),"PUT", r.URL.Path, s3Err.HTTPStatus, time.Since(start), 0)
 		return
 	}
 
@@ -2196,8 +2196,8 @@ func (h *Handler) handleCopyObject(w http.ResponseWriter, r *http.Request, dstBu
 			"dstBucket": dstBucket,
 			"dstKey":    dstKey,
 		}).Error("Failed to get source object for copy")
-		h.metrics.RecordS3Error("CopyObject", dstBucket, s3Err.Code)
-		h.metrics.RecordHTTPRequest("PUT", r.URL.Path, s3Err.HTTPStatus, time.Since(start), 0)
+		h.metrics.RecordS3Error(r.Context(),"CopyObject", dstBucket, s3Err.Code)
+		h.metrics.RecordHTTPRequest(r.Context(),"PUT", r.URL.Path, s3Err.HTTPStatus, time.Since(start), 0)
 		return
 	}
 	defer srcReader.Close()
@@ -2213,7 +2213,7 @@ func (h *Handler) handleCopyObject(w http.ResponseWriter, r *http.Request, dstBu
 			HTTPStatus: http.StatusInternalServerError,
 		}
 		s3Err.WriteXML(w)
-		h.metrics.RecordHTTPRequest("PUT", r.URL.Path, s3Err.HTTPStatus, time.Since(start), 0)
+		h.metrics.RecordHTTPRequest(r.Context(),"PUT", r.URL.Path, s3Err.HTTPStatus, time.Since(start), 0)
 		return
 	}
 
@@ -2228,7 +2228,7 @@ func (h *Handler) handleCopyObject(w http.ResponseWriter, r *http.Request, dstBu
 			HTTPStatus: http.StatusInternalServerError,
 		}
 		s3Err.WriteXML(w)
-		h.metrics.RecordHTTPRequest("PUT", r.URL.Path, s3Err.HTTPStatus, time.Since(start), 0)
+		h.metrics.RecordHTTPRequest(r.Context(),"PUT", r.URL.Path, s3Err.HTTPStatus, time.Since(start), 0)
 		return
 	}
 
@@ -2260,7 +2260,7 @@ func (h *Handler) handleCopyObject(w http.ResponseWriter, r *http.Request, dstBu
 			HTTPStatus: http.StatusInternalServerError,
 		}
 		s3Err.WriteXML(w)
-		h.metrics.RecordHTTPRequest("PUT", r.URL.Path, s3Err.HTTPStatus, time.Since(start), 0)
+		h.metrics.RecordHTTPRequest(r.Context(),"PUT", r.URL.Path, s3Err.HTTPStatus, time.Since(start), 0)
 		return
 	}
 
@@ -2275,7 +2275,7 @@ func (h *Handler) handleCopyObject(w http.ResponseWriter, r *http.Request, dstBu
 			HTTPStatus: http.StatusInternalServerError,
 		}
 		s3Err.WriteXML(w)
-		h.metrics.RecordHTTPRequest("PUT", r.URL.Path, s3Err.HTTPStatus, time.Since(start), 0)
+		h.metrics.RecordHTTPRequest(r.Context(),"PUT", r.URL.Path, s3Err.HTTPStatus, time.Since(start), 0)
 		return
 	}
 
@@ -2298,8 +2298,8 @@ func (h *Handler) handleCopyObject(w http.ResponseWriter, r *http.Request, dstBu
 			"dstBucket": dstBucket,
 			"dstKey":    dstKey,
 		}).Error("Failed to put copied object")
-		h.metrics.RecordS3Error("CopyObject", dstBucket, s3Err.Code)
-		h.metrics.RecordHTTPRequest("PUT", r.URL.Path, s3Err.HTTPStatus, time.Since(start), 0)
+		h.metrics.RecordS3Error(r.Context(),"CopyObject", dstBucket, s3Err.Code)
+		h.metrics.RecordHTTPRequest(r.Context(),"PUT", r.URL.Path, s3Err.HTTPStatus, time.Since(start), 0)
 		return
 	}
 
@@ -2323,8 +2323,8 @@ func (h *Handler) handleCopyObject(w http.ResponseWriter, r *http.Request, dstBu
 	w.WriteHeader(http.StatusOK)
 	xml.NewEncoder(w).Encode(result)
 
-	h.metrics.RecordS3Operation("CopyObject", dstBucket, time.Since(start))
-	h.metrics.RecordHTTPRequest("PUT", r.URL.Path, http.StatusOK, time.Since(start), 0)
+	h.metrics.RecordS3Operation(r.Context(),"CopyObject", dstBucket, time.Since(start))
+	h.metrics.RecordHTTPRequest(r.Context(),"PUT", r.URL.Path, http.StatusOK, time.Since(start), 0)
 }
 
 // handleDeleteObjects handles batch delete requests.
@@ -2337,7 +2337,7 @@ func (h *Handler) handleDeleteObjects(w http.ResponseWriter, r *http.Request) {
 		s3Err := ErrInvalidBucketName
 		s3Err.Resource = r.URL.Path
 		s3Err.WriteXML(w)
-		h.metrics.RecordHTTPRequest("POST", r.URL.Path, s3Err.HTTPStatus, time.Since(start), 0)
+		h.metrics.RecordHTTPRequest(r.Context(),"POST", r.URL.Path, s3Err.HTTPStatus, time.Since(start), 0)
 		return
 	}
 
@@ -2371,7 +2371,7 @@ func (h *Handler) handleDeleteObjects(w http.ResponseWriter, r *http.Request) {
 			HTTPStatus: http.StatusBadRequest,
 		}
 		s3Err.WriteXML(w)
-		h.metrics.RecordHTTPRequest("POST", r.URL.Path, s3Err.HTTPStatus, time.Since(start), 0)
+		h.metrics.RecordHTTPRequest(r.Context(),"POST", r.URL.Path, s3Err.HTTPStatus, time.Since(start), 0)
 		return
 	}
 
@@ -2391,8 +2391,8 @@ func (h *Handler) handleDeleteObjects(w http.ResponseWriter, r *http.Request) {
 		h.logger.WithError(err).WithFields(logrus.Fields{
 			"bucket": bucket,
 		}).Error("Failed to delete objects")
-		h.metrics.RecordS3Error("DeleteObjects", bucket, s3Err.Code)
-		h.metrics.RecordHTTPRequest("POST", r.URL.Path, s3Err.HTTPStatus, time.Since(start), 0)
+		h.metrics.RecordS3Error(r.Context(),"DeleteObjects", bucket, s3Err.Code)
+		h.metrics.RecordHTTPRequest(r.Context(),"POST", r.URL.Path, s3Err.HTTPStatus, time.Since(start), 0)
 		return
 	}
 
@@ -2465,7 +2465,7 @@ func (h *Handler) handleDeleteObjects(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 	xml.NewEncoder(w).Encode(result)
 
-	h.metrics.RecordS3Operation("DeleteObjects", bucket, time.Since(start))
-	h.metrics.RecordHTTPRequest("POST", r.URL.Path, http.StatusOK, time.Since(start), 0)
+	h.metrics.RecordS3Operation(r.Context(),"DeleteObjects", bucket, time.Since(start))
+	h.metrics.RecordHTTPRequest(r.Context(),"POST", r.URL.Path, http.StatusOK, time.Since(start), 0)
 }
 
