@@ -323,6 +323,26 @@ config:
       value: "false"
     maxEvents:
       value: "10000"
+    redactMetadataKeys:
+      value: ""
+      valueFrom: {}
+    sink:
+      type:
+        value: "stdout"
+      endpoint:
+        value: ""
+        valueFrom: {}
+      filePath:
+        value: ""
+        valueFrom: {}
+      batchSize:
+        value: "100"
+      flushInterval:
+        value: "5s"
+      retryCount:
+        value: "3"
+      retryBackoff:
+        value: "1s"
 
 # cert-manager configuration
 certManager:

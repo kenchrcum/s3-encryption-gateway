@@ -107,3 +107,29 @@ cache:
 audit:
   enabled: false
   max_events: 10000       # Maximum events to keep in memory
+  redact_metadata_keys: [] # Optional: List of metadata keys to redact from audit logs (e.g. ["user_email", "ssn"])
+                           # Set via AUDIT_REDACT_METADATA_KEYS env var (comma-separated)
+  sink:
+    type: "stdout"        # Sink type: "stdout" (default), "file", "http"
+                          # Set via AUDIT_SINK_TYPE env var
+    
+    # File sink configuration
+    file_path: ""         # Required if type is "file"
+                          # Set via AUDIT_SINK_FILE_PATH env var
+    
+    # HTTP sink configuration
+    endpoint: ""          # Required if type is "http"
+                          # Set via AUDIT_SINK_ENDPOINT env var
+    headers:              # Optional custom headers for HTTP sink
+      # Authorization: "Bearer token"
+      # X-Custom-Header: "value"
+    
+    # Batching configuration (applies to all sinks)
+    batch_size: 100       # Number of events to buffer before flushing
+                          # Set via AUDIT_SINK_BATCH_SIZE env var
+    flush_interval: "5s"  # Maximum time to wait before flushing buffer
+                          # Set via AUDIT_SINK_FLUSH_INTERVAL env var
+    retry_count: 3        # Number of retries for failed writes
+                          # Set via AUDIT_SINK_RETRY_COUNT env var
+    retry_backoff: "1s"   # Initial backoff duration for retries
+                          # Set via AUDIT_SINK_RETRY_BACKOFF env var

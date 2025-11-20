@@ -568,9 +568,14 @@ func main() {
 	// Initialize audit logger if enabled (Phase 5 feature)
 	var auditLogger audit.Logger
 	if cfg.Audit.Enabled {
-		auditLogger = audit.NewLogger(cfg.Audit.MaxEvents, nil)
+		var err error
+		auditLogger, err = audit.NewLoggerFromConfig(cfg.Audit)
+		if err != nil {
+			logger.WithError(err).Fatal("Failed to initialize audit logger")
+		}
 		logger.WithFields(logrus.Fields{
 			"max_events": cfg.Audit.MaxEvents,
+			"sink_type":  cfg.Audit.Sink.Type,
 		}).Info("Audit logging enabled")
 	}
 
@@ -698,6 +703,14 @@ func main() {
 	if configReloader != nil {
 		configReloader.Stop()
 		logger.Info("Configuration reloader stopped")
+	}
+
+	// Stop audit logger
+	if auditLogger != nil {
+		if err := auditLogger.Close(); err != nil {
+			logger.WithError(err).Error("Failed to close audit logger")
+		}
+		logger.Info("Audit logger stopped")
 	}
 
 	// Graceful shutdown

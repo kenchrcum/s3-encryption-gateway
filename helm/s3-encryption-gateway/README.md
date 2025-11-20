@@ -270,6 +270,14 @@ config:
 |-----------|-------------|---------|
 | `config.audit.enabled` | Enable audit logging | `"false"` |
 | `config.audit.maxEvents` | Maximum audit events | `"10000"` |
+| `config.audit.redactMetadataKeys` | Comma-separated list of metadata keys to redact | `""` |
+| `config.audit.sink.type` | Sink type (stdout, file, http) | `"stdout"` |
+| `config.audit.sink.endpoint` | HTTP sink endpoint (for type=http) | `""` |
+| `config.audit.sink.filePath` | File path (for type=file) | `""` |
+| `config.audit.sink.batchSize` | Max events per batch | `"100"` |
+| `config.audit.sink.flushInterval` | Max time before flush | `"5s"` |
+| `config.audit.sink.retryCount` | Retries for failed writes | `"3"` |
+| `config.audit.sink.retryBackoff` | Initial retry backoff | `"1s"` |
 
 #### Ingress Configuration
 

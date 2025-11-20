@@ -132,6 +132,12 @@ cache:
 audit:
   enabled: false
   max_events: 10000
+  sink:
+    type: "stdout"      # stdout, file, or http
+    file_path: ""       # if type=file
+    endpoint: ""        # if type=http
+    batch_size: 100
+    flush_interval: "5s"
 ```
 
 Or use environment variables:
@@ -165,6 +171,11 @@ export CACHE_DEFAULT_TTL="5m"
 # Audit
 export AUDIT_ENABLED=false
 export AUDIT_MAX_EVENTS=10000
+export AUDIT_SINK_TYPE="stdout"
+export AUDIT_SINK_FILE_PATH="/var/log/s3-gateway/audit.json" # if type=file
+export AUDIT_SINK_ENDPOINT="http://log-collector:8080"       # if type=http
+export AUDIT_SINK_BATCH_SIZE=100
+export AUDIT_SINK_FLUSH_INTERVAL="5s"
 ```
 
 ### Running

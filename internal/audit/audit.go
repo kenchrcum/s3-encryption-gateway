@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"sync"
 	"time"
+
+	"github.com/kenneth/s3-encryption-gateway/internal/config"
 )
 
 // EventType represents the type of audit event.
@@ -58,14 +60,18 @@ type Logger interface {
 
 	// GetEvents returns all audit events (for testing/querying).
 	GetEvents() []*AuditEvent
+
+	// Close closes the logger and its underlying writer.
+	Close() error
 }
 
 // auditLogger implements the Logger interface.
 type auditLogger struct {
-	mu        sync.Mutex
-	events    []*AuditEvent
-	maxEvents int
-	writer    EventWriter
+	mu         sync.Mutex
+	events     []*AuditEvent
+	maxEvents  int
+	writer     EventWriter
+	redactKeys []string
 }
 
 // EventWriter is an interface for writing audit events.
@@ -75,15 +81,51 @@ type EventWriter interface {
 
 // NewLogger creates a new audit logger.
 func NewLogger(maxEvents int, writer EventWriter) Logger {
+	return NewLoggerWithRedaction(maxEvents, writer, nil)
+}
+
+// NewLoggerWithRedaction creates a new audit logger with redaction keys.
+func NewLoggerWithRedaction(maxEvents int, writer EventWriter, redactKeys []string) Logger {
 	if writer == nil {
 		writer = &defaultWriter{}
 	}
 	
 	return &auditLogger{
-		events:    make([]*AuditEvent, 0, maxEvents),
-		maxEvents: maxEvents,
-		writer:    writer,
+		events:     make([]*AuditEvent, 0, maxEvents),
+		maxEvents:  maxEvents,
+		writer:     writer,
+		redactKeys: redactKeys,
 	}
+}
+
+// NewLoggerFromConfig creates a new audit logger from configuration.
+func NewLoggerFromConfig(cfg config.AuditConfig) (Logger, error) {
+	var writer EventWriter
+	
+	if !cfg.Enabled {
+		// If disabled, we still return a logger but maybe with a dummy writer or handle it upstream.
+		// For now, create default writer if enabled is false but this function is called?
+		// Or rely on caller.
+	}
+
+	switch cfg.Sink.Type {
+	case "http":
+		writer = NewHTTPSink(cfg.Sink.Endpoint, cfg.Sink.Headers)
+	case "file":
+		writer = NewFileSink(cfg.Sink.FilePath)
+	case "stdout", "":
+		writer = &defaultWriter{}
+	default:
+		return nil, fmt.Errorf("unknown sink type: %s", cfg.Sink.Type)
+	}
+	
+	// Wrap with batch sink if configured
+	if cfg.Sink.BatchSize > 0 || cfg.Sink.FlushInterval > 0 {
+		// Default values handled in NewBatchSink if 0
+		writer = NewBatchSink(writer, cfg.Sink.BatchSize, cfg.Sink.FlushInterval, cfg.Sink.RetryCount, cfg.Sink.RetryBackoff)
+	}
+	
+	return NewLoggerWithRedaction(cfg.MaxEvents, writer, cfg.RedactMetadataKeys), nil
 }
 
 // Log logs an audit event.
@@ -110,6 +152,47 @@ func (l *auditLogger) Log(event *AuditEvent) error {
 	return nil
 }
 
+// Close closes the logger and its underlying writer.
+func (l *auditLogger) Close() error {
+	if closer, ok := l.writer.(interface{ Close() error }); ok {
+		return closer.Close()
+	}
+	return nil
+}
+
+// redactMetadata removes sensitive keys from metadata.
+func (l *auditLogger) redactMetadata(metadata map[string]interface{}) map[string]interface{} {
+	if len(l.redactKeys) == 0 || len(metadata) == 0 {
+		return metadata
+	}
+	
+	// Check if any key needs redaction
+	needsRedaction := false
+	for _, k := range l.redactKeys {
+		if _, ok := metadata[k]; ok {
+			needsRedaction = true
+			break
+		}
+	}
+	
+	if !needsRedaction {
+		return metadata
+	}
+
+	// Shallow copy
+	clone := make(map[string]interface{}, len(metadata))
+	for k, v := range metadata {
+		clone[k] = v
+	}
+	
+	for _, key := range l.redactKeys {
+		if _, ok := clone[key]; ok {
+			clone[key] = "[REDACTED]"
+		}
+	}
+	return clone
+}
+
 // LogEncrypt logs an encryption operation.
 func (l *auditLogger) LogEncrypt(bucket, key, algorithm string, keyVersion int, success bool, err error, duration time.Duration, metadata map[string]interface{}) {
 	event := &AuditEvent{
@@ -122,7 +205,7 @@ func (l *auditLogger) LogEncrypt(bucket, key, algorithm string, keyVersion int, 
 		KeyVersion: keyVersion,
 		Success:    success,
 		Duration:   duration,
-		Metadata:   metadata,
+		Metadata:   l.redactMetadata(metadata),
 	}
 	
 	if err != nil {
@@ -144,7 +227,7 @@ func (l *auditLogger) LogDecrypt(bucket, key, algorithm string, keyVersion int, 
 		KeyVersion: keyVersion,
 		Success:    success,
 		Duration:   duration,
-		Metadata:   metadata,
+		Metadata:   l.redactMetadata(metadata),
 	}
 	
 	if err != nil {

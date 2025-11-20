@@ -155,6 +155,20 @@ spec:
         {{- include "s3-encryption-gateway.envVar" (dict "name" "AUDIT_ENABLED" "value" .Values.config.audit.enabled.value "valueFrom" .Values.config.audit.enabled.valueFrom) | nindent 8 }}
         {{- if or (eq .Values.config.audit.enabled.value "true") (eq .Values.config.audit.enabled.value "1") }}
         {{- include "s3-encryption-gateway.envVar" (dict "name" "AUDIT_MAX_EVENTS" "value" .Values.config.audit.maxEvents.value "valueFrom" .Values.config.audit.maxEvents.valueFrom) | nindent 8 }}
+        {{- if or .Values.config.audit.redactMetadataKeys.value .Values.config.audit.redactMetadataKeys.valueFrom }}
+        {{- include "s3-encryption-gateway.envVar" (dict "name" "AUDIT_REDACT_METADATA_KEYS" "value" .Values.config.audit.redactMetadataKeys.value "valueFrom" .Values.config.audit.redactMetadataKeys.valueFrom) | nindent 8 }}
+        {{- end }}
+        {{- include "s3-encryption-gateway.envVar" (dict "name" "AUDIT_SINK_TYPE" "value" .Values.config.audit.sink.type.value "valueFrom" .Values.config.audit.sink.type.valueFrom) | nindent 8 }}
+        {{- if or .Values.config.audit.sink.endpoint.value .Values.config.audit.sink.endpoint.valueFrom }}
+        {{- include "s3-encryption-gateway.envVar" (dict "name" "AUDIT_SINK_ENDPOINT" "value" .Values.config.audit.sink.endpoint.value "valueFrom" .Values.config.audit.sink.endpoint.valueFrom) | nindent 8 }}
+        {{- end }}
+        {{- if or .Values.config.audit.sink.filePath.value .Values.config.audit.sink.filePath.valueFrom }}
+        {{- include "s3-encryption-gateway.envVar" (dict "name" "AUDIT_SINK_FILE_PATH" "value" .Values.config.audit.sink.filePath.value "valueFrom" .Values.config.audit.sink.filePath.valueFrom) | nindent 8 }}
+        {{- end }}
+        {{- include "s3-encryption-gateway.envVar" (dict "name" "AUDIT_SINK_BATCH_SIZE" "value" .Values.config.audit.sink.batchSize.value "valueFrom" .Values.config.audit.sink.batchSize.valueFrom) | nindent 8 }}
+        {{- include "s3-encryption-gateway.envVar" (dict "name" "AUDIT_SINK_FLUSH_INTERVAL" "value" .Values.config.audit.sink.flushInterval.value "valueFrom" .Values.config.audit.sink.flushInterval.valueFrom) | nindent 8 }}
+        {{- include "s3-encryption-gateway.envVar" (dict "name" "AUDIT_SINK_RETRY_COUNT" "value" .Values.config.audit.sink.retryCount.value "valueFrom" .Values.config.audit.sink.retryCount.valueFrom) | nindent 8 }}
+        {{- include "s3-encryption-gateway.envVar" (dict "name" "AUDIT_SINK_RETRY_BACKOFF" "value" .Values.config.audit.sink.retryBackoff.value "valueFrom" .Values.config.audit.sink.retryBackoff.valueFrom) | nindent 8 }}
         {{- end }}
         {{- with .Values.extraEnv }}
         {{- toYaml . | nindent 8 }}

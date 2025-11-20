@@ -165,8 +165,22 @@ type CacheConfig struct {
 
 // AuditConfig holds audit logging configuration.
 type AuditConfig struct {
-	Enabled   bool `yaml:"enabled" env:"AUDIT_ENABLED"`
-	MaxEvents int  `yaml:"max_events" env:"AUDIT_MAX_EVENTS"` // Max events to keep in memory
+	Enabled   bool       `yaml:"enabled" env:"AUDIT_ENABLED"`
+	MaxEvents int        `yaml:"max_events" env:"AUDIT_MAX_EVENTS"` // Max events to keep in memory
+	Sink      SinkConfig `yaml:"sink"`
+	RedactMetadataKeys []string `yaml:"redact_metadata_keys" env:"AUDIT_REDACT_METADATA_KEYS"`
+}
+
+// SinkConfig holds audit sink configuration.
+type SinkConfig struct {
+	Type          string            `yaml:"type" env:"AUDIT_SINK_TYPE"` // stdout, file, http
+	Endpoint      string            `yaml:"endpoint" env:"AUDIT_SINK_ENDPOINT"`
+	FilePath      string            `yaml:"file_path" env:"AUDIT_SINK_FILE_PATH"`
+	Headers       map[string]string `yaml:"headers"` // Custom headers for HTTP sink
+	BatchSize     int               `yaml:"batch_size" env:"AUDIT_SINK_BATCH_SIZE"`
+	FlushInterval time.Duration     `yaml:"flush_interval" env:"AUDIT_SINK_FLUSH_INTERVAL"`
+	RetryCount    int               `yaml:"retry_count" env:"AUDIT_SINK_RETRY_COUNT"`
+	RetryBackoff  time.Duration     `yaml:"retry_backoff" env:"AUDIT_SINK_RETRY_BACKOFF"`
 }
 
 // TracingConfig holds OpenTelemetry tracing configuration.
@@ -478,6 +492,42 @@ func loadFromEnv(config *Config) {
 			config.Audit.MaxEvents = maxEvents
 		}
 	}
+	// Audit Sink configuration
+	if v := os.Getenv("AUDIT_SINK_TYPE"); v != "" {
+		config.Audit.Sink.Type = v
+	}
+	if v := os.Getenv("AUDIT_SINK_ENDPOINT"); v != "" {
+		config.Audit.Sink.Endpoint = v
+	}
+	if v := os.Getenv("AUDIT_SINK_FILE_PATH"); v != "" {
+		config.Audit.Sink.FilePath = v
+	}
+	if v := os.Getenv("AUDIT_SINK_BATCH_SIZE"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			config.Audit.Sink.BatchSize = n
+		}
+	}
+	if v := os.Getenv("AUDIT_SINK_FLUSH_INTERVAL"); v != "" {
+		if d, err := time.ParseDuration(v); err == nil {
+			config.Audit.Sink.FlushInterval = d
+		}
+	}
+	if v := os.Getenv("AUDIT_SINK_RETRY_COUNT"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
+			config.Audit.Sink.RetryCount = n
+		}
+	}
+	if v := os.Getenv("AUDIT_SINK_RETRY_BACKOFF"); v != "" {
+		if d, err := time.ParseDuration(v); err == nil {
+			config.Audit.Sink.RetryBackoff = d
+		}
+	}
+	if v := os.Getenv("AUDIT_REDACT_METADATA_KEYS"); v != "" {
+		config.Audit.RedactMetadataKeys = strings.Split(v, ",")
+		for i := range config.Audit.RedactMetadataKeys {
+			config.Audit.RedactMetadataKeys[i] = strings.TrimSpace(config.Audit.RedactMetadataKeys[i])
+		}
+	}
 	// Proxied bucket configuration
 	if v := os.Getenv("PROXIED_BUCKET"); v != "" {
 		config.ProxiedBucket = v
@@ -665,6 +715,24 @@ func (c *Config) Validate() error {
 		}
 		if !validFormats[c.Logging.AccessLogFormat] {
 			return fmt.Errorf("invalid logging.access_log_format: %s (must be default, json, or clf)", c.Logging.AccessLogFormat)
+		}
+	}
+
+	// Validate audit configuration
+	if c.Audit.Enabled {
+		switch c.Audit.Sink.Type {
+		case "", "stdout":
+			// Valid, no extra config needed
+		case "file":
+			if c.Audit.Sink.FilePath == "" {
+				return fmt.Errorf("audit.sink.file_path is required when sink type is file")
+			}
+		case "http":
+			if c.Audit.Sink.Endpoint == "" {
+				return fmt.Errorf("audit.sink.endpoint is required when sink type is http")
+			}
+		default:
+			return fmt.Errorf("invalid audit.sink.type: %s (must be stdout, file, or http)", c.Audit.Sink.Type)
 		}
 	}
 
