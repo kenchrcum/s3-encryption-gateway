@@ -9,19 +9,20 @@ import (
 // ClientCredentials holds credentials extracted from a client request.
 type ClientCredentials struct {
 	AccessKey string
-	SecretKey  string
+	SecretKey string
 }
 
 // ExtractCredentials extracts AWS credentials from an HTTP request.
 // It tries multiple methods in order:
-// 1. Query parameters (AWSAccessKeyId, AWSSecretAccessKey) - common for presigned URLs
-// 2. Authorization header (Signature V4) - extracts access key, requires secret key lookup
-// 3. Returns error if no credentials found
+// 1. Query parameters (AWSAccessKeyId, AWSSecretAccessKey) - explicit query auth (legacy/custom)
+// 2. Query parameters (X-Amz-Credential) - Signature V4 presigned URL
+// 3. Authorization header (Signature V4) - extracts access key, requires secret key lookup
+// 4. Returns error if no credentials found
 //
-// Note: When extracting from Authorization header, only the access key is available.
+// Note: When extracting from Authorization header or X-Amz-Credential, only the access key is available.
 // The secret key must be provided via a mapping or fallback mechanism.
 func ExtractCredentials(r *http.Request) (*ClientCredentials, error) {
-	// Method 1: Query parameters (for presigned URLs or simple auth)
+	// Method 1: Query parameters (explicit auth with secret)
 	accessKey := r.URL.Query().Get("AWSAccessKeyId")
 	secretKey := r.URL.Query().Get("AWSSecretAccessKey")
 	if accessKey != "" && secretKey != "" {
@@ -31,7 +32,19 @@ func ExtractCredentials(r *http.Request) (*ClientCredentials, error) {
 		}, nil
 	}
 
-	// Method 2: Authorization header (Signature V4)
+	// Method 2: Presigned URL (Signature V4)
+	// Format: X-Amz-Credential=ACCESS_KEY/YYYYMMDD/REGION/SERVICE/aws4_request
+	if credential := r.URL.Query().Get("X-Amz-Credential"); credential != "" {
+		parts := strings.Split(credential, "/")
+		if len(parts) > 0 && parts[0] != "" {
+			return &ClientCredentials{
+				AccessKey: parts[0],
+				SecretKey: "", // Must be resolved by caller
+			}, nil
+		}
+	}
+
+	// Method 3: Authorization header (Signature V4)
 	// Format: AWS4-HMAC-SHA256 Credential=ACCESS_KEY/YYYYMMDD/REGION/s3/aws4_request, ...
 	authHeader := r.Header.Get("Authorization")
 	if authHeader != "" {
@@ -48,7 +61,7 @@ func ExtractCredentials(r *http.Request) (*ClientCredentials, error) {
 					endIdx = len(credentialPart)
 				}
 				credential := credentialPart[:endIdx]
-				
+
 				// Parse: ACCESS_KEY/YYYYMMDD/REGION/s3/aws4_request
 				parts := strings.Split(credential, "/")
 				if len(parts) > 0 && parts[0] != "" {
@@ -88,8 +101,12 @@ func ExtractCredentials(r *http.Request) (*ClientCredentials, error) {
 
 // HasCredentials checks if the request contains credentials.
 func HasCredentials(r *http.Request) bool {
-	// Check query parameters
+	// Check explicit query parameters
 	if r.URL.Query().Get("AWSAccessKeyId") != "" && r.URL.Query().Get("AWSSecretAccessKey") != "" {
+		return true
+	}
+	// Check Presigned URL V4
+	if r.URL.Query().Get("X-Amz-Credential") != "" {
 		return true
 	}
 	// Check Authorization header
@@ -103,6 +120,11 @@ func HasCredentials(r *http.Request) bool {
 // Signature V4 requests include an Authorization header but the secret key is not
 // transmitted (it's used to sign the request).
 func IsSignatureV4Request(r *http.Request) bool {
+	// Check Presigned URL V4
+	if r.URL.Query().Get("X-Amz-Algorithm") == "AWS4-HMAC-SHA256" {
+		return true
+	}
+
 	authHeader := r.Header.Get("Authorization")
 	if authHeader == "" {
 		return false
@@ -117,4 +139,3 @@ func IsSignatureV4Request(r *http.Request) bool {
 	}
 	return false
 }
-

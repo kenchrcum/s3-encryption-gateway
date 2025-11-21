@@ -409,6 +409,32 @@ func (h *Handler) forwardSignatureV4Request(w http.ResponseWriter, r *http.Reque
 func (h *Handler) getS3Client(r *http.Request) (s3.Client, error) {
 	// If credential passthrough is not enabled, use default client
 	if h.config == nil || !h.config.Backend.UseClientCredentials {
+		// Enforce validation for V4 requests even when using default credentials
+		// This allows supporting Presigned URLs securely if the client uses the same credentials
+		if IsSignatureV4Request(r) {
+			if h.config != nil && h.config.Backend.AccessKey != "" {
+				// Validate signature if using configured backend credentials
+				creds, err := ExtractCredentials(r)
+				if err == nil {
+					if creds.AccessKey == h.config.Backend.AccessKey {
+						// Validate signature using backend secret
+						if err := ValidateSignatureV4(r, h.config.Backend.SecretKey); err != nil {
+							h.logger.WithError(err).Warn("Signature validation failed")
+							// Return error to block request
+							return nil, fmt.Errorf("signature validation failed: %w", err)
+						}
+						// Validation succeeded
+					} else {
+						h.logger.WithField("access_key", creds.AccessKey).Warn("Unknown access key in V4 request")
+						return nil, fmt.Errorf("access denied: unknown access key")
+					}
+				} else {
+					h.logger.WithError(err).Warn("Failed to extract credentials for validation")
+					return nil, fmt.Errorf("authentication failed: %w", err)
+				}
+			}
+		}
+
 		if h.s3Client != nil {
 			return h.s3Client, nil
 		}
