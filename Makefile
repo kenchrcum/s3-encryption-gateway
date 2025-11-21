@@ -60,6 +60,11 @@ test-rotation:
 	@echo "This will start MinIO, KMS, the S3 Encryption Gateway, run rotation tests, and clean up automatically."
 	@bash test/rotation_test.sh
 
+# Run fuzz tests (as regression tests)
+test-fuzz:
+	@echo "Running fuzz tests (regression mode)..."
+	@go test -v ./internal/crypto -run=Fuzz -fuzztime=1s
+
 # Build load test binary
 build-loadtest:
 	@echo "Building load test binary..."
@@ -73,13 +78,15 @@ test-comprehensive:
 	@echo "Running comprehensive test suite..."
 	@echo "1. Running code tests..."
 	@go test ./internal/* -v
-	@echo "2. Running integration tests (standard integration tests)..."
+	@echo "2. Running fuzz tests (regression mode)..."
+	@make test-fuzz
+	@echo "3. Running integration tests (standard integration tests)..."
 	@go test -v ./test
-	@echo "3. Running integration tests with build tags (KMS and Backblaze B2 tests)..."
+	@echo "4. Running integration tests with build tags (KMS and Backblaze B2 tests)..."
 	@go test -v -tags=integration ./test
-	@echo "4. Running key rotation tests..."
+	@echo "5. Running key rotation tests..."
 	@make test-rotation
-	@echo "5. Running load tests..."
+	@echo "6. Running load tests..."
 	@make test-load-minio
 
 # Run tests with coverage
@@ -147,6 +154,7 @@ help:
 	@echo "Available targets:"
 	@echo "  build              - Build the binary"
 	@echo "  test               - Run unit tests"
+	@echo "  test-fuzz          - Run fuzz tests (regression mode)"
 	@echo "  test-integration   - Run integration tests (requires Docker)"
 	@echo "  test-load          - Run all load tests (range + multipart)"
 	@echo "  test-load-range    - Run range operation load tests"
@@ -157,7 +165,7 @@ help:
 	@echo "  test-rotation      - Run key rotation tests"
 	@echo "  build-loadtest     - Build load test binary"
 	@echo "  test-all           - Run all tests including integration"
-	@echo "  test-comprehensive - Run comprehensive test suite (code, integration, and load tests)"
+	@echo "  test-comprehensive - Run comprehensive test suite (code, integration, fuzz, and load tests)"
 	@echo "  test-coverage      - Run tests with HTML coverage report"
 	@echo "  lint               - Run linter"
 	@echo "  fmt                - Format code"

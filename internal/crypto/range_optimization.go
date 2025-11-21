@@ -75,6 +75,9 @@ func ParseHTTPRangeHeader(rangeHeader string, totalSizeHint int64) (start, end i
 	}
 
 	rangeSpec := rangeHeader[6:]
+	if len(rangeSpec) == 0 {
+		return 0, 0, fmt.Errorf("invalid range format")
+	}
 
 	if rangeSpec[0] == '-' {
 		// Suffix range: "-suffix" means last N bytes
@@ -113,9 +116,17 @@ func ParseHTTPRangeHeader(rangeHeader string, totalSizeHint int64) (start, end i
 		}
 	}
 
-	// Validate range
+	// Basic consistency check independent of total size
+	if start < 0 {
+		return 0, 0, fmt.Errorf("invalid range: start must be non-negative")
+	}
+	if end < start {
+		return 0, 0, fmt.Errorf("invalid range: end must be >= start")
+	}
+
+	// Validate range against total size if known
 	if totalSizeHint > 0 {
-		if start < 0 || start >= totalSizeHint || end < start || end >= totalSizeHint {
+		if start >= totalSizeHint || end >= totalSizeHint {
 			return 0, 0, fmt.Errorf("range not satisfiable: %d-%d (size: %d)", start, end, totalSizeHint)
 		}
 	}
