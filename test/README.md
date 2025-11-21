@@ -39,17 +39,56 @@ go test -v ./test/... -run TestS3Gateway
 go test -short ./...
 ```
 
+## Testing against External Providers
+
+You can run integration tests against real S3 providers (AWS, Wasabi, Hetzner, Backblaze B2) by setting environment variables.
+
+### AWS S3
+```bash
+export AWS_ACCESS_KEY_ID=your_access_key
+export AWS_SECRET_ACCESS_KEY=your_secret_key
+export AWS_BUCKET_NAME=your_test_bucket
+export AWS_REGION=us-east-1
+# Optional: export AWS_ENDPOINT=...
+
+go test -v ./test/provider_test.go -run TestProvider_CoreFlows
+```
+
+### Wasabi
+```bash
+export WASABI_ACCESS_KEY_ID=your_access_key
+export WASABI_SECRET_ACCESS_KEY=your_secret_key
+export WASABI_BUCKET_NAME=your_test_bucket
+export WASABI_REGION=us-east-1
+# Optional: export WASABI_ENDPOINT=https://s3.wasabisys.com
+
+go test -v ./test/provider_test.go -run TestProvider_CoreFlows
+```
+
+### Hetzner Storage Box
+```bash
+export HETZNER_ACCESS_KEY_ID=your_access_key
+export HETZNER_SECRET_ACCESS_KEY=your_secret_key
+export HETZNER_BUCKET_NAME=your_test_bucket
+# Optional: export HETZNER_ENDPOINT=https://fs.hetzner.de
+
+go test -v ./test/provider_test.go -run TestProvider_CoreFlows
+```
+
+### Backblaze B2
+See [BACKBLAZE_B2_TESTING.md](BACKBLAZE_B2_TESTING.md) for detailed instructions.
+
 ## Test Coverage
 
 Integration tests cover:
 
-- ? Basic PUT/GET operations with encryption/decryption
-- ? Multipart upload with encryption
-- ? Range requests
-- ? Object copy operations
-- ? Batch delete operations
-- ? List objects
-- ? Error handling with proper S3 error responses
+- ✅ Basic PUT/GET operations with encryption/decryption
+- ✅ Multipart upload with encryption
+- ✅ Range requests
+- ✅ Object copy operations
+- ✅ Batch delete operations
+- ✅ List objects
+- ✅ Error handling with proper S3 error responses
 
 ## MinIO Configuration
 

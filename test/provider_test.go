@@ -7,12 +7,82 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/kenneth/s3-encryption-gateway/internal/config"
 	"github.com/kenneth/s3-encryption-gateway/internal/s3"
 )
+
+// TestMain controls the execution of tests and prints provider status.
+func TestMain(m *testing.M) {
+	// Print provider configuration summary
+	fmt.Println("\n=== S3 Encryption Gateway Integration Tests ===")
+	fmt.Println("Checking provider configuration from environment variables...")
+	
+	providers := []struct {
+		name   string
+		prefix string
+		check  func() bool
+	}{
+		{
+			name:   "MinIO (Local)",
+			prefix: "MINIO",
+			check:  func() bool { return true }, // Always enabled via Docker
+		},
+		{
+			name:   "AWS S3",
+			prefix: "AWS",
+			check: func() bool {
+				_, _, _, _, _, ok := getEnvCredentials("AWS")
+				return ok
+			},
+		},
+		{
+			name:   "Wasabi",
+			prefix: "WASABI",
+			check: func() bool {
+				_, _, _, _, _, ok := getEnvCredentials("WASABI")
+				return ok
+			},
+		},
+		{
+			name:   "Hetzner",
+			prefix: "HETZNER",
+			check: func() bool {
+				_, _, _, _, _, ok := getEnvCredentials("HETZNER")
+				return ok
+			},
+		},
+		{
+			name:   "Backblaze B2",
+			prefix: "B2",
+			check: func() bool {
+				return os.Getenv("B2_ACCESS_KEY_ID") != "" && 
+				       os.Getenv("B2_SECRET_ACCESS_KEY") != "" && 
+				       os.Getenv("B2_BUCKET_NAME") != ""
+			},
+		},
+	}
+
+	fmt.Printf("\n%-20s %-10s\n", "PROVIDER", "STATUS")
+	fmt.Println(strings.Repeat("-", 35))
+	
+	for _, p := range providers {
+		status := "SKIPPED"
+		if p.check() {
+			status = "ENABLED"
+		}
+		fmt.Printf("%-20s %s\n", p.name, status)
+	}
+	fmt.Println(strings.Repeat("-", 35))
+	fmt.Println()
+
+	// Run tests
+	os.Exit(m.Run())
+}
 
 // TestProvider_Compatibility tests that the gateway works with MinIO as a provider.
 func TestProvider_Compatibility(t *testing.T) {
@@ -44,8 +114,8 @@ func TestProvider_Compatibility(t *testing.T) {
 	testData := []byte("provider compatibility test data")
 
 	// Put object
-    ctx := context.Background()
-    err = client.PutObject(ctx, bucket, key, bytes.NewReader(testData), nil, nil)
+	ctx := context.Background()
+	err = client.PutObject(ctx, bucket, key, bytes.NewReader(testData), nil, nil)
 	if err != nil {
 		t.Fatalf("PutObject failed with MinIO provider: %v", err)
 	}
@@ -199,8 +269,8 @@ func TestMultipartUpload_ProviderInterop(t *testing.T) {
 
 	// Define providers to test
 	providers := []struct {
-		name string
-		setupFunc func(t *testing.T) *TestServerConfig
+		name        string
+		setupFunc   func(t *testing.T) *TestServerConfig
 		cleanupFunc func(t *testing.T, config *TestServerConfig)
 	}{
 		{
@@ -217,22 +287,49 @@ func TestMultipartUpload_ProviderInterop(t *testing.T) {
 				config.StopFunc()
 			},
 		},
-		// TODO: Add other providers when test infrastructure is available
-		// {
-		//     name: "AWS_S3",
-		//     setupFunc: setupAWSS3Provider,
-		//     cleanupFunc: cleanupAWSS3Provider,
-		// },
-		// {
-		//     name: "Wasabi",
-		//     setupFunc: setupWasabiProvider,
-		//     cleanupFunc: cleanupWasabiProvider,
-		// },
-		// {
-		//     name: "Hetzner",
-		//     setupFunc: setupHetznerProvider,
-		//     cleanupFunc: cleanupHetznerProvider,
-		// },
+	}
+
+	// Add external providers if credentials are available
+	if awsCfg := setupAWSS3Provider(t); awsCfg != nil {
+		providers = append(providers, struct {
+			name        string
+			setupFunc   func(t *testing.T) *TestServerConfig
+			cleanupFunc func(t *testing.T, config *TestServerConfig)
+		}{
+			name: "AWS_S3",
+			setupFunc: func(t *testing.T) *TestServerConfig {
+				return awsCfg
+			},
+			cleanupFunc: cleanupExternalProvider,
+		})
+	}
+
+	if wasabiCfg := setupWasabiProvider(t); wasabiCfg != nil {
+		providers = append(providers, struct {
+			name        string
+			setupFunc   func(t *testing.T) *TestServerConfig
+			cleanupFunc func(t *testing.T, config *TestServerConfig)
+		}{
+			name: "Wasabi",
+			setupFunc: func(t *testing.T) *TestServerConfig {
+				return wasabiCfg
+			},
+			cleanupFunc: cleanupExternalProvider,
+		})
+	}
+
+	if hetznerCfg := setupHetznerProvider(t); hetznerCfg != nil {
+		providers = append(providers, struct {
+			name        string
+			setupFunc   func(t *testing.T) *TestServerConfig
+			cleanupFunc func(t *testing.T, config *TestServerConfig)
+		}{
+			name: "Hetzner",
+			setupFunc: func(t *testing.T) *TestServerConfig {
+				return hetznerCfg
+			},
+			cleanupFunc: cleanupExternalProvider,
+		})
 	}
 
 	for _, provider := range providers {
@@ -247,11 +344,190 @@ func TestMultipartUpload_ProviderInterop(t *testing.T) {
 
 			client := gateway.GetHTTPClient()
 			bucket := config.Bucket
-			key := fmt.Sprintf("multipart-interop-test-%s", provider.name)
+			key := fmt.Sprintf("multipart-interop-test-%s-%d", provider.name, time.Now().UnixNano())
 
 			// Test multipart upload flow
 			testMultipartUploadFlow(t, client, gateway.Addr, bucket, key)
 		})
+	}
+}
+
+// TestProvider_CoreFlows tests core operations (PUT, GET, LIST, DELETE) across different providers.
+func TestProvider_CoreFlows(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping integration test in short mode")
+	}
+
+	// Define providers to test
+	providers := []struct {
+		name        string
+		setupFunc   func(t *testing.T) *TestServerConfig
+		cleanupFunc func(t *testing.T, config *TestServerConfig)
+	}{
+		{
+			name: "MinIO",
+			setupFunc: func(t *testing.T) *TestServerConfig {
+				server := StartMinIOServerForProvider(t)
+				return &TestServerConfig{
+					GatewayConfig: server.GetGatewayConfig(),
+					Bucket:        server.Bucket,
+					StopFunc:      server.StopForce,
+				}
+			},
+			cleanupFunc: func(t *testing.T, config *TestServerConfig) {
+				config.StopFunc()
+			},
+		},
+	}
+
+	// Add external providers if credentials are available
+	if awsCfg := setupAWSS3Provider(t); awsCfg != nil {
+		providers = append(providers, struct {
+			name        string
+			setupFunc   func(t *testing.T) *TestServerConfig
+			cleanupFunc func(t *testing.T, config *TestServerConfig)
+		}{
+			name: "AWS_S3",
+			setupFunc: func(t *testing.T) *TestServerConfig {
+				return awsCfg
+			},
+			cleanupFunc: cleanupExternalProvider,
+		})
+	}
+
+	if wasabiCfg := setupWasabiProvider(t); wasabiCfg != nil {
+		providers = append(providers, struct {
+			name        string
+			setupFunc   func(t *testing.T) *TestServerConfig
+			cleanupFunc func(t *testing.T, config *TestServerConfig)
+		}{
+			name: "Wasabi",
+			setupFunc: func(t *testing.T) *TestServerConfig {
+				return wasabiCfg
+			},
+			cleanupFunc: cleanupExternalProvider,
+		})
+	}
+
+	if hetznerCfg := setupHetznerProvider(t); hetznerCfg != nil {
+		providers = append(providers, struct {
+			name        string
+			setupFunc   func(t *testing.T) *TestServerConfig
+			cleanupFunc func(t *testing.T, config *TestServerConfig)
+		}{
+			name: "Hetzner",
+			setupFunc: func(t *testing.T) *TestServerConfig {
+				return hetznerCfg
+			},
+			cleanupFunc: cleanupExternalProvider,
+		})
+	}
+
+	for _, provider := range providers {
+		t.Run(provider.name, func(t *testing.T) {
+			// Setup provider
+			config := provider.setupFunc(t)
+			defer provider.cleanupFunc(t, config)
+
+			// Start gateway with provider configuration
+			gateway := StartGateway(t, config.GatewayConfig)
+			defer gateway.Close()
+
+			client := gateway.GetHTTPClient()
+			bucket := config.Bucket
+
+			// Run core flow tests
+			runCoreFlowTests(t, client, gateway.Addr, bucket, provider.name)
+		})
+	}
+}
+
+// runCoreFlowTests executes basic operations on a provider
+func runCoreFlowTests(t *testing.T, client *http.Client, gatewayAddr, bucket, providerName string) {
+	ctx := context.Background()
+	key := fmt.Sprintf("core-flow-test-%s-%d", providerName, time.Now().UnixNano())
+	testData := []byte(fmt.Sprintf("Test data for provider %s", providerName))
+
+	// 1. PUT object
+	putURL := fmt.Sprintf("http://%s/%s/%s", gatewayAddr, bucket, key)
+	putReq, err := http.NewRequestWithContext(ctx, "PUT", putURL, bytes.NewReader(testData))
+	if err != nil {
+		t.Fatalf("Failed to create PUT request: %v", err)
+	}
+	putResp, err := client.Do(putReq)
+	if err != nil {
+		t.Fatalf("PUT request failed: %v", err)
+	}
+	putResp.Body.Close()
+	if putResp.StatusCode != http.StatusOK {
+		t.Errorf("PUT failed with status %d", putResp.StatusCode)
+	}
+
+	// 2. GET object
+	getURL := fmt.Sprintf("http://%s/%s/%s", gatewayAddr, bucket, key)
+	getReq, err := http.NewRequestWithContext(ctx, "GET", getURL, nil)
+	if err != nil {
+		t.Fatalf("Failed to create GET request: %v", err)
+	}
+	getResp, err := client.Do(getReq)
+	if err != nil {
+		t.Fatalf("GET request failed: %v", err)
+	}
+	defer getResp.Body.Close()
+	if getResp.StatusCode != http.StatusOK {
+		t.Errorf("GET failed with status %d", getResp.StatusCode)
+	}
+	gotData, _ := io.ReadAll(getResp.Body)
+	if !bytes.Equal(gotData, testData) {
+		t.Errorf("Data mismatch: expected %q, got %q", string(testData), string(gotData))
+	}
+
+	// 3. HEAD object
+	headReq, err := http.NewRequestWithContext(ctx, "HEAD", getURL, nil)
+	if err != nil {
+		t.Fatalf("Failed to create HEAD request: %v", err)
+	}
+	headResp, err := client.Do(headReq)
+	if err != nil {
+		t.Fatalf("HEAD request failed: %v", err)
+	}
+	headResp.Body.Close()
+	if headResp.StatusCode != http.StatusOK {
+		t.Errorf("HEAD failed with status %d", headResp.StatusCode)
+	}
+
+	// 4. LIST objects
+	listURL := fmt.Sprintf("http://%s/%s", gatewayAddr, bucket)
+	listReq, err := http.NewRequestWithContext(ctx, "GET", listURL, nil)
+	if err != nil {
+		t.Fatalf("Failed to create LIST request: %v", err)
+	}
+	listResp, err := client.Do(listReq)
+	if err != nil {
+		t.Fatalf("LIST request failed: %v", err)
+	}
+	defer listResp.Body.Close()
+	if listResp.StatusCode != http.StatusOK {
+		t.Errorf("LIST failed with status %d", listResp.StatusCode)
+	}
+	listBody, _ := io.ReadAll(listResp.Body)
+	if !bytes.Contains(listBody, []byte(key)) {
+		t.Errorf("List response missing key: %s", key)
+	}
+
+	// 5. DELETE object
+	deleteURL := fmt.Sprintf("http://%s/%s/%s", gatewayAddr, bucket, key)
+	deleteReq, err := http.NewRequestWithContext(ctx, "DELETE", deleteURL, nil)
+	if err != nil {
+		t.Fatalf("Failed to create DELETE request: %v", err)
+	}
+	deleteResp, err := client.Do(deleteReq)
+	if err != nil {
+		t.Fatalf("DELETE request failed: %v", err)
+	}
+	deleteResp.Body.Close()
+	if deleteResp.StatusCode != http.StatusNoContent && deleteResp.StatusCode != http.StatusOK {
+		t.Errorf("DELETE failed with status %d", deleteResp.StatusCode)
 	}
 }
 
@@ -421,7 +697,7 @@ func testMultipartUploadFlow(t *testing.T, client *http.Client, gatewayAddr, buc
 		t.Logf("Warning: DELETE failed with status %d", deleteResp.StatusCode)
 	}
 
-	t.Logf("Successfully completed multipart upload interop test for provider")
+	t.Logf("Successfully completed multipart upload interop test")
 }
 
 // TestServerConfig holds configuration for a test server.
@@ -429,4 +705,123 @@ type TestServerConfig struct {
 	GatewayConfig *config.Config
 	Bucket        string
 	StopFunc      func()
+}
+
+// getEnvCredentials helper to get credentials from environment variables.
+func getEnvCredentials(prefix string) (accessKey, secretKey, bucket, endpoint, region string, ok bool) {
+	accessKey = os.Getenv(prefix + "_ACCESS_KEY_ID")
+	secretKey = os.Getenv(prefix + "_SECRET_ACCESS_KEY")
+	bucket = os.Getenv(prefix + "_BUCKET_NAME")
+	endpoint = os.Getenv(prefix + "_ENDPOINT")
+	region = os.Getenv(prefix + "_REGION")
+
+	if accessKey != "" && secretKey != "" && bucket != "" {
+		return accessKey, secretKey, bucket, endpoint, region, true
+	}
+	return "", "", "", "", "", false
+}
+
+// setupAWSS3Provider configures AWS S3 provider from environment variables.
+func setupAWSS3Provider(t *testing.T) *TestServerConfig {
+	accessKey, secretKey, bucket, endpoint, region, ok := getEnvCredentials("AWS")
+	if !ok {
+		return nil
+	}
+
+	if region == "" {
+		region = "us-east-1"
+	}
+
+	return &TestServerConfig{
+		GatewayConfig: &config.Config{
+			ListenAddr: ":0",
+			LogLevel:   "error",
+			Backend: config.BackendConfig{
+				Endpoint:  endpoint, // Can be empty for AWS S3
+				Region:    region,
+				AccessKey: accessKey,
+				SecretKey: secretKey,
+				Provider:  "aws",
+				UseSSL:    true,
+			},
+			Encryption: config.EncryptionConfig{
+				Password:           "test-password-123456",
+				PreferredAlgorithm: "AES256-GCM",
+			},
+		},
+		Bucket:   bucket,
+		StopFunc: func() {},
+	}
+}
+
+// setupWasabiProvider configures Wasabi provider from environment variables.
+func setupWasabiProvider(t *testing.T) *TestServerConfig {
+	accessKey, secretKey, bucket, endpoint, region, ok := getEnvCredentials("WASABI")
+	if !ok {
+		return nil
+	}
+
+	if endpoint == "" {
+		endpoint = "https://s3.wasabisys.com"
+	}
+
+	return &TestServerConfig{
+		GatewayConfig: &config.Config{
+			ListenAddr: ":0",
+			LogLevel:   "error",
+			Backend: config.BackendConfig{
+				Endpoint:  endpoint,
+				Region:    region,
+				AccessKey: accessKey,
+				SecretKey: secretKey,
+				Provider:  "wasabi",
+				UseSSL:    true,
+			},
+			Encryption: config.EncryptionConfig{
+				Password:           "test-password-123456",
+				PreferredAlgorithm: "AES256-GCM",
+			},
+		},
+		Bucket:   bucket,
+		StopFunc: func() {},
+	}
+}
+
+// setupHetznerProvider configures Hetzner provider from environment variables.
+func setupHetznerProvider(t *testing.T) *TestServerConfig {
+	accessKey, secretKey, bucket, endpoint, region, ok := getEnvCredentials("HETZNER")
+	if !ok {
+		return nil
+	}
+
+	if endpoint == "" {
+		endpoint = "https://fs.hetzner.de" // Example endpoint, might vary
+	}
+
+	return &TestServerConfig{
+		GatewayConfig: &config.Config{
+			ListenAddr: ":0",
+			LogLevel:   "error",
+			Backend: config.BackendConfig{
+				Endpoint:  endpoint,
+				Region:    region,
+				AccessKey: accessKey,
+				SecretKey: secretKey,
+				Provider:  "hetzner",
+				UseSSL:    true,
+			},
+			Encryption: config.EncryptionConfig{
+				Password:           "test-password-123456",
+				PreferredAlgorithm: "AES256-GCM",
+			},
+		},
+		Bucket:   bucket,
+		StopFunc: func() {},
+	}
+}
+
+func cleanupExternalProvider(t *testing.T, config *TestServerConfig) {
+	// No-op for now as we rely on test cleanup within the test function
+	// or the global cleanup tool.
+	// We could add ObjectTracker here if we wanted more robust cleanup.
 }
