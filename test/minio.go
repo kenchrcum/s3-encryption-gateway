@@ -31,9 +31,12 @@ type MinIOTestServer struct {
 }
 
 var (
-	minioServer *MinIOTestServer
-	minioOnce   sync.Once
-	minioError  error
+	minioServer         *MinIOTestServer
+	minioOnce           sync.Once
+	minioError          error
+	minioProviderServer *MinIOTestServer
+	minioProviderOnce   sync.Once
+	minioProviderError  error
 )
 
 // StartMinIOServer starts a local MinIO server for testing.
@@ -114,8 +117,98 @@ func StartMinIOServer(t *testing.T) *MinIOTestServer {
 	return minioServer
 }
 
+// StartSharedMinIOServerForProvider starts a shared MinIO server instance for provider tests.
+// This uses a global instance to avoid Docker container conflicts between tests.
+func StartSharedMinIOServerForProvider(t *testing.T) *MinIOTestServer {
+	t.Helper()
+
+	minioProviderOnce.Do(func() {
+		t.Logf("Starting shared MinIO provider server...")
+		// Use environment variables for MinIO credentials
+		accessKey := os.Getenv("MINIO_ROOT_USER")
+		if accessKey == "" {
+			accessKey = "minioadmin"
+		}
+		secretKey := os.Getenv("MINIO_ROOT_PASSWORD")
+		if secretKey == "" {
+			secretKey = "minioadmin"
+		}
+
+		// Use unique bucket name per test run
+		bucketName := fmt.Sprintf("test-provider-bucket-%d", time.Now().UnixNano())
+
+		server := &MinIOTestServer{
+			AccessKey: accessKey,
+			SecretKey: secretKey,
+			Bucket:    bucketName,
+		}
+
+	// Try MinIO binary first for provider tests (more stable than Docker)
+	var err error
+	t.Logf("Testing MinIO binary availability for provider tests...")
+	if hasMinIOBinary() {
+		t.Logf("MinIO binary available, trying binary MinIO for provider tests...")
+		err = server.startBinaryMinIO(t)
+		if err != nil {
+			t.Logf("Binary MinIO failed: %v", err)
+			minioProviderError = err
+			return
+		}
+		t.Logf("Binary MinIO started successfully for provider tests")
+	} else {
+		t.Logf("MinIO binary not available for provider tests")
+		minioProviderError = fmt.Errorf("MinIO binary not available for provider tests")
+		return
+	}
+
+
+				minioProviderServer = server
+		t.Logf("Shared MinIO provider server started successfully")
+	})
+
+	if minioProviderError != nil {
+		t.Skipf("MinIO server setup failed for provider tests: %v", minioProviderError)
+		return nil
+	}
+
+	// Verify the server is still running before returning it
+	if err := minioProviderServer.waitForMinIO(); err != nil {
+		t.Logf("MinIO provider server is not responding: %v, attempting to restart...", err)
+
+		// Server stopped, try to restart it
+		server := &MinIOTestServer{
+			AccessKey: minioProviderServer.AccessKey,
+			SecretKey: minioProviderServer.SecretKey,
+			Bucket:    minioProviderServer.Bucket,
+		}
+
+		if hasMinIOBinary() {
+			if err := server.startBinaryMinIO(t); err != nil {
+				t.Logf("Failed to restart MinIO provider server: %v", err)
+				minioProviderError = fmt.Errorf("MinIO provider server stopped and could not be restarted: %w", err)
+				t.Skipf("MinIO server stopped and could not be restarted: %v", err)
+				return nil
+			}
+			t.Logf("MinIO provider server restarted successfully")
+			minioProviderServer = server
+		} else {
+			minioProviderError = fmt.Errorf("MinIO provider server stopped and no binary available to restart")
+			t.Skipf("MinIO server stopped and no binary available to restart")
+			return nil
+		}
+	}
+
+	// Increment reference count
+	minioProviderServer.refMutex.Lock()
+	minioProviderServer.refCount++
+	minioProviderServer.refMutex.Unlock()
+
+	return minioProviderServer
+}
+
 // StartMinIOServerForProvider starts a separate MinIO server instance for provider tests.
 // This doesn't use the global instance, allowing provider tests to run independently.
+// NOTE: This function may cause Docker container conflicts. Consider using StartSharedMinIOServerForProvider instead.
 func StartMinIOServerForProvider(t *testing.T) *MinIOTestServer {
 	t.Helper()
 

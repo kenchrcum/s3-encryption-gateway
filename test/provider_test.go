@@ -83,10 +83,14 @@ func TestMain(m *testing.M) {
 	// Run tests
 	code := m.Run()
 
-	// Cleanup shared MinIO server
+	// Cleanup shared MinIO servers
 	if minioServer != nil {
 		minioServer.StopForce()
 	}
+	// Note: minioProviderServer cleanup disabled to avoid stopping shared server between tests
+	// if minioProviderServer != nil {
+	//     minioProviderServer.StopForce()
+	// }
 
 	os.Exit(code)
 }
@@ -97,7 +101,7 @@ func TestProvider_Compatibility(t *testing.T) {
 		t.Skip("Skipping integration test in short mode")
 	}
 
-	minioServer := StartMinIOServerForProvider(t)
+	minioServer := StartSharedMinIOServerForProvider(t)
 	defer minioServer.StopForce()
 
 	// Test that we can create an S3 client with MinIO provider configuration
@@ -155,8 +159,7 @@ func TestProvider_EndpointConfiguration(t *testing.T) {
 		t.Skip("Skipping integration test in short mode")
 	}
 
-	minioServer := StartMinIOServerForProvider(t)
-	defer minioServer.StopForce()
+	minioServer := StartSharedMinIOServerForProvider(t)
 
 	testCases := []struct {
 		name     string
@@ -208,8 +211,7 @@ func TestGateway_ProviderIntegration(t *testing.T) {
 		t.Skip("Skipping integration test in short mode")
 	}
 
-	minioServer := StartMinIOServerForProvider(t)
-	defer minioServer.StopForce()
+	minioServer := StartSharedMinIOServerForProvider(t)
 
 	gatewayConfig := minioServer.GetGatewayConfig()
 	gatewayConfig.Backend.Provider = "minio" // Explicitly set MinIO provider
@@ -283,15 +285,15 @@ func TestMultipartUpload_ProviderInterop(t *testing.T) {
 		{
 			name: "MinIO",
 			setupFunc: func(t *testing.T) *TestServerConfig {
-				server := StartMinIOServerForProvider(t)
+				server := StartSharedMinIOServerForProvider(t)
 				return &TestServerConfig{
 					GatewayConfig: server.GetGatewayConfig(),
 					Bucket:        server.Bucket,
-					StopFunc:      server.StopForce,
+					StopFunc:      func() {}, // No-op for shared server
 				}
 			},
 			cleanupFunc: func(t *testing.T, config *TestServerConfig) {
-				config.StopFunc()
+				// No cleanup needed for shared server
 			},
 		},
 	}
@@ -374,11 +376,11 @@ func TestProvider_CoreFlows(t *testing.T) {
 		{
 			name: "MinIO",
 			setupFunc: func(t *testing.T) *TestServerConfig {
-				server := StartMinIOServerForProvider(t)
+				server := StartSharedMinIOServerForProvider(t)
 				return &TestServerConfig{
 					GatewayConfig: server.GetGatewayConfig(),
 					Bucket:        server.Bucket,
-					StopFunc:      server.StopForce,
+					StopFunc:      func() {}, // No-op for shared server
 				}
 			},
 			cleanupFunc: func(t *testing.T, config *TestServerConfig) {
