@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strings"
 
 	"github.com/aws/smithy-go"
 )
@@ -123,6 +124,18 @@ func TranslateError(err error, bucket, key string) *S3Error {
 				RequestID:  requestID,
 				HTTPStatus: http.StatusBadRequest,
 			}
+		}
+	}
+
+	// Check for mock errors that contain error codes in the message
+	errStr := err.Error()
+	if strings.Contains(errStr, "does not exist") {
+		return &S3Error{
+			Code:       "NoSuchBucket",
+			Message:    fmt.Sprintf("The specified bucket does not exist: %s", bucket),
+			Resource:   resource,
+			RequestID:  requestID,
+			HTTPStatus: http.StatusNotFound,
 		}
 	}
 

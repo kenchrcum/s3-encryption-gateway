@@ -95,20 +95,21 @@ func (h *Handler) RegisterRoutes(r *mux.Router) {
 	s3Router := r.PathPrefix("/").Subrouter()
 
 	// Multipart upload routes (must be registered first to ensure query parameter matching)
-	s3Router.HandleFunc("/{bucket}/{key:.*}", h.handleCreateMultipartUpload).Methods("POST").Queries("uploads", "")
-	s3Router.HandleFunc("/{bucket}/{key:.*}", h.handleCompleteMultipartUpload).Methods("POST").Queries("uploadId", "{uploadId}")
-	s3Router.HandleFunc("/{bucket}/{key:.*}", h.handleAbortMultipartUpload).Methods("DELETE").Queries("uploadId", "{uploadId}")
-	s3Router.HandleFunc("/{bucket}/{key:.*}", h.handleListParts).Methods("GET").Queries("uploadId", "{uploadId}")
+	s3Router.HandleFunc("/{bucket:[^/]+}/{key:.*}", h.handleCreateMultipartUpload).Methods("POST").Queries("uploads", "")
+	s3Router.HandleFunc("/{bucket:[^/]+}/{key:.*}", h.handleCompleteMultipartUpload).Methods("POST").Queries("uploadId", "{uploadId}")
+	s3Router.HandleFunc("/{bucket:[^/]+}/{key:.*}", h.handleAbortMultipartUpload).Methods("DELETE").Queries("uploadId", "{uploadId}")
+	s3Router.HandleFunc("/{bucket:[^/]+}/{key:.*}", h.handleListParts).Methods("GET").Queries("uploadId", "{uploadId}")
 
 	// Multipart-specific PUT route
-	s3Router.HandleFunc("/{bucket}/{key:.*}", h.handleUploadPart).Methods("PUT").Queries("partNumber", "{partNumber:[0-9]+}", "uploadId", "{uploadId}")
+	s3Router.HandleFunc("/{bucket:[^/]+}/{key:.*}", h.handleUploadPart).Methods("PUT").Queries("partNumber", "{partNumber:[0-9]+}", "uploadId", "{uploadId}")
 
 	// Generic S3 routes
 	s3Router.HandleFunc("/{bucket}", h.handleListObjects).Methods("GET")
-	s3Router.HandleFunc("/{bucket}/{key:.*}", h.handleGetObject).Methods("GET")
-	s3Router.HandleFunc("/{bucket}/{key:.*}", h.handlePutObject).Methods("PUT")
-	s3Router.HandleFunc("/{bucket}/{key:.*}", h.handleDeleteObject).Methods("DELETE")
-	s3Router.HandleFunc("/{bucket}/{key:.*}", h.handleHeadObject).Methods("HEAD")
+	s3Router.HandleFunc("/{bucket}", h.handleCreateBucket).Methods("PUT")
+	s3Router.HandleFunc("/{bucket:[^/]+}/{key:.*}", h.handleGetObject).Methods("GET")
+	s3Router.HandleFunc("/{bucket:[^/]+}/{key:.*}", h.handlePutObject).Methods("PUT")
+	s3Router.HandleFunc("/{bucket:[^/]+}/{key:.*}", h.handleDeleteObject).Methods("DELETE")
+	s3Router.HandleFunc("/{bucket:[^/]+}/{key:.*}", h.handleHeadObject).Methods("HEAD")
 
 	// Batch operations
 	s3Router.HandleFunc("/{bucket}", h.handleDeleteObjects).Methods("POST").Queries("delete", "")
@@ -1601,6 +1602,38 @@ func (h *Handler) handleListObjects(w http.ResponseWriter, r *http.Request) {
 
 	h.metrics.RecordS3Operation(r.Context(),"ListObjects", bucket, time.Since(start))
 	h.metrics.RecordHTTPRequest(r.Context(),"GET", r.URL.Path, http.StatusOK, time.Since(start), int64(len(xmlResponse)))
+}
+
+// handleCreateBucket handles PUT bucket requests (bucket creation).
+// Since the gateway doesn't manage bucket creation but acts as a proxy for existing buckets,
+// we return BucketAlreadyExists to indicate the bucket exists for gateway operations.
+func (h *Handler) handleCreateBucket(w http.ResponseWriter, r *http.Request) {
+	start := time.Now()
+	vars := mux.Vars(r)
+	bucket := vars["bucket"]
+
+	if bucket == "" {
+		s3Err := ErrInvalidBucketName
+		s3Err.Resource = r.URL.Path
+		s3Err.WriteXML(w)
+		h.metrics.RecordHTTPRequest(r.Context(),"PUT", r.URL.Path, s3Err.HTTPStatus, time.Since(start), 0)
+		return
+	}
+
+	h.logger.WithFields(logrus.Fields{
+		"bucket": bucket,
+	}).Debug("Handling bucket creation request - returning BucketAlreadyExists")
+
+	// Return BucketAlreadyExists since the gateway manages existing buckets
+	// and doesn't actually create new buckets
+	s3Err := &S3Error{
+		Code:       "BucketAlreadyExists",
+		Message:    "The requested bucket name is not available. The bucket already exists.",
+		Resource:   r.URL.Path,
+		HTTPStatus: http.StatusConflict,
+	}
+	s3Err.WriteXML(w)
+	h.metrics.RecordHTTPRequest(r.Context(),"PUT", r.URL.Path, s3Err.HTTPStatus, time.Since(start), 0)
 }
 
 // applyRangeRequest applies a Range header request to data.

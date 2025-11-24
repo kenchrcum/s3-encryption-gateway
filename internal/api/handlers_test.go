@@ -19,6 +19,28 @@ import (
 	"github.com/sirupsen/logrus"
 )
 
+// mockAPIError implements smithy.APIError for testing
+type mockAPIError struct {
+	code    string
+	message string
+}
+
+func (e *mockAPIError) Error() string {
+	return e.message
+}
+
+func (e *mockAPIError) ErrorCode() string {
+	return e.code
+}
+
+func (e *mockAPIError) ErrorMessage() string {
+	return e.message
+}
+
+func (e *mockAPIError) ErrorFault() int32 {
+	return 0
+}
+
 // mockS3Client is a mock implementation of s3.Client for testing.
 type mockS3Client struct {
 	objects  map[string][]byte
@@ -271,6 +293,9 @@ func TestHandler_HandlePutObject(t *testing.T) {
 	mockEngine, _ := crypto.NewEngine("test-password-123456")
 	handler := NewHandler(mockClient, mockEngine, logger, getTestMetrics())
 
+	// For missing bucket test, simulate NoSuchBucket error
+	mockClient.errors["missing/bucket/test/put"] = &mockAPIError{code: "NoSuchBucket", message: "The specified bucket does not exist"}
+
 	router := mux.NewRouter()
 	handler.RegisterRoutes(router)
 
@@ -302,7 +327,7 @@ func TestHandler_HandlePutObject(t *testing.T) {
 			var url string
 			if tt.bucket == "" {
 				// For missing bucket, use a URL that doesn't match the route pattern
-				url = "/missing-bucket-test"
+				url = "/missing/bucket/test"
 			} else {
 				url = "/" + tt.bucket + "/" + tt.key
 			}

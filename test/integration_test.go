@@ -76,6 +76,9 @@ func TestS3Gateway_EndToEnd(t *testing.T) {
 	client := gateway.GetHTTPClient()
 	bucket := minioServer.Bucket
 
+	// Test bucket creation through gateway returns BucketAlreadyExists
+	testBucketCreationThroughGateway(t, gateway, bucket)
+
 	tests := []struct {
 		name string
 		key  string
@@ -1444,5 +1447,49 @@ func TestS3Gateway_ErrorHandling(t *testing.T) {
 	if !bytes.Contains(body, []byte("<Message>")) {
 		t.Error("Error response missing <Message> element")
 	}
+}
+
+// testBucketCreationThroughGateway tests that bucket creation through the gateway
+// returns BucketAlreadyExists instead of 404 Not Found
+func testBucketCreationThroughGateway(t *testing.T, gateway *TestGateway, bucket string) {
+	t.Helper()
+
+	client := gateway.GetHTTPClient()
+
+	// Try to create bucket through gateway
+	createURL := fmt.Sprintf("http://%s/%s", gateway.Addr, bucket)
+	createReq, err := http.NewRequest("PUT", createURL, nil)
+	if err != nil {
+		t.Fatalf("Failed to create bucket creation request: %v", err)
+	}
+
+	createResp, err := client.Do(createReq)
+	if err != nil {
+		t.Fatalf("Bucket creation request failed: %v", err)
+	}
+	defer createResp.Body.Close()
+
+	// Should return 409 Conflict (BucketAlreadyExists)
+	if createResp.StatusCode != http.StatusConflict {
+		t.Errorf("Expected 409 Conflict for bucket creation, got %d", createResp.StatusCode)
+	}
+
+	// Verify Content-Type is XML
+	if createResp.Header.Get("Content-Type") != "application/xml" {
+		t.Errorf("Expected Content-Type application/xml for bucket creation error, got %s", createResp.Header.Get("Content-Type"))
+	}
+
+	// Read and parse error response
+	body, err := io.ReadAll(createResp.Body)
+	if err != nil {
+		t.Fatalf("Failed to read bucket creation error response: %v", err)
+	}
+
+	// Verify error XML contains BucketAlreadyExists
+	if !bytes.Contains(body, []byte("<Code>BucketAlreadyExists</Code>")) {
+		t.Errorf("Expected BucketAlreadyExists error code, got response: %s", string(body))
+	}
+
+	t.Logf("Bucket creation correctly returned BucketAlreadyExists error")
 }
 
