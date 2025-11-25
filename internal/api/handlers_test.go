@@ -13,6 +13,7 @@ import (
 	"testing"
 
 	"github.com/gorilla/mux"
+	"github.com/kenneth/s3-encryption-gateway/internal/config"
 	"github.com/kenneth/s3-encryption-gateway/internal/crypto"
 	"github.com/kenneth/s3-encryption-gateway/internal/metrics"
 	"github.com/kenneth/s3-encryption-gateway/internal/s3"
@@ -1093,6 +1094,106 @@ func TestIsValidETag(t *testing.T) {
 			result := isValidETag(tt.etag)
 			if result != tt.isValid {
 				t.Errorf("isValidETag(%q) = %v, want %v", tt.etag, result, tt.isValid)
+			}
+		})
+	}
+}
+
+func TestHandler_HandleCreateBucket(t *testing.T) {
+	tests := []struct {
+		name           string
+		bucket         string
+		proxiedBucket  string
+		setupMock      func(*mockS3Client)
+		expectedCode   string
+		expectedStatus int
+	}{
+		{
+			name:           "nil config manages all buckets",
+			bucket:         "test-bucket",
+			proxiedBucket:  "", // nil config case handled separately
+			setupMock:      func(*mockS3Client) {}, // no setup needed
+			expectedCode:   "BucketAlreadyExists",
+			expectedStatus: http.StatusConflict,
+		},
+		{
+			name:          "empty proxied bucket manages all buckets - bucket exists",
+			bucket:        "test-bucket",
+			proxiedBucket: "",
+			setupMock:     func(*mockS3Client) {}, // no setup needed, bucket "exists"
+			expectedCode:  "BucketAlreadyExists",
+			expectedStatus: http.StatusConflict,
+		},
+		{
+			name:          "empty proxied bucket manages all buckets - bucket does not exist",
+			bucket:        "nonexistent-bucket",
+			proxiedBucket: "",
+			setupMock: func(m *mockS3Client) {
+				// Simulate bucket not existing by making ListObjects fail
+				m.errors["nonexistent-bucket/list"] = &mockAPIError{code: "NoSuchBucket", message: "The specified bucket does not exist"}
+			},
+			expectedCode:   "NotImplemented",
+			expectedStatus: http.StatusNotImplemented,
+		},
+		{
+			name:           "proxied bucket matches request",
+			bucket:         "specific-bucket",
+			proxiedBucket:  "specific-bucket",
+			setupMock:      func(*mockS3Client) {}, // no setup needed
+			expectedCode:   "BucketAlreadyExists",
+			expectedStatus: http.StatusConflict,
+		},
+		{
+			name:           "proxied bucket does not match request",
+			bucket:         "other-bucket",
+			proxiedBucket:  "specific-bucket",
+			setupMock:      func(*mockS3Client) {}, // no setup needed
+			expectedCode:   "NotImplemented",
+			expectedStatus: http.StatusNotImplemented,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			logger := logrus.New()
+			logger.SetLevel(logrus.ErrorLevel)
+			mockClient := newMockS3Client()
+			mockEngine, _ := crypto.NewEngine("test-password-123456")
+
+			// Setup mock client
+			tt.setupMock(mockClient)
+
+			var handler *Handler
+			if tt.name == "nil config manages all buckets" {
+				// Test nil config case
+				handler = NewHandler(mockClient, mockEngine, logger, getTestMetrics())
+			} else {
+				// Test with config
+				cfg := &config.Config{
+					ProxiedBucket: tt.proxiedBucket,
+				}
+				handler = NewHandlerWithFeatures(mockClient, mockEngine, logger, getTestMetrics(), nil, nil, nil, cfg, nil)
+			}
+
+			router := mux.NewRouter()
+			handler.RegisterRoutes(router)
+
+			req := httptest.NewRequest("PUT", "/"+tt.bucket, nil)
+			w := httptest.NewRecorder()
+			router.ServeHTTP(w, req)
+
+			if w.Code != tt.expectedStatus {
+				t.Errorf("expected status %d, got %d", tt.expectedStatus, w.Code)
+			}
+
+			body, err := io.ReadAll(w.Body)
+			if err != nil {
+				t.Fatalf("Failed to read response: %v", err)
+			}
+
+			expectedCode := "<Code>" + tt.expectedCode + "</Code>"
+			if !bytes.Contains(body, []byte(expectedCode)) {
+				t.Errorf("Expected error code %s, got response: %s", tt.expectedCode, string(body))
 			}
 		})
 	}

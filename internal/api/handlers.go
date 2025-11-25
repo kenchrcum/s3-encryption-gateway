@@ -1605,8 +1605,6 @@ func (h *Handler) handleListObjects(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleCreateBucket handles PUT bucket requests (bucket creation).
-// Since the gateway doesn't manage bucket creation but acts as a proxy for existing buckets,
-// we return BucketAlreadyExists to indicate the bucket exists for gateway operations.
 func (h *Handler) handleCreateBucket(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
 	vars := mux.Vars(r)
@@ -1622,10 +1620,97 @@ func (h *Handler) handleCreateBucket(w http.ResponseWriter, r *http.Request) {
 
 	h.logger.WithFields(logrus.Fields{
 		"bucket": bucket,
-	}).Debug("Handling bucket creation request - returning BucketAlreadyExists")
+	}).Debug("Handling bucket creation request")
 
-	// Return BucketAlreadyExists since the gateway manages existing buckets
-	// and doesn't actually create new buckets
+	// Check if we should return BucketAlreadyExists or NotImplemented
+	if h.config != nil && h.config.ProxiedBucket != "" {
+		// Gateway is configured to proxy a specific bucket
+		if h.config.ProxiedBucket == bucket {
+			// This is the specific bucket the gateway manages
+			h.logger.WithFields(logrus.Fields{
+				"bucket":        bucket,
+				"proxiedBucket": h.config.ProxiedBucket,
+			}).Debug("Bucket matches configured proxied bucket - returning BucketAlreadyExists")
+
+			s3Err := &S3Error{
+				Code:       "BucketAlreadyExists",
+				Message:    "The requested bucket name is not available. The bucket already exists.",
+				Resource:   r.URL.Path,
+				HTTPStatus: http.StatusConflict,
+			}
+			s3Err.WriteXML(w)
+			h.metrics.RecordHTTPRequest(r.Context(),"PUT", r.URL.Path, s3Err.HTTPStatus, time.Since(start), 0)
+			return
+		} else {
+			// Gateway is configured for a different bucket
+			h.logger.WithFields(logrus.Fields{
+				"bucket":        bucket,
+				"proxiedBucket": h.config.ProxiedBucket,
+			}).Debug("Bucket does not match configured proxied bucket - returning NotImplemented")
+
+			s3Err := &S3Error{
+				Code:       "NotImplemented",
+				Message:    "Bucket creation is not supported for this bucket.",
+				Resource:   r.URL.Path,
+				HTTPStatus: http.StatusNotImplemented,
+			}
+			s3Err.WriteXML(w)
+			h.metrics.RecordHTTPRequest(r.Context(),"PUT", r.URL.Path, s3Err.HTTPStatus, time.Since(start), 0)
+			return
+		}
+	}
+
+	// Gateway is not configured for a specific bucket (proxies all buckets)
+	// Check if the bucket actually exists in the backend
+	h.logger.WithFields(logrus.Fields{
+		"bucket": bucket,
+	}).Debug("Checking if bucket exists in backend")
+
+	s3Client, err := h.getS3Client(r)
+	if err != nil {
+		h.logger.WithError(err).WithFields(logrus.Fields{
+			"bucket": bucket,
+		}).Error("Failed to get S3 client to check bucket existence")
+
+		s3Err := &S3Error{
+			Code:       "InternalError",
+			Message:    "Failed to check bucket existence.",
+			Resource:   r.URL.Path,
+			HTTPStatus: http.StatusInternalServerError,
+		}
+		s3Err.WriteXML(w)
+		h.metrics.RecordHTTPRequest(r.Context(),"PUT", r.URL.Path, s3Err.HTTPStatus, time.Since(start), 0)
+		return
+	}
+
+	// Try to list objects in the bucket to check if it exists
+	// Use a limit of 1 to minimize data transfer
+	opts := s3.ListOptions{
+		MaxKeys: 1,
+	}
+	_, err = s3Client.ListObjects(r.Context(), bucket, "", opts)
+	if err != nil {
+		// If listing fails, assume bucket doesn't exist and return NotImplemented
+		h.logger.WithError(err).WithFields(logrus.Fields{
+			"bucket": bucket,
+		}).Debug("Bucket does not exist or is not accessible - returning NotImplemented")
+
+		s3Err := &S3Error{
+			Code:       "NotImplemented",
+			Message:    "Bucket creation is not supported.",
+			Resource:   r.URL.Path,
+			HTTPStatus: http.StatusNotImplemented,
+		}
+		s3Err.WriteXML(w)
+		h.metrics.RecordHTTPRequest(r.Context(),"PUT", r.URL.Path, s3Err.HTTPStatus, time.Since(start), 0)
+		return
+	}
+
+	// Bucket exists, return BucketAlreadyExists
+	h.logger.WithFields(logrus.Fields{
+		"bucket": bucket,
+	}).Debug("Bucket exists in backend - returning BucketAlreadyExists")
+
 	s3Err := &S3Error{
 		Code:       "BucketAlreadyExists",
 		Message:    "The requested bucket name is not available. The bucket already exists.",
