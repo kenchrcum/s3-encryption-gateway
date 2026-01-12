@@ -25,17 +25,17 @@ import (
 
 // Handler handles HTTP requests for S3 operations.
 type Handler struct {
-	s3Client        s3.Client // Legacy: kept for backward compatibility
-	clientFactory   *s3.ClientFactory // New: factory for per-request clients
+	s3Client         s3.Client         // Legacy: kept for backward compatibility
+	clientFactory    *s3.ClientFactory // New: factory for per-request clients
 	encryptionEngine crypto.EncryptionEngine
-	logger          *logrus.Logger
-	metrics         *metrics.Metrics
-	keyManager      crypto.KeyManager
-	cache           cache.Cache
-	auditLogger     audit.Logger
-	config          *config.Config
-	policyManager   *config.PolicyManager
-	engineCache     sync.Map
+	logger           *logrus.Logger
+	metrics          *metrics.Metrics
+	keyManager       crypto.KeyManager
+	cache            cache.Cache
+	auditLogger      audit.Logger
+	config           *config.Config
+	policyManager    *config.PolicyManager
+	engineCache      sync.Map
 }
 
 // NewHandler creates a new API handler (backward compatibility).
@@ -56,21 +56,21 @@ func NewHandlerWithFeatures(
 	policyManager *config.PolicyManager,
 ) *Handler {
 	h := &Handler{
-		s3Client:        s3Client,
+		s3Client:         s3Client,
 		encryptionEngine: encryptionEngine,
-		logger:          logger,
-		metrics:         m,
-		keyManager:     keyManager,
-		cache:          cache,
-		auditLogger:    auditLogger,
-		config:         config,
-		policyManager:   policyManager,
+		logger:           logger,
+		metrics:          m,
+		keyManager:       keyManager,
+		cache:            cache,
+		auditLogger:      auditLogger,
+		config:           config,
+		policyManager:    policyManager,
 	}
-    // Create client factory for per-request credential support
-    if config != nil {
-        h.clientFactory = s3.NewClientFactory(&config.Backend)
-    }
-    return h
+	// Create client factory for per-request credential support
+	if config != nil {
+		h.clientFactory = s3.NewClientFactory(&config.Backend)
+	}
+	return h
 }
 
 func (h *Handler) currentKeyVersion(ctx context.Context) int {
@@ -125,12 +125,12 @@ func (h *Handler) writeS3ClientError(w http.ResponseWriter, r *http.Request, err
 	// When use_client_credentials is enabled, provide specific error messages
 	if h.config != nil && h.config.Backend.UseClientCredentials {
 		var s3Err *S3Error
-		
+
 		// Check if this is a Signature V4 limitation
 		if strings.Contains(errMsg, "Signature V4") {
 			s3Err = &S3Error{
-				Code:       "SignatureDoesNotMatch",
-				Message:    "Signature V4 authentication is not supported when use_client_credentials is enabled. " +
+				Code: "SignatureDoesNotMatch",
+				Message: "Signature V4 authentication is not supported when use_client_credentials is enabled. " +
 					"The signature includes the Host header, which prevents forwarding requests to the backend. " +
 					"Please use query parameter authentication (AWSAccessKeyId and AWSSecretAccessKey in URL) instead. " +
 					"For AWS CLI, you may need to use a custom client that supports query parameter authentication.",
@@ -140,8 +140,8 @@ func (h *Handler) writeS3ClientError(w http.ResponseWriter, r *http.Request, err
 		} else if strings.Contains(errMsg, "failed to extract credentials") || strings.Contains(errMsg, "incomplete") {
 			// Missing or incomplete credentials
 			s3Err = &S3Error{
-				Code:       "AccessDenied",
-				Message:    "Missing or invalid credentials in request. " +
+				Code: "AccessDenied",
+				Message: "Missing or invalid credentials in request. " +
 					"When use_client_credentials is enabled, credentials must be provided via query parameters " +
 					"(AWSAccessKeyId and AWSSecretAccessKey) or Authorization header.",
 				Resource:   r.URL.Path,
@@ -156,12 +156,12 @@ func (h *Handler) writeS3ClientError(w http.ResponseWriter, r *http.Request, err
 				HTTPStatus: http.StatusForbidden,
 			}
 		}
-		
+
 		s3Err.WriteXML(w)
-		h.metrics.RecordHTTPRequest(r.Context(),method, r.URL.Path, s3Err.HTTPStatus, time.Since(start), 0)
+		h.metrics.RecordHTTPRequest(r.Context(), method, r.URL.Path, s3Err.HTTPStatus, time.Since(start), 0)
 		return
 	}
-	
+
 	// Otherwise return InternalError (when use_client_credentials is not enabled)
 	s3Err := &S3Error{
 		Code:       "InternalError",
@@ -170,7 +170,7 @@ func (h *Handler) writeS3ClientError(w http.ResponseWriter, r *http.Request, err
 		HTTPStatus: http.StatusInternalServerError,
 	}
 	s3Err.WriteXML(w)
-	h.metrics.RecordHTTPRequest(r.Context(),method, r.URL.Path, s3Err.HTTPStatus, time.Since(start), 0)
+	h.metrics.RecordHTTPRequest(r.Context(), method, r.URL.Path, s3Err.HTTPStatus, time.Since(start), 0)
 }
 
 // forwardSignatureV4Request forwards a Signature V4 request directly to the backend,
@@ -184,7 +184,7 @@ func (h *Handler) forwardSignatureV4Request(w http.ResponseWriter, r *http.Reque
 			HTTPStatus: http.StatusInternalServerError,
 		}
 		s3Err.WriteXML(w)
-		h.metrics.RecordHTTPRequest(r.Context(),method, r.URL.Path, s3Err.HTTPStatus, time.Since(start), 0)
+		h.metrics.RecordHTTPRequest(r.Context(), method, r.URL.Path, s3Err.HTTPStatus, time.Since(start), 0)
 		return
 	}
 
@@ -229,7 +229,7 @@ func (h *Handler) forwardSignatureV4Request(w http.ResponseWriter, r *http.Reque
 			HTTPStatus: http.StatusInternalServerError,
 		}
 		s3Err.WriteXML(w)
-		h.metrics.RecordHTTPRequest(r.Context(),method, r.URL.Path, s3Err.HTTPStatus, time.Since(start), 0)
+		h.metrics.RecordHTTPRequest(r.Context(), method, r.URL.Path, s3Err.HTTPStatus, time.Since(start), 0)
 		return
 	}
 
@@ -237,7 +237,7 @@ func (h *Handler) forwardSignatureV4Request(w http.ResponseWriter, r *http.Reque
 	backendURLParsed, err := url.Parse(backendURL)
 	if err == nil {
 		backendHostname := backendURLParsed.Host
-		
+
 		// For Signature V4, the signature includes the Host header
 		// We need to use the backend's hostname, but this may cause signature validation to fail
 		// Some S3-compatible backends are lenient and will accept it
@@ -249,7 +249,7 @@ func (h *Handler) forwardSignatureV4Request(w http.ResponseWriter, r *http.Reque
 			}
 			backendReq.Header[k] = v
 		}
-		
+
 		// Set Host to backend hostname (without port if default)
 		backendReq.Host = backendHostname
 		h.logger.WithFields(logrus.Fields{
@@ -279,10 +279,10 @@ func (h *Handler) forwardSignatureV4Request(w http.ResponseWriter, r *http.Reque
 		originalHost = r.Header.Get("Host")
 	}
 	h.logger.WithFields(logrus.Fields{
-		"backend_url":  backendURL,
+		"backend_url":   backendURL,
 		"original_host": originalHost,
-		"backend_host": backendReq.Host,
-		"method":       method,
+		"backend_host":  backendReq.Host,
+		"method":        method,
 	}).Debug("Forwarding Signature V4 request to backend")
 
 	// Make request to backend
@@ -299,7 +299,7 @@ func (h *Handler) forwardSignatureV4Request(w http.ResponseWriter, r *http.Reque
 			HTTPStatus: http.StatusBadGateway,
 		}
 		s3Err.WriteXML(w)
-		h.metrics.RecordHTTPRequest(r.Context(),method, r.URL.Path, s3Err.HTTPStatus, time.Since(start), 0)
+		h.metrics.RecordHTTPRequest(r.Context(), method, r.URL.Path, s3Err.HTTPStatus, time.Since(start), 0)
 		return
 	}
 	defer backendResp.Body.Close()
@@ -316,7 +316,7 @@ func (h *Handler) forwardSignatureV4Request(w http.ResponseWriter, r *http.Reque
 		backendResp.Body = io.NopCloser(bytes.NewReader(bodyBytes))
 		h.logger.WithFields(logrus.Fields{
 			"status_code": backendResp.StatusCode,
-			"response":   string(bodyBytes),
+			"response":    string(bodyBytes),
 		}).Warn("Backend returned error response")
 	}
 
@@ -400,7 +400,7 @@ func (h *Handler) forwardSignatureV4Request(w http.ResponseWriter, r *http.Reque
 	if contentLength < 0 {
 		contentLength = 0
 	}
-	h.metrics.RecordHTTPRequest(r.Context(),method, r.URL.Path, backendResp.StatusCode, time.Since(start), contentLength)
+	h.metrics.RecordHTTPRequest(r.Context(), method, r.URL.Path, backendResp.StatusCode, time.Since(start), contentLength)
 }
 
 // getS3Client returns the appropriate S3 client for the request.
@@ -547,7 +547,7 @@ func (h *Handler) getEncryptionEngine(bucket string) (crypto.EncryptionEngine, e
 	password := effectiveConfig.Encryption.Password
 	// Fallback logic for password if not in config (e.g. loaded from file directly to var in main)
 	// This is a limitation: we need the base password in config struct for this to work if policy doesn't override it.
-	
+
 	chunkedMode := effectiveConfig.Encryption.ChunkedMode
 	if !effectiveConfig.Encryption.ChunkedMode && effectiveConfig.Encryption.ChunkSize == 0 {
 		chunkedMode = true
@@ -586,7 +586,7 @@ func (h *Handler) getEncryptionEngine(bucket string) (crypto.EncryptionEngine, e
 
 	// Cache the new engine
 	h.engineCache.Store(policy.ID, engine)
-	
+
 	return engine, nil
 }
 
@@ -595,19 +595,19 @@ func (h *Handler) handleHealth(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
 	handler := metrics.HealthHandler()
 	handler(w, r)
-	h.metrics.RecordHTTPRequest(r.Context(),"GET", "/health", http.StatusOK, time.Since(start), 0)
+	h.metrics.RecordHTTPRequest(r.Context(), "GET", "/health", http.StatusOK, time.Since(start), 0)
 }
 
 // handleReady handles readiness check requests.
 func (h *Handler) handleReady(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
-	
+
 	// Create health check function if key manager is enabled
 	var healthCheck func(context.Context) error
 	if h.keyManager != nil {
 		healthCheck = h.keyManager.HealthCheck
 	}
-	
+
 	// Check KMS health before calling handler
 	statusCode := http.StatusOK
 	if healthCheck != nil {
@@ -615,11 +615,11 @@ func (h *Handler) handleReady(w http.ResponseWriter, r *http.Request) {
 			statusCode = http.StatusServiceUnavailable
 		}
 	}
-	
+
 	handler := metrics.ReadinessHandler(healthCheck)
 	handler(w, r)
-	
-	h.metrics.RecordHTTPRequest(r.Context(),"GET", "/ready", statusCode, time.Since(start), 0)
+
+	h.metrics.RecordHTTPRequest(r.Context(), "GET", "/ready", statusCode, time.Since(start), 0)
 }
 
 // handleLive handles liveness check requests.
@@ -627,7 +627,7 @@ func (h *Handler) handleLive(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
 	handler := metrics.LivenessHandler()
 	handler(w, r)
-	h.metrics.RecordHTTPRequest(r.Context(),"GET", "/live", http.StatusOK, time.Since(start), 0)
+	h.metrics.RecordHTTPRequest(r.Context(), "GET", "/live", http.StatusOK, time.Since(start), 0)
 }
 
 // handleGetObject handles GET object requests.
@@ -639,45 +639,45 @@ func (h *Handler) handleGetObject(w http.ResponseWriter, r *http.Request) {
 
 	h.logger.WithFields(logrus.Fields{
 		"bucket": bucket,
-		"key": key,
+		"key":    key,
 	}).Debug("Starting GET object")
 
 	if bucket == "" || key == "" {
 		s3Err := ErrInvalidRequest
 		s3Err.Resource = r.URL.Path
 		s3Err.WriteXML(w)
-		h.metrics.RecordHTTPRequest(r.Context(),"GET", r.URL.Path, s3Err.HTTPStatus, time.Since(start), 0)
+		h.metrics.RecordHTTPRequest(r.Context(), "GET", r.URL.Path, s3Err.HTTPStatus, time.Since(start), 0)
 		return
 	}
 
 	ctx := r.Context()
-	
+
 	// Extract version ID if provided
 	var versionID *string
 	if vid := r.URL.Query().Get("versionId"); vid != "" {
 		versionID = &vid
 	}
 
-    // Get range header if present
-    var rangeHeader *string
-    if rg := r.Header.Get("Range"); rg != "" {
-        rangeHeader = &rg
-    }
+	// Get range header if present
+	var rangeHeader *string
+	if rg := r.Header.Get("Range"); rg != "" {
+		rangeHeader = &rg
+	}
 
-    // Get encryption engine for this bucket
-    engine, err := h.getEncryptionEngine(bucket)
-    if err != nil {
-        h.logger.WithError(err).Error("Failed to get encryption engine")
-        s3Err := &S3Error{
-            Code:       "InternalError",
-            Message:    "Failed to load encryption configuration",
-            Resource:   r.URL.Path,
-            HTTPStatus: http.StatusInternalServerError,
-        }
-        s3Err.WriteXML(w)
-        h.metrics.RecordHTTPRequest(r.Context(),"GET", r.URL.Path, s3Err.HTTPStatus, time.Since(start), 0)
-        return
-    }
+	// Get encryption engine for this bucket
+	engine, err := h.getEncryptionEngine(bucket)
+	if err != nil {
+		h.logger.WithError(err).Error("Failed to get encryption engine")
+		s3Err := &S3Error{
+			Code:       "InternalError",
+			Message:    "Failed to load encryption configuration",
+			Resource:   r.URL.Path,
+			HTTPStatus: http.StatusInternalServerError,
+		}
+		s3Err.WriteXML(w)
+		h.metrics.RecordHTTPRequest(r.Context(), "GET", r.URL.Path, s3Err.HTTPStatus, time.Since(start), 0)
+		return
+	}
 
 	// Check cache first if enabled and no range request
 	if h.cache != nil && rangeHeader == nil && versionID == nil {
@@ -688,7 +688,7 @@ func (h *Handler) handleGetObject(w http.ResponseWriter, r *http.Request) {
 			}
 			w.WriteHeader(http.StatusOK)
 			w.Write(cachedEntry.Data)
-			h.metrics.RecordHTTPRequest(r.Context(),"GET", r.URL.Path, http.StatusOK, time.Since(start), int64(len(cachedEntry.Data)))
+			h.metrics.RecordHTTPRequest(r.Context(), "GET", r.URL.Path, http.StatusOK, time.Since(start), int64(len(cachedEntry.Data)))
 			if h.auditLogger != nil {
 				h.auditLogger.LogAccess("get", bucket, key, getClientIP(r), r.UserAgent(), getRequestID(r), true, nil, time.Since(start))
 			}
@@ -696,86 +696,86 @@ func (h *Handler) handleGetObject(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-    // If Range is requested, optimize for chunked encryption format
-    // For chunked encryption: calculate encrypted byte range and fetch only needed chunks
-    // For legacy/buffered encryption: fetch full object, decrypt, then apply range
-    var backendRange *string
-    var useRangeOptimization bool
-    var plaintextStart, plaintextEnd int64
-    
-    // Get S3 client (may use client credentials if enabled)
-    // For Signature V4 requests, s3Client may be nil - we'll forward the request directly
-    s3Client, err := h.getS3Client(r)
-    if err != nil {
-        h.logger.WithError(err).Error("Failed to get S3 client")
-        h.writeS3ClientError(w, r, err, "GET", start)
-        return
-    }
+	// If Range is requested, optimize for chunked encryption format
+	// For chunked encryption: calculate encrypted byte range and fetch only needed chunks
+	// For legacy/buffered encryption: fetch full object, decrypt, then apply range
+	var backendRange *string
+	var useRangeOptimization bool
+	var plaintextStart, plaintextEnd int64
 
-    // If s3Client is nil, this indicates Signature V4 was detected and can't be handled
-    if s3Client == nil && err == nil {
-        // This shouldn't happen - getS3Client should return an error for Signature V4
-        // But handle it gracefully just in case
-        s3Err := &S3Error{
-            Code:       "NotImplemented",
-            Message:    "Signature V4 requests are not supported. Please use query parameter authentication instead.",
-            Resource:   r.URL.Path,
-            HTTPStatus: http.StatusNotImplemented,
-        }
-        s3Err.WriteXML(w)
-        h.metrics.RecordHTTPRequest(r.Context(),"GET", r.URL.Path, s3Err.HTTPStatus, time.Since(start), 0)
-        return
-    }
+	// Get S3 client (may use client credentials if enabled)
+	// For Signature V4 requests, s3Client may be nil - we'll forward the request directly
+	s3Client, err := h.getS3Client(r)
+	if err != nil {
+		h.logger.WithError(err).Error("Failed to get S3 client")
+		h.writeS3ClientError(w, r, err, "GET", start)
+		return
+	}
 
-    if rangeHeader != nil {
-        // Check if object is encrypted and uses chunked format
-        headMeta, headErr := s3Client.HeadObject(ctx, bucket, key, versionID)
-        if headErr == nil && engine.IsEncrypted(headMeta) {
-            // Check if chunked format - if so, we can optimize by fetching only needed chunks
-            if crypto.IsChunkedFormat(headMeta) {
-                // Get plaintext size for range parsing
-                plaintextSize, err := crypto.GetPlaintextSizeFromMetadata(headMeta)
-                if err == nil {
-                    // Parse range header to get plaintext byte range
-                    start, end, err := crypto.ParseHTTPRangeHeader(*rangeHeader, plaintextSize)
-                    if err == nil {
-                        plaintextStart, plaintextEnd = start, end
-                       	// Calculate encrypted byte range for needed chunks
-                       	encryptedStart, encryptedEnd, err := crypto.CalculateEncryptedRangeForPlaintextRange(headMeta, start, end)
-                       	if err == nil {
-                           	// Format as HTTP Range header
-                           	encryptedRange := fmt.Sprintf("bytes=%d-%d", encryptedStart, encryptedEnd)
-                           	backendRange = &encryptedRange
-                           	useRangeOptimization = true
-                           	h.logger.WithFields(logrus.Fields{
-                           		"bucket":         bucket,
-                           		"key":            key,
-                           		"plaintext_range": fmt.Sprintf("%d-%d", start, end),
-                           		"encrypted_range": encryptedRange,
-                           	}).Debug("Using optimized range request for chunked encryption")
-                       	} else {
-                           	h.logger.WithError(err).Warn("Failed to calculate encrypted range, falling back to full fetch")
-                           	backendRange = nil
-                       	}
-                    } else {
-                       	h.logger.WithError(err).Warn("Failed to parse range header, falling back to full fetch")
-                       	backendRange = nil
-                    }
-                } else {
-                   	h.logger.WithError(err).Warn("Failed to get plaintext size, falling back to full fetch")
-                   	backendRange = nil
-                }
-            } else {
-                // Legacy format: must fetch full object
-                backendRange = nil
-            }
-        } else {
-            // Not encrypted or HEAD failed: forward range to backend
-            backendRange = rangeHeader
-        }
-    }
+	// If s3Client is nil, this indicates Signature V4 was detected and can't be handled
+	if s3Client == nil && err == nil {
+		// This shouldn't happen - getS3Client should return an error for Signature V4
+		// But handle it gracefully just in case
+		s3Err := &S3Error{
+			Code:       "NotImplemented",
+			Message:    "Signature V4 requests are not supported. Please use query parameter authentication instead.",
+			Resource:   r.URL.Path,
+			HTTPStatus: http.StatusNotImplemented,
+		}
+		s3Err.WriteXML(w)
+		h.metrics.RecordHTTPRequest(r.Context(), "GET", r.URL.Path, s3Err.HTTPStatus, time.Since(start), 0)
+		return
+	}
 
-    reader, metadata, err := s3Client.GetObject(ctx, bucket, key, versionID, backendRange)
+	if rangeHeader != nil {
+		// Check if object is encrypted and uses chunked format
+		headMeta, headErr := s3Client.HeadObject(ctx, bucket, key, versionID)
+		if headErr == nil && engine.IsEncrypted(headMeta) {
+			// Check if chunked format - if so, we can optimize by fetching only needed chunks
+			if crypto.IsChunkedFormat(headMeta) {
+				// Get plaintext size for range parsing
+				plaintextSize, err := crypto.GetPlaintextSizeFromMetadata(headMeta)
+				if err == nil {
+					// Parse range header to get plaintext byte range
+					start, end, err := crypto.ParseHTTPRangeHeader(*rangeHeader, plaintextSize)
+					if err == nil {
+						plaintextStart, plaintextEnd = start, end
+						// Calculate encrypted byte range for needed chunks
+						encryptedStart, encryptedEnd, err := crypto.CalculateEncryptedRangeForPlaintextRange(headMeta, start, end)
+						if err == nil {
+							// Format as HTTP Range header
+							encryptedRange := fmt.Sprintf("bytes=%d-%d", encryptedStart, encryptedEnd)
+							backendRange = &encryptedRange
+							useRangeOptimization = true
+							h.logger.WithFields(logrus.Fields{
+								"bucket":          bucket,
+								"key":             key,
+								"plaintext_range": fmt.Sprintf("%d-%d", start, end),
+								"encrypted_range": encryptedRange,
+							}).Debug("Using optimized range request for chunked encryption")
+						} else {
+							h.logger.WithError(err).Warn("Failed to calculate encrypted range, falling back to full fetch")
+							backendRange = nil
+						}
+					} else {
+						h.logger.WithError(err).Warn("Failed to parse range header, falling back to full fetch")
+						backendRange = nil
+					}
+				} else {
+					h.logger.WithError(err).Warn("Failed to get plaintext size, falling back to full fetch")
+					backendRange = nil
+				}
+			} else {
+				// Legacy format: must fetch full object
+				backendRange = nil
+			}
+		} else {
+			// Not encrypted or HEAD failed: forward range to backend
+			backendRange = rangeHeader
+		}
+	}
+
+	reader, metadata, err := s3Client.GetObject(ctx, bucket, key, versionID, backendRange)
 	if err != nil {
 		s3Err := TranslateError(err, bucket, key)
 		s3Err.WriteXML(w)
@@ -783,19 +783,17 @@ func (h *Handler) handleGetObject(w http.ResponseWriter, r *http.Request) {
 			"bucket": bucket,
 			"key":    key,
 		}).Error("Failed to get object")
-		h.metrics.RecordS3Error(r.Context(),"GetObject", bucket, s3Err.Code)
-		h.metrics.RecordHTTPRequest(r.Context(),"GET", r.URL.Path, s3Err.HTTPStatus, time.Since(start), 0)
+		h.metrics.RecordS3Error(r.Context(), "GetObject", bucket, s3Err.Code)
+		h.metrics.RecordHTTPRequest(r.Context(), "GET", r.URL.Path, s3Err.HTTPStatus, time.Since(start), 0)
 		return
 	}
 	defer reader.Close()
-
 
 	// Decrypt if encrypted
 	decryptStart := time.Now()
 	var decryptedReader io.Reader
 	var decMetadata map[string]string
 
-	
 	if useRangeOptimization && engine.IsEncrypted(metadata) {
 		// Use range-optimized decryption (only decrypts needed chunks)
 		// Access the concrete engine type for DecryptRange method
@@ -826,7 +824,7 @@ func (h *Handler) handleGetObject(w http.ResponseWriter, r *http.Request) {
 			"bucket": bucket,
 			"key":    key,
 		}).Error("Failed to decrypt object")
-		h.metrics.RecordEncryptionError(r.Context(),"decrypt", "decryption_failed")
+		h.metrics.RecordEncryptionError(r.Context(), "decrypt", "decryption_failed")
 		s3Err := &S3Error{
 			Code:       "InternalError",
 			Message:    "Failed to decrypt object",
@@ -834,51 +832,51 @@ func (h *Handler) handleGetObject(w http.ResponseWriter, r *http.Request) {
 			HTTPStatus: http.StatusInternalServerError,
 		}
 		s3Err.WriteXML(w)
-		h.metrics.RecordHTTPRequest(r.Context(),"GET", r.URL.Path, s3Err.HTTPStatus, time.Since(start), 0)
+		h.metrics.RecordHTTPRequest(r.Context(), "GET", r.URL.Path, s3Err.HTTPStatus, time.Since(start), 0)
 		return
 	}
 
-    // For range optimization, we already have the exact range in decryptedReader
-    // For non-optimized ranges, we need to buffer and apply range
-    var decryptedData []byte
-    var decryptedSize int64
-    if rangeHeader != nil && *rangeHeader != "" && !useRangeOptimization {
-        // Buffer for range processing (only if not using optimization)
-        dd, err := io.ReadAll(decryptedReader)
-        if err != nil {
-            h.logger.WithError(err).Error("Failed to read decrypted data")
-            s3Err := &S3Error{
-                Code:       "InternalError",
-                Message:    "Failed to read decrypted data",
-                Resource:   r.URL.Path,
-                HTTPStatus: http.StatusInternalServerError,
-            }
-            s3Err.WriteXML(w)
-            h.metrics.RecordHTTPRequest(r.Context(),"GET", r.URL.Path, http.StatusInternalServerError, time.Since(start), 0)
-            if h.auditLogger != nil {
-                alg := metadata[crypto.MetaAlgorithm]
-                if alg == "" {
-                    alg = crypto.AlgorithmAES256GCM
-                }
-                h.auditLogger.LogDecrypt(bucket, key, alg, 0, false, err, decryptDuration, nil)
-            }
-            return
-        }
-        decryptedData = dd
-        decryptedSize = int64(len(decryptedData))
-    } else if useRangeOptimization {
-        // For optimized range, the reader already contains only the range
-        // But we still need to read it to send it
-        decryptedSize = plaintextEnd - plaintextStart + 1
-    }
-    h.metrics.RecordEncryptionOperation(r.Context(),"decrypt", decryptDuration, decryptedSize)
+	// For range optimization, we already have the exact range in decryptedReader
+	// For non-optimized ranges, we need to buffer and apply range
+	var decryptedData []byte
+	var decryptedSize int64
+	if rangeHeader != nil && *rangeHeader != "" && !useRangeOptimization {
+		// Buffer for range processing (only if not using optimization)
+		dd, err := io.ReadAll(decryptedReader)
+		if err != nil {
+			h.logger.WithError(err).Error("Failed to read decrypted data")
+			s3Err := &S3Error{
+				Code:       "InternalError",
+				Message:    "Failed to read decrypted data",
+				Resource:   r.URL.Path,
+				HTTPStatus: http.StatusInternalServerError,
+			}
+			s3Err.WriteXML(w)
+			h.metrics.RecordHTTPRequest(r.Context(), "GET", r.URL.Path, http.StatusInternalServerError, time.Since(start), 0)
+			if h.auditLogger != nil {
+				alg := metadata[crypto.MetaAlgorithm]
+				if alg == "" {
+					alg = crypto.AlgorithmAES256GCM
+				}
+				h.auditLogger.LogDecrypt(bucket, key, alg, 0, false, err, decryptDuration, nil)
+			}
+			return
+		}
+		decryptedData = dd
+		decryptedSize = int64(len(decryptedData))
+	} else if useRangeOptimization {
+		// For optimized range, the reader already contains only the range
+		// But we still need to read it to send it
+		decryptedSize = plaintextEnd - plaintextStart + 1
+	}
+	h.metrics.RecordEncryptionOperation(r.Context(), "decrypt", decryptDuration, decryptedSize)
 
 	// Get algorithm and key version from metadata for audit logging
 	algorithm := metadata[crypto.MetaAlgorithm]
 	if algorithm == "" {
 		algorithm = crypto.AlgorithmAES256GCM
 	}
-	
+
 	// Extract actual key version used for decryption from metadata
 	keyVersionUsed := 0
 	if kvStr, ok := metadata[crypto.MetaKeyVersion]; ok && kvStr != "" {
@@ -886,14 +884,14 @@ func (h *Handler) handleGetObject(w http.ResponseWriter, r *http.Request) {
 			keyVersionUsed = kv
 		}
 	}
-	
+
 	// Get active key version and check for rotated read
 	activeKeyVersion := 0
 	if h.keyManager != nil {
 		activeKeyVersion = h.currentKeyVersion(r.Context())
 		// Track rotated read if key version used differs from active version
 		if keyVersionUsed > 0 && activeKeyVersion > 0 && keyVersionUsed != activeKeyVersion {
-			h.metrics.RecordRotatedRead(r.Context(),keyVersionUsed, activeKeyVersion)
+			h.metrics.RecordRotatedRead(r.Context(), keyVersionUsed, activeKeyVersion)
 		}
 	}
 
@@ -925,113 +923,113 @@ func (h *Handler) handleGetObject(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-    // Apply range request if present (after decryption) and set headers BEFORE WriteHeader
-    outputData := decryptedData
-    if rangeHeader != nil && *rangeHeader != "" {
-        if useRangeOptimization {
-            // Optimized range: decryptedReader already contains only the range
-            // Read it into outputData
-            outputData, err = io.ReadAll(decryptedReader)
-            if err != nil {
-                h.logger.WithError(err).Error("Failed to read optimized range data")
-                s3Err := &S3Error{
-                    Code:       "InternalError",
-                    Message:    "Failed to read range data",
-                    Resource:   r.URL.Path,
-                    HTTPStatus: http.StatusInternalServerError,
-                }
-                s3Err.WriteXML(w)
-                h.metrics.RecordHTTPRequest(r.Context(),"GET", r.URL.Path, s3Err.HTTPStatus, time.Since(start), 0)
-                return
-            }
-            
-            // Get total size for Content-Range header
-            totalSize, _ := crypto.GetPlaintextSizeFromMetadata(metadata)
-            if totalSize == 0 {
-                // Fallback to approximate from decryptedData if available
-                totalSize = int64(len(decryptedData))
-            }
-            
-            // Set decrypted metadata headers
-            for k, v := range decMetadata {
-                if !isEncryptionMetadata(k) {
-                    w.Header().Set(k, v)
-                }
-            }
-            if versionID != nil && *versionID != "" {
-                w.Header().Set("x-amz-version-id", *versionID)
-            }
-            w.Header().Set("Content-Range", fmt.Sprintf("bytes %d-%d/%d", plaintextStart, plaintextEnd, totalSize))
-            w.Header().Set("Content-Length", fmt.Sprintf("%d", len(outputData)))
-            w.WriteHeader(http.StatusPartialContent)
-        } else {
-            // Non-optimized: apply range to buffered data
-            outputData, err = applyRangeRequest(decryptedData, *rangeHeader)
-            if err != nil {
-                s3Err := &S3Error{
-                    Code:       "InvalidRange",
-                    Message:    fmt.Sprintf("Invalid range request: %v", err),
-                    Resource:   r.URL.Path,
-                    HTTPStatus: http.StatusRequestedRangeNotSatisfiable,
-                }
-                s3Err.WriteXML(w)
-                h.metrics.RecordHTTPRequest(r.Context(),"GET", r.URL.Path, s3Err.HTTPStatus, time.Since(start), 0)
-                return
-            }
+	// Apply range request if present (after decryption) and set headers BEFORE WriteHeader
+	outputData := decryptedData
+	if rangeHeader != nil && *rangeHeader != "" {
+		if useRangeOptimization {
+			// Optimized range: decryptedReader already contains only the range
+			// Read it into outputData
+			outputData, err = io.ReadAll(decryptedReader)
+			if err != nil {
+				h.logger.WithError(err).Error("Failed to read optimized range data")
+				s3Err := &S3Error{
+					Code:       "InternalError",
+					Message:    "Failed to read range data",
+					Resource:   r.URL.Path,
+					HTTPStatus: http.StatusInternalServerError,
+				}
+				s3Err.WriteXML(w)
+				h.metrics.RecordHTTPRequest(r.Context(), "GET", r.URL.Path, s3Err.HTTPStatus, time.Since(start), 0)
+				return
+			}
 
-            // Parse the original range to get correct Content-Range header
-            rangeStart, rangeEnd, err := crypto.ParseHTTPRangeHeader(*rangeHeader, int64(len(decryptedData)))
-            if err != nil {
-                // This shouldn't happen since applyRangeRequest succeeded, but handle gracefully
-                h.logger.WithError(err).Warn("Failed to parse range header for Content-Range")
-                rangeStart, rangeEnd = 0, int64(len(outputData)-1)
-            }
+			// Get total size for Content-Range header
+			totalSize, _ := crypto.GetPlaintextSizeFromMetadata(metadata)
+			if totalSize == 0 {
+				// Fallback to approximate from decryptedData if available
+				totalSize = int64(len(decryptedData))
+			}
 
-            // Set decrypted metadata headers
-            for k, v := range decMetadata {
-                if !isEncryptionMetadata(k) {
-                    w.Header().Set(k, v)
-                }
-            }
-            if versionID != nil && *versionID != "" {
-                w.Header().Set("x-amz-version-id", *versionID)
-            }
-            w.Header().Set("Content-Range", fmt.Sprintf("bytes %d-%d/%d", rangeStart, rangeEnd, len(decryptedData)))
-            w.Header().Set("Content-Length", fmt.Sprintf("%d", len(outputData)))
-            w.WriteHeader(http.StatusPartialContent)
-        }
-    } else {
-        // Set decrypted metadata headers and stream body
-        for k, v := range decMetadata {
-            if !isEncryptionMetadata(k) {
-                w.Header().Set(k, v)
-            }
-        }
-        if versionID != nil && *versionID != "" {
-            w.Header().Set("x-amz-version-id", *versionID)
-        }
-        w.WriteHeader(http.StatusOK)
-        n64, err := io.Copy(w, decryptedReader)
-        if err != nil {
-            h.logger.WithError(err).Error("Failed to write response")
-            h.metrics.RecordHTTPRequest(r.Context(),"GET", r.URL.Path, http.StatusInternalServerError, time.Since(start), n64)
-            return
-        }
-        h.metrics.RecordS3Operation(r.Context(),"GetObject", bucket, time.Since(start))
-        h.metrics.RecordHTTPRequest(r.Context(),"GET", r.URL.Path, http.StatusOK, time.Since(start), n64)
-        return
-    }
+			// Set decrypted metadata headers
+			for k, v := range decMetadata {
+				if !isEncryptionMetadata(k) {
+					w.Header().Set(k, v)
+				}
+			}
+			if versionID != nil && *versionID != "" {
+				w.Header().Set("x-amz-version-id", *versionID)
+			}
+			w.Header().Set("Content-Range", fmt.Sprintf("bytes %d-%d/%d", plaintextStart, plaintextEnd, totalSize))
+			w.Header().Set("Content-Length", fmt.Sprintf("%d", len(outputData)))
+			w.WriteHeader(http.StatusPartialContent)
+		} else {
+			// Non-optimized: apply range to buffered data
+			outputData, err = applyRangeRequest(decryptedData, *rangeHeader)
+			if err != nil {
+				s3Err := &S3Error{
+					Code:       "InvalidRange",
+					Message:    fmt.Sprintf("Invalid range request: %v", err),
+					Resource:   r.URL.Path,
+					HTTPStatus: http.StatusRequestedRangeNotSatisfiable,
+				}
+				s3Err.WriteXML(w)
+				h.metrics.RecordHTTPRequest(r.Context(), "GET", r.URL.Path, s3Err.HTTPStatus, time.Since(start), 0)
+				return
+			}
 
-    // For ranged responses, write buffered bytes
-    n, err := w.Write(outputData)
-    if err != nil {
-        h.logger.WithError(err).Error("Failed to write response")
-        h.metrics.RecordHTTPRequest(r.Context(),"GET", r.URL.Path, http.StatusInternalServerError, time.Since(start), int64(n))
-        return
-    }
+			// Parse the original range to get correct Content-Range header
+			rangeStart, rangeEnd, err := crypto.ParseHTTPRangeHeader(*rangeHeader, int64(len(decryptedData)))
+			if err != nil {
+				// This shouldn't happen since applyRangeRequest succeeded, but handle gracefully
+				h.logger.WithError(err).Warn("Failed to parse range header for Content-Range")
+				rangeStart, rangeEnd = 0, int64(len(outputData)-1)
+			}
 
-    h.metrics.RecordS3Operation(r.Context(),"GetObject", bucket, time.Since(start))
-    h.metrics.RecordHTTPRequest(r.Context(),"GET", r.URL.Path, http.StatusOK, time.Since(start), int64(n))
+			// Set decrypted metadata headers
+			for k, v := range decMetadata {
+				if !isEncryptionMetadata(k) {
+					w.Header().Set(k, v)
+				}
+			}
+			if versionID != nil && *versionID != "" {
+				w.Header().Set("x-amz-version-id", *versionID)
+			}
+			w.Header().Set("Content-Range", fmt.Sprintf("bytes %d-%d/%d", rangeStart, rangeEnd, len(decryptedData)))
+			w.Header().Set("Content-Length", fmt.Sprintf("%d", len(outputData)))
+			w.WriteHeader(http.StatusPartialContent)
+		}
+	} else {
+		// Set decrypted metadata headers and stream body
+		for k, v := range decMetadata {
+			if !isEncryptionMetadata(k) {
+				w.Header().Set(k, v)
+			}
+		}
+		if versionID != nil && *versionID != "" {
+			w.Header().Set("x-amz-version-id", *versionID)
+		}
+		w.WriteHeader(http.StatusOK)
+		n64, err := io.Copy(w, decryptedReader)
+		if err != nil {
+			h.logger.WithError(err).Error("Failed to write response")
+			h.metrics.RecordHTTPRequest(r.Context(), "GET", r.URL.Path, http.StatusInternalServerError, time.Since(start), n64)
+			return
+		}
+		h.metrics.RecordS3Operation(r.Context(), "GetObject", bucket, time.Since(start))
+		h.metrics.RecordHTTPRequest(r.Context(), "GET", r.URL.Path, http.StatusOK, time.Since(start), n64)
+		return
+	}
+
+	// For ranged responses, write buffered bytes
+	n, err := w.Write(outputData)
+	if err != nil {
+		h.logger.WithError(err).Error("Failed to write response")
+		h.metrics.RecordHTTPRequest(r.Context(), "GET", r.URL.Path, http.StatusInternalServerError, time.Since(start), int64(n))
+		return
+	}
+
+	h.metrics.RecordS3Operation(r.Context(), "GetObject", bucket, time.Since(start))
+	h.metrics.RecordHTTPRequest(r.Context(), "GET", r.URL.Path, http.StatusOK, time.Since(start), int64(n))
 }
 
 // handlePutObject handles PUT object requests.
@@ -1043,14 +1041,14 @@ func (h *Handler) handlePutObject(w http.ResponseWriter, r *http.Request) {
 
 	h.logger.WithFields(logrus.Fields{
 		"bucket": bucket,
-		"key": key,
+		"key":    key,
 	}).Debug("Starting PUT object")
 
 	if bucket == "" || key == "" {
 		s3Err := ErrInvalidRequest
 		s3Err.Resource = r.URL.Path
 		s3Err.WriteXML(w)
-		h.metrics.RecordHTTPRequest(r.Context(),"PUT", r.URL.Path, s3Err.HTTPStatus, time.Since(start), 0)
+		h.metrics.RecordHTTPRequest(r.Context(), "PUT", r.URL.Path, s3Err.HTTPStatus, time.Since(start), 0)
 		return
 	}
 
@@ -1106,7 +1104,7 @@ func (h *Handler) handlePutObject(w http.ResponseWriter, r *http.Request) {
 		metadata["x-amz-meta-original-content-length"] = contentLength
 		fmt.Sscanf(contentLength, "%d", &originalBytes)
 	}
-	
+
 	// Extract Content-Type for encryption engine (for compression decisions)
 	// The encryption engine reads it from metadata, but we'll filter it out before S3
 	// This is a temporary inclusion - filterS3Metadata will remove it
@@ -1116,26 +1114,38 @@ func (h *Handler) handlePutObject(w http.ResponseWriter, r *http.Request) {
 	}
 	metadata["Content-Type"] = contentType
 
-    // Get encryption engine for this bucket
-    engine, err := h.getEncryptionEngine(bucket)
-    if err != nil {
-        h.logger.WithError(err).Error("Failed to get encryption engine")
-        s3Err := &S3Error{
-            Code:       "InternalError",
-            Message:    "Failed to load encryption configuration",
-            Resource:   r.URL.Path,
-            HTTPStatus: http.StatusInternalServerError,
-        }
-        s3Err.WriteXML(w)
-        h.metrics.RecordHTTPRequest(r.Context(),"PUT", r.URL.Path, s3Err.HTTPStatus, time.Since(start), 0)
-        return
-    }
+	// Get encryption engine for this bucket
+	engine, err := h.getEncryptionEngine(bucket)
+	if err != nil {
+		h.logger.WithError(err).Error("Failed to get encryption engine")
+		s3Err := &S3Error{
+			Code:       "InternalError",
+			Message:    "Failed to load encryption configuration",
+			Resource:   r.URL.Path,
+			HTTPStatus: http.StatusInternalServerError,
+		}
+		s3Err.WriteXML(w)
+		h.metrics.RecordHTTPRequest(r.Context(), "PUT", r.URL.Path, s3Err.HTTPStatus, time.Since(start), 0)
+		return
+	}
 
-    // Encrypt the object
+	// Check for AWS Chunked Uploads
+	// If detected, we must decode the stream to remove chunk metadata (signatures)
+	// before encrypting, otherwise the encrypted content will be corrupted with metadata.
+	var inputReader io.Reader = r.Body
+	if r.Header.Get("x-amz-content-sha256") == "STREAMING-AWS4-HMAC-SHA256-PAYLOAD" {
+		inputReader = NewAwsChunkedReader(r.Body)
+		h.logger.WithFields(logrus.Fields{
+			"bucket": bucket,
+			"key":    key,
+		}).Debug("Detected AWS Chunked Upload, decoding stream before encryption")
+	}
+
+	// Encrypt the object
 	encryptStart := time.Now()
-	encryptedReader, encMetadata, err := engine.Encrypt(r.Body, metadata)
+	encryptedReader, encMetadata, err := engine.Encrypt(inputReader, metadata)
 	encryptDuration := time.Since(encryptStart)
-	
+
 	// Get algorithm and key version for audit logging
 	algorithm := encMetadata[crypto.MetaAlgorithm]
 	if algorithm == "" {
@@ -1151,13 +1161,13 @@ func (h *Handler) handlePutObject(w http.ResponseWriter, r *http.Request) {
 			"bucket": bucket,
 			"key":    key,
 		}).Error("Failed to encrypt object")
-		h.metrics.RecordEncryptionError(r.Context(),"encrypt", "encryption_failed")
-		
+		h.metrics.RecordEncryptionError(r.Context(), "encrypt", "encryption_failed")
+
 		// Audit logging for failed encryption
 		if h.auditLogger != nil {
 			h.auditLogger.LogEncrypt(bucket, key, algorithm, keyVersion, false, err, encryptDuration, nil)
 		}
-		
+
 		s3Err := &S3Error{
 			Code:       "InternalError",
 			Message:    "Failed to encrypt object",
@@ -1165,7 +1175,7 @@ func (h *Handler) handlePutObject(w http.ResponseWriter, r *http.Request) {
 			HTTPStatus: http.StatusInternalServerError,
 		}
 		s3Err.WriteXML(w)
-		h.metrics.RecordHTTPRequest(r.Context(),"PUT", r.URL.Path, s3Err.HTTPStatus, time.Since(start), 0)
+		h.metrics.RecordHTTPRequest(r.Context(), "PUT", r.URL.Path, s3Err.HTTPStatus, time.Since(start), 0)
 		return
 	}
 
@@ -1179,119 +1189,119 @@ func (h *Handler) handlePutObject(w http.ResponseWriter, r *http.Request) {
 		h.cache.Delete(ctx, bucket, key)
 	}
 
-    // Record encryption metrics using original bytes
-    h.metrics.RecordEncryptionOperation(r.Context(),"encrypt", encryptDuration, originalBytes)
+	// Record encryption metrics using original bytes
+	h.metrics.RecordEncryptionOperation(r.Context(), "encrypt", encryptDuration, originalBytes)
 
-    // Debug logging for metadata before upload
-    h.logger.WithFields(logrus.Fields{
-        "bucket": bucket,
-        "key":    key,
-        "metadata_keys": len(encMetadata),
-    }).Debug("Uploading encrypted object with metadata")
-    
-    // Log all metadata keys for debugging (don't log values for security)
-    metadataKeys := make([]string, 0, len(encMetadata))
-    for k := range encMetadata {
-        metadataKeys = append(metadataKeys, k)
-        // Check for potentially problematic values
-        if v, ok := encMetadata[k]; ok && v == "0" {
-            h.logger.WithFields(logrus.Fields{
-                "metadata_key": k,
-                "value": v,
-            }).Warn("Metadata contains zero value - may cause S3 rejection")
-        }
-    }
-    h.logger.WithFields(logrus.Fields{
-        "bucket":       bucket,
-        "key":          key,
-        "metadata_keys": metadataKeys,
-    }).Debug("Metadata keys before filtering")
+	// Debug logging for metadata before upload
+	h.logger.WithFields(logrus.Fields{
+		"bucket":        bucket,
+		"key":           key,
+		"metadata_keys": len(encMetadata),
+	}).Debug("Uploading encrypted object with metadata")
 
-    // Filter out standard HTTP headers from metadata before sending to S3
-    // S3 metadata should only contain x-amz-meta-* headers, not standard headers like Content-Length
-    var filterKeys []string
-    if h.config != nil {
-        filterKeys = h.config.Backend.FilterMetadataKeys
-    }
-    s3Metadata := filterS3Metadata(encMetadata, filterKeys)
+	// Log all metadata keys for debugging (don't log values for security)
+	metadataKeys := make([]string, 0, len(encMetadata))
+	for k := range encMetadata {
+		metadataKeys = append(metadataKeys, k)
+		// Check for potentially problematic values
+		if v, ok := encMetadata[k]; ok && v == "0" {
+			h.logger.WithFields(logrus.Fields{
+				"metadata_key": k,
+				"value":        v,
+			}).Warn("Metadata contains zero value - may cause S3 rejection")
+		}
+	}
+	h.logger.WithFields(logrus.Fields{
+		"bucket":        bucket,
+		"key":           key,
+		"metadata_keys": metadataKeys,
+	}).Debug("Metadata keys before filtering")
+
+	// Filter out standard HTTP headers from metadata before sending to S3
+	// S3 metadata should only contain x-amz-meta-* headers, not standard headers like Content-Length
+	var filterKeys []string
+	if h.config != nil {
+		filterKeys = h.config.Backend.FilterMetadataKeys
+	}
+	s3Metadata := filterS3Metadata(encMetadata, filterKeys)
 
 	h.logger.WithFields(logrus.Fields{
 		"bucket": bucket,
-		"key": key,
+		"key":    key,
 	}).Debug("PUT object encrypted successfully")
-    // Log filtered metadata keys and value sizes for debugging
-    filteredKeys := make([]string, 0, len(s3Metadata))
-    metadataSizes := make(map[string]int)
-    for k, v := range s3Metadata {
-        filteredKeys = append(filteredKeys, k)
-        metadataSizes[k] = len(v)
-        // S3 metadata values are limited to 2KB per AWS docs, but some providers may be stricter
-        if len(v) > 2048 {
-            h.logger.WithFields(logrus.Fields{
-                "bucket":      bucket,
-                "key":         key,
-                "metadata_key": k,
-                "value_size":  len(v),
-            }).Warn("Metadata value exceeds 2KB - may cause S3 rejection")
-        }
-    }
-    h.logger.WithFields(logrus.Fields{
-        "bucket":        bucket,
-        "key":           key,
-        "metadata_keys": filteredKeys,
-        "metadata_sizes": metadataSizes,
-    }).Debug("Metadata keys after filtering (being sent to S3)")
+	// Log filtered metadata keys and value sizes for debugging
+	filteredKeys := make([]string, 0, len(s3Metadata))
+	metadataSizes := make(map[string]int)
+	for k, v := range s3Metadata {
+		filteredKeys = append(filteredKeys, k)
+		metadataSizes[k] = len(v)
+		// S3 metadata values are limited to 2KB per AWS docs, but some providers may be stricter
+		if len(v) > 2048 {
+			h.logger.WithFields(logrus.Fields{
+				"bucket":       bucket,
+				"key":          key,
+				"metadata_key": k,
+				"value_size":   len(v),
+			}).Warn("Metadata value exceeds 2KB - may cause S3 rejection")
+		}
+	}
+	h.logger.WithFields(logrus.Fields{
+		"bucket":         bucket,
+		"key":            key,
+		"metadata_keys":  filteredKeys,
+		"metadata_sizes": metadataSizes,
+	}).Debug("Metadata keys after filtering (being sent to S3)")
 
-    // Compute encrypted content length for chunked mode if possible to avoid chunked transfer
-    var contentLengthPtr *int64
-    if encMetadata[crypto.MetaChunkedFormat] == "true" && originalBytes > 0 {
-        // Determine chunk size from metadata
-        chunkSize := crypto.DefaultChunkSize
-        if csStr, ok := encMetadata[crypto.MetaChunkSize]; ok && csStr != "" {
-            var cs int
-            if _, err := fmt.Sscanf(csStr, "%d", &cs); err == nil && cs > 0 {
-                chunkSize = cs
-            }
-        }
-        // AEAD tag size for AES-GCM and ChaCha20-Poly1305 is 16 bytes
-        const aeadTagSize = 16
-        chunkCount := (originalBytes + int64(chunkSize) - 1) / int64(chunkSize)
-        encLen := originalBytes + chunkCount*int64(aeadTagSize)
-        contentLengthPtr = &encLen
-    }
+	// Compute encrypted content length for chunked mode if possible to avoid chunked transfer
+	var contentLengthPtr *int64
+	if encMetadata[crypto.MetaChunkedFormat] == "true" && originalBytes > 0 {
+		// Determine chunk size from metadata
+		chunkSize := crypto.DefaultChunkSize
+		if csStr, ok := encMetadata[crypto.MetaChunkSize]; ok && csStr != "" {
+			var cs int
+			if _, err := fmt.Sscanf(csStr, "%d", &cs); err == nil && cs > 0 {
+				chunkSize = cs
+			}
+		}
+		// AEAD tag size for AES-GCM and ChaCha20-Poly1305 is 16 bytes
+		const aeadTagSize = 16
+		chunkCount := (originalBytes + int64(chunkSize) - 1) / int64(chunkSize)
+		encLen := originalBytes + chunkCount*int64(aeadTagSize)
+		contentLengthPtr = &encLen
+	}
 
-    // Upload encrypted object with filtered metadata (streaming)
-    err = s3Client.PutObject(ctx, bucket, key, encryptedReader, s3Metadata, contentLengthPtr, tagging)
+	// Upload encrypted object with filtered metadata (streaming)
+	err = s3Client.PutObject(ctx, bucket, key, encryptedReader, s3Metadata, contentLengthPtr, tagging)
 	if err != nil {
 		s3Err := TranslateError(err, bucket, key)
 		s3Err.WriteXML(w)
 		h.logger.WithError(err).WithFields(logrus.Fields{
-			"bucket": bucket,
-			"key":    key,
+			"bucket":        bucket,
+			"key":           key,
 			"metadata_keys": metadataKeys,
 		}).Error("Failed to put object")
-		h.metrics.RecordS3Error(r.Context(),"PutObject", bucket, s3Err.Code)
-		h.metrics.RecordHTTPRequest(r.Context(),"PUT", r.URL.Path, s3Err.HTTPStatus, time.Since(start), 0)
+		h.metrics.RecordS3Error(r.Context(), "PutObject", bucket, s3Err.Code)
+		h.metrics.RecordHTTPRequest(r.Context(), "PUT", r.URL.Path, s3Err.HTTPStatus, time.Since(start), 0)
 		return
 	}
 
 	w.WriteHeader(http.StatusOK)
-	h.metrics.RecordS3Operation(r.Context(),"PutObject", bucket, time.Since(start))
-	h.metrics.RecordHTTPRequest(r.Context(),"PUT", r.URL.Path, http.StatusOK, time.Since(start), 0)
+	h.metrics.RecordS3Operation(r.Context(), "PutObject", bucket, time.Since(start))
+	h.metrics.RecordHTTPRequest(r.Context(), "PUT", r.URL.Path, http.StatusOK, time.Since(start), 0)
 }
 
 // isStandardMetadata checks if a header is a standard HTTP metadata header.
 func isStandardMetadata(key string) bool {
 	standardHeaders := map[string]bool{
-		"Content-Type":   true,
-		"Content-Length": true,
-		"ETag":           true,
-        "Cache-Control":  true,
-        "Expires":        true,
-        "Content-Encoding": true,
-        "Content-Language": true,
-        "Content-Disposition": true,
-        "Last-Modified": true,
+		"Content-Type":        true,
+		"Content-Length":      true,
+		"ETag":                true,
+		"Cache-Control":       true,
+		"Expires":             true,
+		"Content-Encoding":    true,
+		"Content-Language":    true,
+		"Content-Disposition": true,
+		"Last-Modified":       true,
 	}
 	return standardHeaders[key]
 }
@@ -1307,12 +1317,12 @@ func (h *Handler) handleDeleteObject(w http.ResponseWriter, r *http.Request) {
 		s3Err := ErrInvalidRequest
 		s3Err.Resource = r.URL.Path
 		s3Err.WriteXML(w)
-		h.metrics.RecordHTTPRequest(r.Context(),"DELETE", r.URL.Path, s3Err.HTTPStatus, time.Since(start), 0)
+		h.metrics.RecordHTTPRequest(r.Context(), "DELETE", r.URL.Path, s3Err.HTTPStatus, time.Since(start), 0)
 		return
 	}
 
 	ctx := r.Context()
-	
+
 	// Get S3 client (may use client credentials if enabled)
 	s3Client, err := h.getS3Client(r)
 	if err != nil {
@@ -1335,8 +1345,8 @@ func (h *Handler) handleDeleteObject(w http.ResponseWriter, r *http.Request) {
 			"bucket": bucket,
 			"key":    key,
 		}).Error("Failed to delete object")
-		h.metrics.RecordS3Error(r.Context(),"DeleteObject", bucket, s3Err.Code)
-		h.metrics.RecordHTTPRequest(r.Context(),"DELETE", r.URL.Path, s3Err.HTTPStatus, time.Since(start), 0)
+		h.metrics.RecordS3Error(r.Context(), "DeleteObject", bucket, s3Err.Code)
+		h.metrics.RecordHTTPRequest(r.Context(), "DELETE", r.URL.Path, s3Err.HTTPStatus, time.Since(start), 0)
 		if h.auditLogger != nil {
 			h.auditLogger.LogAccess("delete", bucket, key, getClientIP(r), r.UserAgent(), getRequestID(r), false, err, time.Since(start))
 		}
@@ -1354,8 +1364,8 @@ func (h *Handler) handleDeleteObject(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.WriteHeader(http.StatusNoContent)
-	h.metrics.RecordS3Operation(r.Context(),"DeleteObject", bucket, time.Since(start))
-	h.metrics.RecordHTTPRequest(r.Context(),"DELETE", r.URL.Path, http.StatusNoContent, time.Since(start), 0)
+	h.metrics.RecordS3Operation(r.Context(), "DeleteObject", bucket, time.Since(start))
+	h.metrics.RecordHTTPRequest(r.Context(), "DELETE", r.URL.Path, http.StatusNoContent, time.Since(start), 0)
 }
 
 // handleHeadObject handles HEAD object requests.
@@ -1369,12 +1379,12 @@ func (h *Handler) handleHeadObject(w http.ResponseWriter, r *http.Request) {
 		s3Err := ErrInvalidRequest
 		s3Err.Resource = r.URL.Path
 		s3Err.WriteXML(w)
-		h.metrics.RecordHTTPRequest(r.Context(),"HEAD", r.URL.Path, s3Err.HTTPStatus, time.Since(start), 0)
+		h.metrics.RecordHTTPRequest(r.Context(), "HEAD", r.URL.Path, s3Err.HTTPStatus, time.Since(start), 0)
 		return
 	}
 
 	ctx := r.Context()
-	
+
 	// Get S3 client (may use client credentials if enabled)
 	s3Client, err := h.getS3Client(r)
 	if err != nil {
@@ -1397,8 +1407,8 @@ func (h *Handler) handleHeadObject(w http.ResponseWriter, r *http.Request) {
 			"bucket": bucket,
 			"key":    key,
 		}).Error("Failed to head object")
-		h.metrics.RecordS3Error(r.Context(),"HeadObject", bucket, s3Err.Code)
-		h.metrics.RecordHTTPRequest(r.Context(),"HEAD", r.URL.Path, s3Err.HTTPStatus, time.Since(start), 0)
+		h.metrics.RecordS3Error(r.Context(), "HeadObject", bucket, s3Err.Code)
+		h.metrics.RecordHTTPRequest(r.Context(), "HEAD", r.URL.Path, s3Err.HTTPStatus, time.Since(start), 0)
 		return
 	}
 
@@ -1427,15 +1437,15 @@ func (h *Handler) handleHeadObject(w http.ResponseWriter, r *http.Request) {
 	for k, v := range filteredMetadata {
 		w.Header().Set(k, v)
 	}
-	
+
 	// Preserve version ID in response if present
 	if versionID != nil && *versionID != "" {
 		w.Header().Set("x-amz-version-id", *versionID)
 	}
 
 	w.WriteHeader(http.StatusOK)
-	h.metrics.RecordS3Operation(r.Context(),"HeadObject", bucket, time.Since(start))
-	h.metrics.RecordHTTPRequest(r.Context(),"HEAD", r.URL.Path, http.StatusOK, time.Since(start), 0)
+	h.metrics.RecordS3Operation(r.Context(), "HeadObject", bucket, time.Since(start))
+	h.metrics.RecordHTTPRequest(r.Context(), "HEAD", r.URL.Path, http.StatusOK, time.Since(start), 0)
 }
 
 // isEncryptionMetadata checks if a metadata key is related to encryption.
@@ -1511,7 +1521,7 @@ func (h *Handler) handleListObjects(w http.ResponseWriter, r *http.Request) {
 		s3Err := ErrInvalidBucketName
 		s3Err.Resource = r.URL.Path
 		s3Err.WriteXML(w)
-		h.metrics.RecordHTTPRequest(r.Context(),"GET", r.URL.Path, s3Err.HTTPStatus, time.Since(start), 0)
+		h.metrics.RecordHTTPRequest(r.Context(), "GET", r.URL.Path, s3Err.HTTPStatus, time.Since(start), 0)
 		return
 	}
 
@@ -1547,14 +1557,14 @@ func (h *Handler) handleListObjects(w http.ResponseWriter, r *http.Request) {
 			"bucket": bucket,
 			"prefix": prefix,
 		}).Error("Failed to list objects")
-		h.metrics.RecordS3Error(r.Context(),"ListObjects", bucket, s3Err.Code)
-		h.metrics.RecordHTTPRequest(r.Context(),"GET", r.URL.Path, s3Err.HTTPStatus, time.Since(start), 0)
+		h.metrics.RecordS3Error(r.Context(), "ListObjects", bucket, s3Err.Code)
+		h.metrics.RecordHTTPRequest(r.Context(), "GET", r.URL.Path, s3Err.HTTPStatus, time.Since(start), 0)
 		return
 	}
 
 	// Translate metadata for encrypted objects
 	translatedObjects := make([]s3.ObjectInfo, len(listResult.Objects))
-	
+
 	// Get encryption engine for this bucket to check if encryption is enabled/configured
 	engine, err := h.getEncryptionEngine(bucket)
 	isEncryptionEnabled := false
@@ -1563,7 +1573,7 @@ func (h *Handler) handleListObjects(w http.ResponseWriter, r *http.Request) {
 		// Using the IsEncrypted with empty map check pattern from existing code
 		// Note: Ideally we should check policy configuration, but engine doesn't expose it directly
 		// For now, assuming all engines support encryption
-		isEncryptionEnabled = true 
+		isEncryptionEnabled = true
 	}
 
 	for i, obj := range listResult.Objects {
@@ -1600,8 +1610,8 @@ func (h *Handler) handleListObjects(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 	w.Write([]byte(xmlResponse))
 
-	h.metrics.RecordS3Operation(r.Context(),"ListObjects", bucket, time.Since(start))
-	h.metrics.RecordHTTPRequest(r.Context(),"GET", r.URL.Path, http.StatusOK, time.Since(start), int64(len(xmlResponse)))
+	h.metrics.RecordS3Operation(r.Context(), "ListObjects", bucket, time.Since(start))
+	h.metrics.RecordHTTPRequest(r.Context(), "GET", r.URL.Path, http.StatusOK, time.Since(start), int64(len(xmlResponse)))
 }
 
 // handleCreateBucket handles PUT bucket requests (bucket creation).
@@ -1614,7 +1624,7 @@ func (h *Handler) handleCreateBucket(w http.ResponseWriter, r *http.Request) {
 		s3Err := ErrInvalidBucketName
 		s3Err.Resource = r.URL.Path
 		s3Err.WriteXML(w)
-		h.metrics.RecordHTTPRequest(r.Context(),"PUT", r.URL.Path, s3Err.HTTPStatus, time.Since(start), 0)
+		h.metrics.RecordHTTPRequest(r.Context(), "PUT", r.URL.Path, s3Err.HTTPStatus, time.Since(start), 0)
 		return
 	}
 
@@ -1639,7 +1649,7 @@ func (h *Handler) handleCreateBucket(w http.ResponseWriter, r *http.Request) {
 				HTTPStatus: http.StatusConflict,
 			}
 			s3Err.WriteXML(w)
-			h.metrics.RecordHTTPRequest(r.Context(),"PUT", r.URL.Path, s3Err.HTTPStatus, time.Since(start), 0)
+			h.metrics.RecordHTTPRequest(r.Context(), "PUT", r.URL.Path, s3Err.HTTPStatus, time.Since(start), 0)
 			return
 		} else {
 			// Gateway is configured for a different bucket
@@ -1655,7 +1665,7 @@ func (h *Handler) handleCreateBucket(w http.ResponseWriter, r *http.Request) {
 				HTTPStatus: http.StatusNotImplemented,
 			}
 			s3Err.WriteXML(w)
-			h.metrics.RecordHTTPRequest(r.Context(),"PUT", r.URL.Path, s3Err.HTTPStatus, time.Since(start), 0)
+			h.metrics.RecordHTTPRequest(r.Context(), "PUT", r.URL.Path, s3Err.HTTPStatus, time.Since(start), 0)
 			return
 		}
 	}
@@ -1679,7 +1689,7 @@ func (h *Handler) handleCreateBucket(w http.ResponseWriter, r *http.Request) {
 			HTTPStatus: http.StatusInternalServerError,
 		}
 		s3Err.WriteXML(w)
-		h.metrics.RecordHTTPRequest(r.Context(),"PUT", r.URL.Path, s3Err.HTTPStatus, time.Since(start), 0)
+		h.metrics.RecordHTTPRequest(r.Context(), "PUT", r.URL.Path, s3Err.HTTPStatus, time.Since(start), 0)
 		return
 	}
 
@@ -1702,7 +1712,7 @@ func (h *Handler) handleCreateBucket(w http.ResponseWriter, r *http.Request) {
 			HTTPStatus: http.StatusNotImplemented,
 		}
 		s3Err.WriteXML(w)
-		h.metrics.RecordHTTPRequest(r.Context(),"PUT", r.URL.Path, s3Err.HTTPStatus, time.Since(start), 0)
+		h.metrics.RecordHTTPRequest(r.Context(), "PUT", r.URL.Path, s3Err.HTTPStatus, time.Since(start), 0)
 		return
 	}
 
@@ -1718,7 +1728,7 @@ func (h *Handler) handleCreateBucket(w http.ResponseWriter, r *http.Request) {
 		HTTPStatus: http.StatusConflict,
 	}
 	s3Err.WriteXML(w)
-	h.metrics.RecordHTTPRequest(r.Context(),"PUT", r.URL.Path, s3Err.HTTPStatus, time.Since(start), 0)
+	h.metrics.RecordHTTPRequest(r.Context(), "PUT", r.URL.Path, s3Err.HTTPStatus, time.Since(start), 0)
 }
 
 // applyRangeRequest applies a Range header request to data.
@@ -1817,7 +1827,7 @@ func generateListObjectsXML(bucket, prefix, delimiter string, objects []s3.Objec
 
 // handleCreateMultipartUpload handles multipart upload initiation.
 func (h *Handler) handleCreateMultipartUpload(w http.ResponseWriter, r *http.Request) {
-    // Multipart uploads are now supported with chunked encryption
+	// Multipart uploads are now supported with chunked encryption
 	start := time.Now()
 	vars := mux.Vars(r)
 	bucket := vars["bucket"]
@@ -1827,7 +1837,7 @@ func (h *Handler) handleCreateMultipartUpload(w http.ResponseWriter, r *http.Req
 		s3Err := ErrInvalidRequest
 		s3Err.Resource = r.URL.Path
 		s3Err.WriteXML(w)
-		h.metrics.RecordHTTPRequest(r.Context(),"POST", r.URL.Path, s3Err.HTTPStatus, time.Since(start), 0)
+		h.metrics.RecordHTTPRequest(r.Context(), "POST", r.URL.Path, s3Err.HTTPStatus, time.Since(start), 0)
 		return
 	}
 
@@ -1840,7 +1850,7 @@ func (h *Handler) handleCreateMultipartUpload(w http.ResponseWriter, r *http.Req
 			HTTPStatus: http.StatusNotImplemented,
 		}
 		s3Err.WriteXML(w)
-		h.metrics.RecordHTTPRequest(r.Context(),"POST", r.URL.Path, s3Err.HTTPStatus, time.Since(start), 0)
+		h.metrics.RecordHTTPRequest(r.Context(), "POST", r.URL.Path, s3Err.HTTPStatus, time.Since(start), 0)
 		return
 	}
 
@@ -1874,8 +1884,8 @@ func (h *Handler) handleCreateMultipartUpload(w http.ResponseWriter, r *http.Req
 			"bucket": bucket,
 			"key":    key,
 		}).Error("Failed to create multipart upload")
-		h.metrics.RecordS3Error(r.Context(),"CreateMultipartUpload", bucket, s3Err.Code)
-		h.metrics.RecordHTTPRequest(r.Context(),"POST", r.URL.Path, s3Err.HTTPStatus, time.Since(start), 0)
+		h.metrics.RecordS3Error(r.Context(), "CreateMultipartUpload", bucket, s3Err.Code)
+		h.metrics.RecordHTTPRequest(r.Context(), "POST", r.URL.Path, s3Err.HTTPStatus, time.Since(start), 0)
 		return
 	}
 
@@ -1897,8 +1907,8 @@ func (h *Handler) handleCreateMultipartUpload(w http.ResponseWriter, r *http.Req
 	w.WriteHeader(http.StatusOK)
 	xml.NewEncoder(w).Encode(result)
 
-	h.metrics.RecordS3Operation(r.Context(),"CreateMultipartUpload", bucket, time.Since(start))
-	h.metrics.RecordHTTPRequest(r.Context(),"POST", r.URL.Path, http.StatusOK, time.Since(start), 0)
+	h.metrics.RecordS3Operation(r.Context(), "CreateMultipartUpload", bucket, time.Since(start))
+	h.metrics.RecordHTTPRequest(r.Context(), "POST", r.URL.Path, http.StatusOK, time.Since(start), 0)
 }
 
 // CompleteMultipartUpload represents the XML structure for completing multipart uploads.
@@ -2018,8 +2028,8 @@ func (h *Handler) validateCompleteMultipartUploadRequest(req *CompleteMultipartU
 		// Check if parts are in ascending order (AWS requires this)
 		if i > 0 && part.PartNumber < lastPartNumber {
 			h.logger.WithFields(logrus.Fields{
-				"part_number":    part.PartNumber,
-				"last_part":      lastPartNumber,
+				"part_number": part.PartNumber,
+				"last_part":   lastPartNumber,
 			}).Warn("Parts not in ascending order - AWS requires ascending part numbers")
 		}
 		lastPartNumber = part.PartNumber
@@ -2058,7 +2068,7 @@ func (h *Handler) handleUploadPart(w http.ResponseWriter, r *http.Request) {
 		s3Err := ErrInvalidRequest
 		s3Err.Resource = r.URL.Path
 		s3Err.WriteXML(w)
-		h.metrics.RecordHTTPRequest(r.Context(),"PUT", r.URL.Path, s3Err.HTTPStatus, time.Since(start), 0)
+		h.metrics.RecordHTTPRequest(r.Context(), "PUT", r.URL.Path, s3Err.HTTPStatus, time.Since(start), 0)
 		return
 	}
 
@@ -2071,7 +2081,7 @@ func (h *Handler) handleUploadPart(w http.ResponseWriter, r *http.Request) {
 			HTTPStatus: http.StatusNotImplemented,
 		}
 		s3Err.WriteXML(w)
-		h.metrics.RecordHTTPRequest(r.Context(),"PUT", r.URL.Path, s3Err.HTTPStatus, time.Since(start), 0)
+		h.metrics.RecordHTTPRequest(r.Context(), "PUT", r.URL.Path, s3Err.HTTPStatus, time.Since(start), 0)
 		return
 	}
 
@@ -2084,7 +2094,7 @@ func (h *Handler) handleUploadPart(w http.ResponseWriter, r *http.Request) {
 			HTTPStatus: http.StatusBadRequest,
 		}
 		s3Err.WriteXML(w)
-		h.metrics.RecordHTTPRequest(r.Context(),"PUT", r.URL.Path, s3Err.HTTPStatus, time.Since(start), 0)
+		h.metrics.RecordHTTPRequest(r.Context(), "PUT", r.URL.Path, s3Err.HTTPStatus, time.Since(start), 0)
 		return
 	}
 
@@ -2121,15 +2131,15 @@ func (h *Handler) handleUploadPart(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 
-        // Get encryption engine
-        engine, err := h.getEncryptionEngine(bucket)
-        if err != nil {
-            h.logger.WithError(err).Error("Failed to get encryption engine")
-            s3Err := &S3Error{Code: "InternalError", Message: "Failed to load encryption configuration", Resource: r.URL.Path, HTTPStatus: http.StatusInternalServerError}
-            s3Err.WriteXML(w)
-            h.metrics.RecordHTTPRequest(r.Context(),"PUT", r.URL.Path, s3Err.HTTPStatus, time.Since(start), 0)
-            return
-        }
+		// Get encryption engine
+		engine, err := h.getEncryptionEngine(bucket)
+		if err != nil {
+			h.logger.WithError(err).Error("Failed to get encryption engine")
+			s3Err := &S3Error{Code: "InternalError", Message: "Failed to load encryption configuration", Resource: r.URL.Path, HTTPStatus: http.StatusInternalServerError}
+			s3Err.WriteXML(w)
+			h.metrics.RecordHTTPRequest(r.Context(), "PUT", r.URL.Path, s3Err.HTTPStatus, time.Since(start), 0)
+			return
+		}
 
 		encryptedReader, encMetadata, err = engine.Encrypt(r.Body, metadata)
 		if err != nil {
@@ -2141,7 +2151,7 @@ func (h *Handler) handleUploadPart(w http.ResponseWriter, r *http.Request) {
 				HTTPStatus: http.StatusInternalServerError,
 			}
 			s3Err.WriteXML(w)
-			h.metrics.RecordHTTPRequest(r.Context(),"PUT", r.URL.Path, s3Err.HTTPStatus, time.Since(start), 0)
+			h.metrics.RecordHTTPRequest(r.Context(), "PUT", r.URL.Path, s3Err.HTTPStatus, time.Since(start), 0)
 			return
 		}
 
@@ -2175,7 +2185,7 @@ func (h *Handler) handleUploadPart(w http.ResponseWriter, r *http.Request) {
 				HTTPStatus: http.StatusInternalServerError,
 			}
 			s3Err.WriteXML(w)
-			h.metrics.RecordHTTPRequest(r.Context(),"PUT", r.URL.Path, s3Err.HTTPStatus, time.Since(start), 0)
+			h.metrics.RecordHTTPRequest(r.Context(), "PUT", r.URL.Path, s3Err.HTTPStatus, time.Since(start), 0)
 			return
 		}
 		encryptedReader = bytes.NewReader(partData)
@@ -2189,25 +2199,25 @@ func (h *Handler) handleUploadPart(w http.ResponseWriter, r *http.Request) {
 		s3Err := TranslateError(err, bucket, key)
 		s3Err.WriteXML(w)
 		h.logger.WithError(err).WithFields(logrus.Fields{
-			"bucket":    bucket,
-			"key":       key,
-			"uploadID":  uploadID,
+			"bucket":     bucket,
+			"key":        key,
+			"uploadID":   uploadID,
 			"partNumber": partNumber,
 		}).Error("Failed to upload part")
-		h.metrics.RecordS3Error(r.Context(),"UploadPart", bucket, s3Err.Code)
-		h.metrics.RecordHTTPRequest(r.Context(),"PUT", r.URL.Path, s3Err.HTTPStatus, time.Since(start), 0)
+		h.metrics.RecordS3Error(r.Context(), "UploadPart", bucket, s3Err.Code)
+		h.metrics.RecordHTTPRequest(r.Context(), "PUT", r.URL.Path, s3Err.HTTPStatus, time.Since(start), 0)
 		return
 	}
 
 	w.Header().Set("ETag", etag)
 	w.WriteHeader(http.StatusOK)
-	h.metrics.RecordS3Operation(r.Context(),"UploadPart", bucket, time.Since(start))
-	h.metrics.RecordHTTPRequest(r.Context(),"PUT", r.URL.Path, http.StatusOK, time.Since(start), 0)
+	h.metrics.RecordS3Operation(r.Context(), "UploadPart", bucket, time.Since(start))
+	h.metrics.RecordHTTPRequest(r.Context(), "PUT", r.URL.Path, http.StatusOK, time.Since(start), 0)
 }
 
 // handleCompleteMultipartUpload handles completing a multipart upload.
 func (h *Handler) handleCompleteMultipartUpload(w http.ResponseWriter, r *http.Request) {
-    // Multipart uploads are now supported with chunked encryption
+	// Multipart uploads are now supported with chunked encryption
 	start := time.Now()
 	vars := mux.Vars(r)
 	bucket := vars["bucket"]
@@ -2218,7 +2228,7 @@ func (h *Handler) handleCompleteMultipartUpload(w http.ResponseWriter, r *http.R
 		s3Err := ErrInvalidRequest
 		s3Err.Resource = r.URL.Path
 		s3Err.WriteXML(w)
-		h.metrics.RecordHTTPRequest(r.Context(),"POST", r.URL.Path, s3Err.HTTPStatus, time.Since(start), 0)
+		h.metrics.RecordHTTPRequest(r.Context(), "POST", r.URL.Path, s3Err.HTTPStatus, time.Since(start), 0)
 		return
 	}
 
@@ -2231,7 +2241,7 @@ func (h *Handler) handleCompleteMultipartUpload(w http.ResponseWriter, r *http.R
 			HTTPStatus: http.StatusNotImplemented,
 		}
 		s3Err.WriteXML(w)
-		h.metrics.RecordHTTPRequest(r.Context(),"POST", r.URL.Path, s3Err.HTTPStatus, time.Since(start), 0)
+		h.metrics.RecordHTTPRequest(r.Context(), "POST", r.URL.Path, s3Err.HTTPStatus, time.Since(start), 0)
 		return
 	}
 
@@ -2261,7 +2271,7 @@ func (h *Handler) handleCompleteMultipartUpload(w http.ResponseWriter, r *http.R
 			}
 		}
 		s3Err.WriteXML(w)
-		h.metrics.RecordHTTPRequest(r.Context(),"POST", r.URL.Path, s3Err.HTTPStatus, time.Since(start), 0)
+		h.metrics.RecordHTTPRequest(r.Context(), "POST", r.URL.Path, s3Err.HTTPStatus, time.Since(start), 0)
 		return
 	}
 
@@ -2283,8 +2293,8 @@ func (h *Handler) handleCompleteMultipartUpload(w http.ResponseWriter, r *http.R
 			"key":      key,
 			"uploadID": uploadID,
 		}).Error("Failed to complete multipart upload")
-		h.metrics.RecordS3Error(r.Context(),"CompleteMultipartUpload", bucket, s3Err.Code)
-		h.metrics.RecordHTTPRequest(r.Context(),"POST", r.URL.Path, s3Err.HTTPStatus, time.Since(start), 0)
+		h.metrics.RecordS3Error(r.Context(), "CompleteMultipartUpload", bucket, s3Err.Code)
+		h.metrics.RecordHTTPRequest(r.Context(), "POST", r.URL.Path, s3Err.HTTPStatus, time.Since(start), 0)
 		return
 	}
 
@@ -2308,8 +2318,8 @@ func (h *Handler) handleCompleteMultipartUpload(w http.ResponseWriter, r *http.R
 	w.WriteHeader(http.StatusOK)
 	xml.NewEncoder(w).Encode(result)
 
-	h.metrics.RecordS3Operation(r.Context(),"CompleteMultipartUpload", bucket, time.Since(start))
-	h.metrics.RecordHTTPRequest(r.Context(),"POST", r.URL.Path, http.StatusOK, time.Since(start), 0)
+	h.metrics.RecordS3Operation(r.Context(), "CompleteMultipartUpload", bucket, time.Since(start))
+	h.metrics.RecordHTTPRequest(r.Context(), "POST", r.URL.Path, http.StatusOK, time.Since(start), 0)
 }
 
 // handleAbortMultipartUpload handles aborting a multipart upload.
@@ -2324,7 +2334,7 @@ func (h *Handler) handleAbortMultipartUpload(w http.ResponseWriter, r *http.Requ
 		s3Err := ErrInvalidRequest
 		s3Err.Resource = r.URL.Path
 		s3Err.WriteXML(w)
-		h.metrics.RecordHTTPRequest(r.Context(),"DELETE", r.URL.Path, s3Err.HTTPStatus, time.Since(start), 0)
+		h.metrics.RecordHTTPRequest(r.Context(), "DELETE", r.URL.Path, s3Err.HTTPStatus, time.Since(start), 0)
 		return
 	}
 
@@ -2337,7 +2347,7 @@ func (h *Handler) handleAbortMultipartUpload(w http.ResponseWriter, r *http.Requ
 			HTTPStatus: http.StatusNotImplemented,
 		}
 		s3Err.WriteXML(w)
-		h.metrics.RecordHTTPRequest(r.Context(),"DELETE", r.URL.Path, s3Err.HTTPStatus, time.Since(start), 0)
+		h.metrics.RecordHTTPRequest(r.Context(), "DELETE", r.URL.Path, s3Err.HTTPStatus, time.Since(start), 0)
 		return
 	}
 
@@ -2360,19 +2370,19 @@ func (h *Handler) handleAbortMultipartUpload(w http.ResponseWriter, r *http.Requ
 			"key":      key,
 			"uploadID": uploadID,
 		}).Error("Failed to abort multipart upload")
-		h.metrics.RecordS3Error(r.Context(),"AbortMultipartUpload", bucket, s3Err.Code)
-		h.metrics.RecordHTTPRequest(r.Context(),"DELETE", r.URL.Path, s3Err.HTTPStatus, time.Since(start), 0)
+		h.metrics.RecordS3Error(r.Context(), "AbortMultipartUpload", bucket, s3Err.Code)
+		h.metrics.RecordHTTPRequest(r.Context(), "DELETE", r.URL.Path, s3Err.HTTPStatus, time.Since(start), 0)
 		return
 	}
 
 	w.WriteHeader(http.StatusNoContent)
-	h.metrics.RecordS3Operation(r.Context(),"AbortMultipartUpload", bucket, time.Since(start))
-	h.metrics.RecordHTTPRequest(r.Context(),"DELETE", r.URL.Path, http.StatusNoContent, time.Since(start), 0)
+	h.metrics.RecordS3Operation(r.Context(), "AbortMultipartUpload", bucket, time.Since(start))
+	h.metrics.RecordHTTPRequest(r.Context(), "DELETE", r.URL.Path, http.StatusNoContent, time.Since(start), 0)
 }
 
 // handleListParts handles listing parts of a multipart upload.
 func (h *Handler) handleListParts(w http.ResponseWriter, r *http.Request) {
-    // Multipart uploads are now supported
+	// Multipart uploads are now supported
 	start := time.Now()
 	vars := mux.Vars(r)
 	bucket := vars["bucket"]
@@ -2383,7 +2393,7 @@ func (h *Handler) handleListParts(w http.ResponseWriter, r *http.Request) {
 		s3Err := ErrInvalidRequest
 		s3Err.Resource = r.URL.Path
 		s3Err.WriteXML(w)
-		h.metrics.RecordHTTPRequest(r.Context(),"GET", r.URL.Path, s3Err.HTTPStatus, time.Since(start), 0)
+		h.metrics.RecordHTTPRequest(r.Context(), "GET", r.URL.Path, s3Err.HTTPStatus, time.Since(start), 0)
 		return
 	}
 
@@ -2396,7 +2406,7 @@ func (h *Handler) handleListParts(w http.ResponseWriter, r *http.Request) {
 			HTTPStatus: http.StatusNotImplemented,
 		}
 		s3Err.WriteXML(w)
-		h.metrics.RecordHTTPRequest(r.Context(),"GET", r.URL.Path, s3Err.HTTPStatus, time.Since(start), 0)
+		h.metrics.RecordHTTPRequest(r.Context(), "GET", r.URL.Path, s3Err.HTTPStatus, time.Since(start), 0)
 		return
 	}
 
@@ -2419,15 +2429,15 @@ func (h *Handler) handleListParts(w http.ResponseWriter, r *http.Request) {
 			"key":      key,
 			"uploadID": uploadID,
 		}).Error("Failed to list parts")
-		h.metrics.RecordS3Error(r.Context(),"ListParts", bucket, s3Err.Code)
-		h.metrics.RecordHTTPRequest(r.Context(),"GET", r.URL.Path, s3Err.HTTPStatus, time.Since(start), 0)
+		h.metrics.RecordS3Error(r.Context(), "ListParts", bucket, s3Err.Code)
+		h.metrics.RecordHTTPRequest(r.Context(), "GET", r.URL.Path, s3Err.HTTPStatus, time.Since(start), 0)
 		return
 	}
 
 	// Generate XML response
 	type ListPartsResult struct {
-		XMLName xml.Name `xml:"ListPartsResult"`
-			Bucket   string   `xml:"Bucket"`
+		XMLName  xml.Name `xml:"ListPartsResult"`
+		Bucket   string   `xml:"Bucket"`
 		Key      string   `xml:"Key"`
 		UploadId string   `xml:"UploadId"`
 		Parts    []struct {
@@ -2442,7 +2452,7 @@ func (h *Handler) handleListParts(w http.ResponseWriter, r *http.Request) {
 		Bucket:   bucket,
 		Key:      key,
 		UploadId: uploadID,
-		Parts:    make([]struct {
+		Parts: make([]struct {
 			PartNumber   int32  `xml:"PartNumber"`
 			ETag         string `xml:"ETag"`
 			Size         int64  `xml:"Size"`
@@ -2461,8 +2471,8 @@ func (h *Handler) handleListParts(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 	xml.NewEncoder(w).Encode(result)
 
-	h.metrics.RecordS3Operation(r.Context(),"ListParts", bucket, time.Since(start))
-	h.metrics.RecordHTTPRequest(r.Context(),"GET", r.URL.Path, http.StatusOK, time.Since(start), 0)
+	h.metrics.RecordS3Operation(r.Context(), "ListParts", bucket, time.Since(start))
+	h.metrics.RecordHTTPRequest(r.Context(), "GET", r.URL.Path, http.StatusOK, time.Since(start), 0)
 }
 
 // handleCopyObject handles PUT Object Copy requests.
@@ -2477,13 +2487,13 @@ func (h *Handler) handleCopyObject(w http.ResponseWriter, r *http.Request, dstBu
 			HTTPStatus: http.StatusBadRequest,
 		}
 		s3Err.WriteXML(w)
-		h.metrics.RecordHTTPRequest(r.Context(),"PUT", r.URL.Path, s3Err.HTTPStatus, time.Since(start), 0)
+		h.metrics.RecordHTTPRequest(r.Context(), "PUT", r.URL.Path, s3Err.HTTPStatus, time.Since(start), 0)
 		return
 	}
 
 	srcBucket := parts[0]
 	srcKeyAndVersion := parts[1]
-	
+
 	// Parse version ID if present
 	var srcVersionID *string
 	if strings.Contains(srcKeyAndVersion, "?versionId=") {
@@ -2523,8 +2533,8 @@ func (h *Handler) handleCopyObject(w http.ResponseWriter, r *http.Request, dstBu
 			"dstBucket": dstBucket,
 			"dstKey":    dstKey,
 		}).Error("Failed to get source object for copy")
-		h.metrics.RecordS3Error(r.Context(),"CopyObject", dstBucket, s3Err.Code)
-		h.metrics.RecordHTTPRequest(r.Context(),"PUT", r.URL.Path, s3Err.HTTPStatus, time.Since(start), 0)
+		h.metrics.RecordS3Error(r.Context(), "CopyObject", dstBucket, s3Err.Code)
+		h.metrics.RecordHTTPRequest(r.Context(), "PUT", r.URL.Path, s3Err.HTTPStatus, time.Since(start), 0)
 		return
 	}
 	defer srcReader.Close()
@@ -2535,7 +2545,7 @@ func (h *Handler) handleCopyObject(w http.ResponseWriter, r *http.Request, dstBu
 		h.logger.WithError(err).Error("Failed to get source encryption engine")
 		s3Err := &S3Error{Code: "InternalError", Message: "Failed to load encryption configuration", Resource: r.URL.Path, HTTPStatus: http.StatusInternalServerError}
 		s3Err.WriteXML(w)
-		h.metrics.RecordHTTPRequest(r.Context(),"PUT", r.URL.Path, s3Err.HTTPStatus, time.Since(start), 0)
+		h.metrics.RecordHTTPRequest(r.Context(), "PUT", r.URL.Path, s3Err.HTTPStatus, time.Since(start), 0)
 		return
 	}
 
@@ -2550,7 +2560,7 @@ func (h *Handler) handleCopyObject(w http.ResponseWriter, r *http.Request, dstBu
 			HTTPStatus: http.StatusInternalServerError,
 		}
 		s3Err.WriteXML(w)
-		h.metrics.RecordHTTPRequest(r.Context(),"PUT", r.URL.Path, s3Err.HTTPStatus, time.Since(start), 0)
+		h.metrics.RecordHTTPRequest(r.Context(), "PUT", r.URL.Path, s3Err.HTTPStatus, time.Since(start), 0)
 		return
 	}
 
@@ -2565,7 +2575,7 @@ func (h *Handler) handleCopyObject(w http.ResponseWriter, r *http.Request, dstBu
 			HTTPStatus: http.StatusInternalServerError,
 		}
 		s3Err.WriteXML(w)
-		h.metrics.RecordHTTPRequest(r.Context(),"PUT", r.URL.Path, s3Err.HTTPStatus, time.Since(start), 0)
+		h.metrics.RecordHTTPRequest(r.Context(), "PUT", r.URL.Path, s3Err.HTTPStatus, time.Since(start), 0)
 		return
 	}
 
@@ -2592,7 +2602,7 @@ func (h *Handler) handleCopyObject(w http.ResponseWriter, r *http.Request, dstBu
 		h.logger.WithError(err).Error("Failed to get destination encryption engine")
 		s3Err := &S3Error{Code: "InternalError", Message: "Failed to load encryption configuration", Resource: r.URL.Path, HTTPStatus: http.StatusInternalServerError}
 		s3Err.WriteXML(w)
-		h.metrics.RecordHTTPRequest(r.Context(),"PUT", r.URL.Path, s3Err.HTTPStatus, time.Since(start), 0)
+		h.metrics.RecordHTTPRequest(r.Context(), "PUT", r.URL.Path, s3Err.HTTPStatus, time.Since(start), 0)
 		return
 	}
 
@@ -2607,7 +2617,7 @@ func (h *Handler) handleCopyObject(w http.ResponseWriter, r *http.Request, dstBu
 			HTTPStatus: http.StatusInternalServerError,
 		}
 		s3Err.WriteXML(w)
-		h.metrics.RecordHTTPRequest(r.Context(),"PUT", r.URL.Path, s3Err.HTTPStatus, time.Since(start), 0)
+		h.metrics.RecordHTTPRequest(r.Context(), "PUT", r.URL.Path, s3Err.HTTPStatus, time.Since(start), 0)
 		return
 	}
 
@@ -2622,20 +2632,20 @@ func (h *Handler) handleCopyObject(w http.ResponseWriter, r *http.Request, dstBu
 			HTTPStatus: http.StatusInternalServerError,
 		}
 		s3Err.WriteXML(w)
-		h.metrics.RecordHTTPRequest(r.Context(),"PUT", r.URL.Path, s3Err.HTTPStatus, time.Since(start), 0)
+		h.metrics.RecordHTTPRequest(r.Context(), "PUT", r.URL.Path, s3Err.HTTPStatus, time.Since(start), 0)
 		return
 	}
 
-    // Filter out standard HTTP headers from metadata before sending to S3
-    var filterKeys []string
-    if h.config != nil {
-        filterKeys = h.config.Backend.FilterMetadataKeys
-    }
-    s3Metadata := filterS3Metadata(encMetadata, filterKeys)
+	// Filter out standard HTTP headers from metadata before sending to S3
+	var filterKeys []string
+	if h.config != nil {
+		filterKeys = h.config.Backend.FilterMetadataKeys
+	}
+	s3Metadata := filterS3Metadata(encMetadata, filterKeys)
 
-    // Upload encrypted copy with filtered metadata and known content length
-    encLen := int64(len(encryptedData))
-    err = s3Client.PutObject(ctx, dstBucket, dstKey, bytes.NewReader(encryptedData), s3Metadata, &encLen, tagging)
+	// Upload encrypted copy with filtered metadata and known content length
+	encLen := int64(len(encryptedData))
+	err = s3Client.PutObject(ctx, dstBucket, dstKey, bytes.NewReader(encryptedData), s3Metadata, &encLen, tagging)
 	if err != nil {
 		s3Err := TranslateError(err, dstBucket, dstKey)
 		s3Err.WriteXML(w)
@@ -2645,16 +2655,16 @@ func (h *Handler) handleCopyObject(w http.ResponseWriter, r *http.Request, dstBu
 			"dstBucket": dstBucket,
 			"dstKey":    dstKey,
 		}).Error("Failed to put copied object")
-		h.metrics.RecordS3Error(r.Context(),"CopyObject", dstBucket, s3Err.Code)
-		h.metrics.RecordHTTPRequest(r.Context(),"PUT", r.URL.Path, s3Err.HTTPStatus, time.Since(start), 0)
+		h.metrics.RecordS3Error(r.Context(), "CopyObject", dstBucket, s3Err.Code)
+		h.metrics.RecordHTTPRequest(r.Context(), "PUT", r.URL.Path, s3Err.HTTPStatus, time.Since(start), 0)
 		return
 	}
 
-    // Fetch ETag via HEAD to return accurate ETag
-    headMeta, _ := s3Client.HeadObject(ctx, dstBucket, dstKey, nil)
-    etag := headMeta["ETag"]
+	// Fetch ETag via HEAD to return accurate ETag
+	headMeta, _ := s3Client.HeadObject(ctx, dstBucket, dstKey, nil)
+	etag := headMeta["ETag"]
 
-    // Return CopyObjectResult XML
+	// Return CopyObjectResult XML
 	type CopyObjectResult struct {
 		XMLName      xml.Name `xml:"CopyObjectResult"`
 		ETag         string   `xml:"ETag"`
@@ -2662,7 +2672,7 @@ func (h *Handler) handleCopyObject(w http.ResponseWriter, r *http.Request, dstBu
 	}
 
 	result := CopyObjectResult{
-        ETag:         etag,
+		ETag:         etag,
 		LastModified: time.Now().UTC().Format("2006-01-02T15:04:05.000Z"),
 	}
 
@@ -2670,8 +2680,8 @@ func (h *Handler) handleCopyObject(w http.ResponseWriter, r *http.Request, dstBu
 	w.WriteHeader(http.StatusOK)
 	xml.NewEncoder(w).Encode(result)
 
-	h.metrics.RecordS3Operation(r.Context(),"CopyObject", dstBucket, time.Since(start))
-	h.metrics.RecordHTTPRequest(r.Context(),"PUT", r.URL.Path, http.StatusOK, time.Since(start), 0)
+	h.metrics.RecordS3Operation(r.Context(), "CopyObject", dstBucket, time.Since(start))
+	h.metrics.RecordHTTPRequest(r.Context(), "PUT", r.URL.Path, http.StatusOK, time.Since(start), 0)
 }
 
 // handleDeleteObjects handles batch delete requests.
@@ -2684,7 +2694,7 @@ func (h *Handler) handleDeleteObjects(w http.ResponseWriter, r *http.Request) {
 		s3Err := ErrInvalidBucketName
 		s3Err.Resource = r.URL.Path
 		s3Err.WriteXML(w)
-		h.metrics.RecordHTTPRequest(r.Context(),"POST", r.URL.Path, s3Err.HTTPStatus, time.Since(start), 0)
+		h.metrics.RecordHTTPRequest(r.Context(), "POST", r.URL.Path, s3Err.HTTPStatus, time.Since(start), 0)
 		return
 	}
 
@@ -2718,7 +2728,7 @@ func (h *Handler) handleDeleteObjects(w http.ResponseWriter, r *http.Request) {
 			HTTPStatus: http.StatusBadRequest,
 		}
 		s3Err.WriteXML(w)
-		h.metrics.RecordHTTPRequest(r.Context(),"POST", r.URL.Path, s3Err.HTTPStatus, time.Since(start), 0)
+		h.metrics.RecordHTTPRequest(r.Context(), "POST", r.URL.Path, s3Err.HTTPStatus, time.Since(start), 0)
 		return
 	}
 
@@ -2738,8 +2748,8 @@ func (h *Handler) handleDeleteObjects(w http.ResponseWriter, r *http.Request) {
 		h.logger.WithError(err).WithFields(logrus.Fields{
 			"bucket": bucket,
 		}).Error("Failed to delete objects")
-		h.metrics.RecordS3Error(r.Context(),"DeleteObjects", bucket, s3Err.Code)
-		h.metrics.RecordHTTPRequest(r.Context(),"POST", r.URL.Path, s3Err.HTTPStatus, time.Since(start), 0)
+		h.metrics.RecordS3Error(r.Context(), "DeleteObjects", bucket, s3Err.Code)
+		h.metrics.RecordHTTPRequest(r.Context(), "POST", r.URL.Path, s3Err.HTTPStatus, time.Since(start), 0)
 		return
 	}
 
@@ -2812,7 +2822,6 @@ func (h *Handler) handleDeleteObjects(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 	xml.NewEncoder(w).Encode(result)
 
-	h.metrics.RecordS3Operation(r.Context(),"DeleteObjects", bucket, time.Since(start))
-	h.metrics.RecordHTTPRequest(r.Context(),"POST", r.URL.Path, http.StatusOK, time.Since(start), 0)
+	h.metrics.RecordS3Operation(r.Context(), "DeleteObjects", bucket, time.Since(start))
+	h.metrics.RecordHTTPRequest(r.Context(), "POST", r.URL.Path, http.StatusOK, time.Since(start), 0)
 }
-
