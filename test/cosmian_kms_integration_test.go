@@ -491,7 +491,7 @@ func startCosmianKMS(t *testing.T) (containerID string, endpoint string, tlsCfg 
 	t.Log("Starting Cosmian KMS container setup...")
 
 	// Start a plain Docker container without TLS configuration
-	// This matches the user's working example: docker run --rm -d -p 5696:5696 -p 9998:9998 ghcr.io/cosmian/kms:latest
+	// This matches the user's working example: docker run --rm -d -p 5696:5696 -p 9998:9998 ghcr.io/cosmian/kms:5.14.1 server
 	// The CLI can connect to this without certificate issues
 
 	// For KMIP client, we'll use a basic TLS config that accepts the default certificates
@@ -509,7 +509,7 @@ func startCosmianKMS(t *testing.T) (containerID string, endpoint string, tlsCfg 
 	t.Logf("Starting container: %s", containerName)
 
 	// Start plain Cosmian KMS container (no TLS configuration)
-	// This matches: docker run --rm -d -p 5696:5696 -p 9998:9998 ghcr.io/cosmian/kms:latest
+	// This matches: docker run --rm -d -p 5696:5696 -p 9998:9998 ghcr.io/cosmian/kms:5.14.1 server
 	t.Log("Executing docker run command...")
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -520,9 +520,10 @@ func startCosmianKMS(t *testing.T) (containerID string, endpoint string, tlsCfg 
 		"-p", "5696:5696", // KMIP port
 		"-p", "9998:9998", // REST API port
 		"--rm",
-		"ghcr.io/cosmian/kms:latest",
+		"ghcr.io/cosmian/kms:5.14.1",
+		"server",
 	)
-	t.Logf("Docker command: docker run -d --name %s -p 5696:5696 -p 9998:9998 --rm ghcr.io/cosmian/kms:latest", containerName)
+	t.Logf("Docker command: docker run -d --name %s -p 5696:5696 -p 9998:9998 --rm ghcr.io/cosmian/kms:5.14.1 server", containerName)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Logf("Docker command output: %s", string(output))

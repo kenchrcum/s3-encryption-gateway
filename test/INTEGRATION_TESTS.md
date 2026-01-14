@@ -104,7 +104,7 @@ To manually test with a running Cosmian KMS:
 
 1. Start Cosmian KMS:
    ```bash
-   docker run -d -p 5696:5696 -p 9998:9998 --name cosmian-kms ghcr.io/cosmian/kms:latest
+   docker run -d -p 5696:5696 -p 9998:9998 --name cosmian-kms ghcr.io/cosmian/kms:5.14.1 server
    ```
 
 2. Create a wrapping key using Cosmian CLI or HTTP API
