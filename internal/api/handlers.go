@@ -1099,8 +1099,14 @@ func (h *Handler) handlePutObject(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Store original content length if available (as x-amz-meta- header)
+	// For AWS Chunked Uploads, we should use x-amz-decoded-content-length if present
+	// as that represents the actual object size, while Content-Length includes chunk overhead.
 	var originalBytes int64
-	if contentLength := r.Header.Get("Content-Length"); contentLength != "" {
+	decodedLen := r.Header.Get("x-amz-decoded-content-length")
+	if decodedLen != "" {
+		metadata["x-amz-meta-original-content-length"] = decodedLen
+		fmt.Sscanf(decodedLen, "%d", &originalBytes)
+	} else if contentLength := r.Header.Get("Content-Length"); contentLength != "" {
 		metadata["x-amz-meta-original-content-length"] = contentLength
 		fmt.Sscanf(contentLength, "%d", &originalBytes)
 	}
@@ -1132,12 +1138,15 @@ func (h *Handler) handlePutObject(w http.ResponseWriter, r *http.Request) {
 	// Check for AWS Chunked Uploads
 	// If detected, we must decode the stream to remove chunk metadata (signatures)
 	// before encrypting, otherwise the encrypted content will be corrupted with metadata.
+	// Check for any STREAMING- header value (e.g. STREAMING-AWS4-HMAC-SHA256-PAYLOAD or STREAMING-UNSIGNED-PAYLOAD-TRAILER)
 	var inputReader io.Reader = r.Body
-	if r.Header.Get("x-amz-content-sha256") == "STREAMING-AWS4-HMAC-SHA256-PAYLOAD" {
+	contentSha256 := r.Header.Get("x-amz-content-sha256")
+	if strings.HasPrefix(contentSha256, "STREAMING-") {
 		inputReader = NewAwsChunkedReader(r.Body)
 		h.logger.WithFields(logrus.Fields{
 			"bucket": bucket,
 			"key":    key,
+			"mode":   contentSha256,
 		}).Debug("Detected AWS Chunked Upload, decoding stream before encryption")
 	}
 

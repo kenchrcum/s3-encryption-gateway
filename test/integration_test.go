@@ -70,72 +70,7 @@ func TestS3Gateway_EndToEnd(t *testing.T) {
 	// Create bucket directly in MinIO first
 	createBucketInMinIO(t, minioServer)
 
-	gateway := StartGateway(t, minioServer.GetGatewayConfig())
-	defer gateway.Close()
-
-	client := gateway.GetHTTPClient()
-	bucket := minioServer.Bucket
-
-	// Test bucket creation through gateway returns BucketAlreadyExists
-	testBucketCreationThroughGateway(t, gateway, bucket)
-
-	tests := []struct {
-		name string
-		key  string
-		data []byte
-	}{
-		{"small file", "test-key-1", []byte("test data")},
-		{"larger file", "test-key-2", bytes.Repeat([]byte("a"), 10240)},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			// PUT encrypted object
-			putURL := fmt.Sprintf("http://%s/%s/%s", gateway.Addr, bucket, tt.key)
-			putReq, err := http.NewRequest("PUT", putURL, bytes.NewReader(tt.data))
-			if err != nil {
-				t.Fatalf("Failed to create PUT request: %v", err)
-			}
-
-			putResp, err := client.Do(putReq)
-			if err != nil {
-				t.Fatalf("PUT request failed: %v", err)
-			}
-			defer putResp.Body.Close()
-
-			if putResp.StatusCode != http.StatusOK {
-				body, _ := io.ReadAll(putResp.Body)
-				t.Fatalf("PUT failed with status %d: %s", putResp.StatusCode, string(body))
-			}
-
-			// GET and verify decryption
-			getURL := fmt.Sprintf("http://%s/%s/%s", gateway.Addr, bucket, tt.key)
-			getReq, err := http.NewRequest("GET", getURL, nil)
-			if err != nil {
-				t.Fatalf("Failed to create GET request: %v", err)
-			}
-
-			getResp, err := client.Do(getReq)
-			if err != nil {
-				t.Fatalf("GET request failed: %v", err)
-			}
-			defer getResp.Body.Close()
-
-			if getResp.StatusCode != http.StatusOK {
-				body, _ := io.ReadAll(getResp.Body)
-				t.Fatalf("GET failed with status %d: %s", getResp.StatusCode, string(body))
-			}
-
-			gotData, err := io.ReadAll(getResp.Body)
-			if err != nil {
-				t.Fatalf("Failed to read response: %v", err)
-			}
-
-			if !bytes.Equal(gotData, tt.data) {
-				t.Errorf("Data mismatch: expected %q, got %q", string(tt.data), string(gotData))
-			}
-		})
-	}
+	runEndToEndTest(t, minioServer.GetGatewayConfig(), minioServer.Bucket)
 }
 
 // TestS3Gateway_MultipartUpload tests multipart upload with encryption.
@@ -1492,4 +1427,3 @@ func testBucketCreationThroughGateway(t *testing.T, gateway *TestGateway, bucket
 
 	t.Logf("Bucket creation correctly returned BucketAlreadyExists error")
 }
-

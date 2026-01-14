@@ -54,6 +54,14 @@ test-load-minio:
 	@echo ""
 	@cd test && ./run_load_tests.sh --manage-minio
 
+# Run load tests with automatic Garage and Gateway management
+test-load-garage:
+	@echo "Running load tests with automatic Garage and Gateway management..."
+	@echo "This will start Garage, the S3 Encryption Gateway, run tests, and clean up everything automatically."
+	@echo "The environment will be completely removed even if tests are interrupted."
+	@echo ""
+	@cd test && ./run_load_tests.sh --manage-garage
+
 # Run key rotation tests
 test-rotation:
 	@echo "Running key rotation tests..."
@@ -88,6 +96,7 @@ test-comprehensive:
 	@make test-rotation
 	@echo "6. Running load tests..."
 	@make test-load-minio
+	@make test-load-garage
 
 # Run tests with coverage
 test-coverage: test
@@ -162,6 +171,7 @@ help:
 	@echo "  test-load-baseline - Run load tests and update baselines"
 	@echo "  test-load-prometheus-Run load tests with Prometheus metrics"
 	@echo "  test-load-minio    - Run load tests with MinIO environment management (auto cleanup)"
+	@echo "  test-load-garage   - Run load tests with Garage environment management (auto cleanup)"
 	@echo "  test-rotation      - Run key rotation tests"
 	@echo "  build-loadtest     - Build load test binary"
 	@echo "  test-all           - Run all tests including integration"

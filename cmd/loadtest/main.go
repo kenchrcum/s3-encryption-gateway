@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"syscall"
 	"time"
@@ -20,23 +21,26 @@ import (
 )
 
 var gatewayProcess *os.Process
+var garageProcess *os.Process // Keep track of garage process
+var garageDir string          // Keep track of garage data dir
 
 func main() {
 	var (
-		gatewayURL    = flag.String("gateway-url", "http://localhost:18080", "S3 Encryption Gateway URL")
-		testType      = flag.String("test-type", "both", "Test type: range, multipart, or both")
-		duration      = flag.Duration("duration", 30*time.Second, "Test duration")
-		workers       = flag.Int("workers", 5, "Number of worker goroutines")
-		qps           = flag.Int("qps", 25, "Queries per second per worker")
-		objectSize    = flag.Int64("object-size", 50*1024*1024, "Object size in bytes (50MB default)")
-		chunkSize     = flag.Int64("chunk-size", 64*1024, "Encryption chunk size (64KB default)")
-		partSize      = flag.Int64("part-size", 10*1024*1024, "Multipart part size (10MB default)")
-		baselineDir   = flag.String("baseline-dir", "testdata/baselines", "Directory for baseline files")
-		threshold     = flag.Float64("threshold", 10.0, "Regression threshold percentage")
+		gatewayURL       = flag.String("gateway-url", "http://localhost:18080", "S3 Encryption Gateway URL")
+		testType         = flag.String("test-type", "both", "Test type: range, multipart, or both")
+		duration         = flag.Duration("duration", 30*time.Second, "Test duration")
+		workers          = flag.Int("workers", 5, "Number of worker goroutines")
+		qps              = flag.Int("qps", 25, "Queries per second per worker")
+		objectSize       = flag.Int64("object-size", 50*1024*1024, "Object size in bytes (50MB default)")
+		chunkSize        = flag.Int64("chunk-size", 64*1024, "Encryption chunk size (64KB default)")
+		partSize         = flag.Int64("part-size", 10*1024*1024, "Multipart part size (10MB default)")
+		baselineDir      = flag.String("baseline-dir", "testdata/baselines", "Directory for baseline files")
+		threshold        = flag.Float64("threshold", 10.0, "Regression threshold percentage")
 		prometheusURL    = flag.String("prometheus-url", "", "Prometheus URL for additional metrics")
 		verbose          = flag.Bool("verbose", false, "Enable verbose logging")
 		updateBaseline   = flag.Bool("update-baseline", false, "Update baseline files instead of checking regression")
 		manageMinIO      = flag.Bool("manage-minio", false, "Automatically start/stop MinIO test environment")
+		manageGarage     = flag.Bool("manage-garage", false, "Automatically start/stop Garage test environment")
 		minioComposeFile = flag.String("minio-compose", "docker-compose.yml", "Path to MinIO docker-compose file")
 		gatewayConfig    = flag.String("gateway-config", "test/gateway-config-minio.yaml", "Path to gateway config file for MinIO tests")
 	)
@@ -51,15 +55,29 @@ func main() {
 		logger.SetLevel(logrus.InfoLevel)
 	}
 
-	// When managing MinIO, automatically adjust gateway URL to match the config
-	if *manageMinIO && *gatewayURL == "http://localhost:8080" {
-		*gatewayURL = "http://localhost:18080" // Matches the port in gateway-config-minio.yaml
-		logger.Info("Automatically adjusted gateway URL for MinIO management")
+	// Validate flags
+	if *manageMinIO && *manageGarage {
+		log.Fatal("Cannot manage both MinIO and Garage at the same time")
+	}
+
+	// When managing environment, automatically adjust gateway URL
+	if (*manageMinIO || *manageGarage) && *gatewayURL == "http://localhost:8080" {
+		*gatewayURL = "http://localhost:18080" // Matches the port in gateway-config-minio.yaml (we might reuse or override port)
+		logger.Info("Automatically adjusted gateway URL for backend management")
+	}
+
+	// Set valid gateway config for Garage if not specified
+	if *manageGarage && *gatewayConfig == "test/gateway-config-minio.yaml" {
+		// We will creating a temporary config or use env vars to override
+		logger.Info("Using default minio config but will override backend settings via env vars for Garage")
 	}
 
 	// Set up signal handling for graceful cleanup
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
+
+	// Env vars for gateway
+	gatewayEnv := make(map[string]string)
 
 	// Manage MinIO and Gateway environment if requested
 	if *manageMinIO {
@@ -68,40 +86,56 @@ func main() {
 			log.Fatalf("Failed to start MinIO environment: %v", err)
 		}
 
-		// Start Gateway
-		if err := startGateway(*gatewayConfig, logger); err != nil {
-			// Stop MinIO if gateway fails to start
+		// Setup cleanup for MinIO
+		defer func() {
+			logger.Info("🧹 Cleaning up MinIO...")
 			stopMinIOEnvironment(*minioComposeFile, logger)
+		}()
+	} else if *manageGarage {
+		// Start Garage first
+		accessKey, secretKey, err := startGarageEnvironment(logger)
+		if err != nil {
+			log.Fatalf("Failed to start Garage environment: %v", err)
+		}
+
+		// Setup cleanup for Garage
+		defer func() {
+			logger.Info("🧹 Cleaning up Garage...")
+			stopGarageEnvironment(logger)
+		}()
+
+		// Set gateway env vars
+		gatewayEnv["BACKEND_ENDPOINT"] = "http://127.0.0.1:3900"
+		gatewayEnv["BACKEND_REGION"] = "garage"
+		gatewayEnv["BACKEND_ACCESS_KEY"] = accessKey
+		gatewayEnv["BACKEND_SECRET_KEY"] = secretKey
+		gatewayEnv["BACKEND_PROVIDER"] = "s3"
+		gatewayEnv["BACKEND_USE_PATH_STYLE"] = "true"
+	}
+
+	if *manageMinIO || *manageGarage {
+		// Start Gateway
+		if err := startGateway(*gatewayConfig, gatewayEnv, logger); err != nil {
 			log.Fatalf("Failed to start gateway: %v", err)
 		}
 
-		// Set up cleanup function
-		cleanup := func() {
-			logger.Info("🧹 Starting environment cleanup...")
-			gatewayErr := stopGateway(logger)
-			minioErr := stopMinIOEnvironment(*minioComposeFile, logger)
+		// Setup cleanup for Gateway
+		defer func() {
+			logger.Info("🧹 Cleaning up Gateway...")
+			stopGateway(logger)
+		}()
 
-			if gatewayErr != nil || minioErr != nil {
-				logger.Warn("⚠️  Some cleanup tasks failed")
-				if gatewayErr != nil {
-					logger.WithError(gatewayErr).Warn("Gateway cleanup failed")
-				}
-				if minioErr != nil {
-					logger.WithError(minioErr).Warn("MinIO cleanup failed")
-				}
-			} else {
-				logger.Info("✅ Environment cleanup completed successfully")
-			}
-		}
-
-		// Set up cleanup for both - ensure this runs even on panic
-		defer cleanup()
-
-		// Handle signals for graceful cleanup
+		// Handle signals logic
 		go func() {
 			<-sigChan
 			logger.Info("🛑 Received interrupt signal, cleaning up...")
-			cleanup()
+			stopGateway(logger)
+			if *manageMinIO {
+				stopMinIOEnvironment(*minioComposeFile, logger)
+			}
+			if *manageGarage {
+				stopGarageEnvironment(logger)
+			}
 			os.Exit(1)
 		}()
 	}
@@ -293,6 +327,163 @@ func runMultipartTest(gatewayURL string, workers int, duration time.Duration, qp
 	return nil
 }
 
+// startGarageEnvironment starts a local Garage server using the binary.
+// Returns access key and secret key.
+func startGarageEnvironment(logger *logrus.Logger) (string, string, error) {
+	logger.Info("Starting Garage test environment...")
+
+	// Kill any existing garage instance first
+	exec.Command("pkill", "garage").Run()
+	time.Sleep(1 * time.Second)
+
+	// Create temp dirs
+	tmpDir, err := os.MkdirTemp("", "garage-loadtest-*")
+	if err != nil {
+		return "", "", fmt.Errorf("failed to create temp dir: %w", err)
+	}
+	garageDir = tmpDir
+	dataDir := filepath.Join(tmpDir, "data")
+	configDir := filepath.Join(tmpDir, "meta")
+	os.MkdirAll(dataDir, 0755)
+	os.MkdirAll(configDir, 0755)
+
+	// Create config.toml (v1.x compatible)
+	configFile := filepath.Join(tmpDir, "config.toml")
+	configContent := fmt.Sprintf(`
+metadata_dir = "%s"
+data_dir = "%s"
+db_engine = "sqlite"
+
+rpc_bind_addr = "127.0.0.1:3901"
+rpc_public_addr = "127.0.0.1:3901"
+rpc_secret = "3fb5c4e9d0e2f8a1b7c6d5e4f3a2b1c03fb5c4e9d0e2f8a1b7c6d5e4f3a2b1c0"
+replication_factor = 1
+
+[s3_api]
+s3_region = "garage"
+api_bind_addr = "127.0.0.1:3900"
+root_domain = ".s3.garage"
+
+[s3_web]
+bind_addr = "127.0.0.1:3902"
+root_domain = ".web.garage"
+index = "index.html"
+`, configDir, dataDir)
+
+	if err := os.WriteFile(configFile, []byte(configContent), 0644); err != nil {
+		return "", "", fmt.Errorf("failed to write config file: %w", err)
+	}
+
+	// Start Garage
+	cmd := exec.Command("garage", "-c", configFile, "server")
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	if err := cmd.Start(); err != nil {
+		return "", "", fmt.Errorf("failed to start garage server: %w", err)
+	}
+	garageProcess = cmd.Process
+
+	// Wait for Garage to be ready (RPC)
+	time.Sleep(10 * time.Second)
+
+	// Configure Garage
+	// 1. Get Node ID
+	nodeIDCmd := exec.Command("garage", "-c", configFile, "node", "id")
+	out, err := nodeIDCmd.CombinedOutput()
+	if err != nil {
+		return "", "", fmt.Errorf("failed to get node id: %w", err)
+	}
+
+	// Parse Node ID
+	outputID := string(out)
+	var nodeID string
+
+	reNodeID := regexp.MustCompile(`Node ID:\s+([a-f0-9]+)`)
+	match := reNodeID.FindStringSubmatch(outputID)
+	if len(match) >= 2 {
+		nodeID = match[1]
+	} else {
+		// Fallback: look for any 64-char hex string
+		reHex := regexp.MustCompile(`[a-f0-9]{64}`)
+		matchHex := reHex.FindString(outputID)
+		if matchHex != "" {
+			nodeID = matchHex
+		} else {
+			return "", "", fmt.Errorf("failed to parse node id from output: %s", outputID)
+		}
+	}
+
+	// 2. Assign Layout
+	err = nil
+	for i := 0; i < 5; i++ {
+		layoutCmd := exec.Command("garage", "-c", configFile, "layout", "assign", "-z", "dc1", "--capacity", "100M", nodeID)
+		if out, cmdErr := layoutCmd.CombinedOutput(); cmdErr == nil {
+			err = nil
+			break
+		} else {
+			err = fmt.Errorf("failed to assign layout: %w, output: %s", cmdErr, string(out))
+			time.Sleep(1 * time.Second)
+		}
+	}
+	if err != nil {
+		return "", "", err
+	}
+
+	// 3. Apply Layout
+	applyCmd := exec.Command("garage", "-c", configFile, "layout", "apply", "--version", "1")
+	if out, err := applyCmd.CombinedOutput(); err != nil {
+		return "", "", fmt.Errorf("failed to apply layout: %w, output: %s", err, string(out))
+	}
+
+	// 4. Create Key
+	keyName := "loadtest-key"
+	keyCmd := exec.Command("garage", "-c", configFile, "key", "create", keyName)
+	out, err = keyCmd.CombinedOutput()
+	if err != nil {
+		return "", "", fmt.Errorf("failed to create key: %w, output: %s", err, string(out))
+	}
+
+	outputStr := string(out)
+	reAccess := regexp.MustCompile(`Key ID:\s+(\S+)`)
+	reSecret := regexp.MustCompile(`(?i)Secret Key:\s+(\S+)`)
+
+	accessMatch := reAccess.FindStringSubmatch(outputStr)
+	secretMatch := reSecret.FindStringSubmatch(outputStr)
+
+	if len(accessMatch) < 2 || len(secretMatch) < 2 {
+		return "", "", fmt.Errorf("failed to parse key from output: %s", outputStr)
+	}
+	accessKey := accessMatch[1]
+	secretKey := secretMatch[1]
+
+	// 5. Create Bucket and Allow Key
+	bucketName := "test-bucket" // Must match what load test expects (usually expects 'test-bucket')
+
+	bucketCmd := exec.Command("garage", "-c", configFile, "bucket", "create", bucketName)
+	if out, err := bucketCmd.CombinedOutput(); err != nil {
+		return "", "", fmt.Errorf("failed to create bucket: %w, output: %s", err, string(out))
+	}
+
+	allowCmd := exec.Command("garage", "-c", configFile, "bucket", "allow", bucketName, "--read", "--write", "--key", keyName)
+	if out, err := allowCmd.CombinedOutput(); err != nil {
+		return "", "", fmt.Errorf("failed to allow key: %w, output: %s", err, string(out))
+	}
+
+	logger.Info("✅ Garage test environment is ready")
+	return accessKey, secretKey, nil
+}
+
+func stopGarageEnvironment(logger *logrus.Logger) {
+	if garageProcess != nil {
+		garageProcess.Kill()
+		garageProcess = nil
+	}
+	if garageDir != "" {
+		os.RemoveAll(garageDir)
+		garageDir = ""
+	}
+}
+
 // startMinIOEnvironment starts the MinIO test environment using docker-compose.
 func startMinIOEnvironment(composeFile string, logger *logrus.Logger) error {
 	logger.WithField("compose_file", composeFile).Info("Starting MinIO test environment...")
@@ -432,7 +623,7 @@ func checkMinIOHealth() bool {
 }
 
 // startGateway starts the S3 Encryption Gateway with the specified config.
-func startGateway(configFile string, logger *logrus.Logger) error {
+func startGateway(configFile string, envVars map[string]string, logger *logrus.Logger) error {
 	logger.WithField("config_file", configFile).Info("Starting S3 Encryption Gateway...")
 
 	// Build the gateway binary path (assume bin/ relative to project root)
@@ -467,7 +658,14 @@ func startGateway(configFile string, logger *logrus.Logger) error {
 	// Start the gateway
 	logger.Info("Starting gateway process...")
 	cmd := exec.Command(gatewayBinary)
-	cmd.Env = append(os.Environ(), "CONFIG_PATH="+configFile) // configFile is relative to projectRoot
+	cmd.Env = os.Environ()
+	cmd.Env = append(cmd.Env, "CONFIG_PATH="+configFile)
+
+	// Append extra env vars
+	for k, v := range envVars {
+		cmd.Env = append(cmd.Env, fmt.Sprintf("%s=%s", k, v))
+	}
+
 	cmd.Dir = projectRoot // Run from project root
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
@@ -489,11 +687,12 @@ func startGateway(configFile string, logger *logrus.Logger) error {
 		return fmt.Errorf("gateway failed to become ready: %v", err)
 	}
 
-	// Create test bucket directly in MinIO (same as integration tests)
-	logger.Info("Creating test bucket directly in MinIO...")
-	if err := createTestBucketDirectlyInMinIO(logger); err != nil {
-		logger.WithError(err).Warn("Failed to create test bucket in MinIO")
-		// Don't fail - bucket might be created on first PUT through gateway
+	// Create test bucket directly in MinIO only if strictly managing MinIO or no backend override
+	if _, ok := envVars["BACKEND_ENDPOINT"]; !ok {
+		logger.Info("Creating test bucket directly in MinIO...")
+		if err := createTestBucketDirectlyInMinIO(logger); err != nil {
+			logger.WithError(err).Warn("Failed to create test bucket in MinIO")
+		}
 	}
 
 	logger.Info("✅ S3 Encryption Gateway is ready")

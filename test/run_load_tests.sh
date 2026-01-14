@@ -20,6 +20,7 @@ PROMETHEUS_URL="${PROMETHEUS_URL:-}"
 VERBOSE="${VERBOSE:-false}"
 UPDATE_BASELINE="${UPDATE_BASELINE:-false}"
 MANAGE_MINIO="${MANAGE_MINIO:-false}"
+MANAGE_GARAGE="${MANAGE_GARAGE:-false}"
 MINIO_COMPOSE="${MINIO_COMPOSE:-docker-compose.yml}"
 
 # Colors for output
@@ -70,6 +71,7 @@ OPTIONS:
     -v, --verbose               Enable verbose logging
     --update-baseline           Update baseline files instead of checking regression
     --manage-minio              Automatically start/stop MinIO test environment
+    --manage-garage             Automatically start/stop Garage test environment
     --minio-compose FILE        Path to MinIO docker-compose file (default: test/docker-compose.yml)
 
 ENVIRONMENT VARIABLES:
@@ -87,6 +89,7 @@ ENVIRONMENT VARIABLES:
     VERBOSE                     Enable verbose logging
     UPDATE_BASELINE             Update baseline files
     MANAGE_MINIO                Automatically manage MinIO environment
+    MANAGE_GARAGE               Automatically manage Garage environment
     MINIO_COMPOSE               Path to MinIO docker-compose file
 
 EXAMPLES:
@@ -110,6 +113,9 @@ EXAMPLES:
 
     # Run tests with automatic MinIO management
     $0 --manage-minio
+
+    # Run tests with automatic Garage management
+    $0 --manage-garage
 
     # Run tests with custom MinIO compose file
     $0 --manage-minio --minio-compose path/to/custom/docker-compose.yml
@@ -179,6 +185,10 @@ while [[ $# -gt 0 ]]; do
             MANAGE_MINIO=true
             shift
             ;;
+        --manage-garage)
+            MANAGE_GARAGE=true
+            shift
+            ;;
         --minio-compose)
             MINIO_COMPOSE="$2"
             shift 2
@@ -230,6 +240,10 @@ if [[ "$MANAGE_MINIO" == "true" ]]; then
     ARGS+=("--manage-minio")
 fi
 
+if [[ "$MANAGE_GARAGE" == "true" ]]; then
+    ARGS+=("--manage-garage")
+fi
+
 ARGS+=("--minio-compose" "$MINIO_COMPOSE")
 
 # Print configuration
@@ -250,6 +264,7 @@ fi
 echo "  Verbose: $VERBOSE"
 echo "  Update Baseline: $UPDATE_BASELINE"
 echo "  Manage MinIO: $MANAGE_MINIO"
+echo "  Manage Garage: $MANAGE_GARAGE"
 echo "  MinIO Compose: $MINIO_COMPOSE"
 echo
 
