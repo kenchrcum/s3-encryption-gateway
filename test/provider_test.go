@@ -21,7 +21,7 @@ func TestMain(m *testing.M) {
 	// Print provider configuration summary
 	fmt.Println("\n=== S3 Encryption Gateway Integration Tests ===")
 	fmt.Println("Checking provider configuration from environment variables...")
-	
+
 	providers := []struct {
 		name   string
 		prefix string
@@ -60,16 +60,16 @@ func TestMain(m *testing.M) {
 			name:   "Backblaze B2",
 			prefix: "B2",
 			check: func() bool {
-				return os.Getenv("B2_ACCESS_KEY_ID") != "" && 
-				       os.Getenv("B2_SECRET_ACCESS_KEY") != "" && 
-				       os.Getenv("B2_BUCKET_NAME") != ""
+				return os.Getenv("B2_ACCESS_KEY_ID") != "" &&
+					os.Getenv("B2_SECRET_ACCESS_KEY") != "" &&
+					os.Getenv("B2_BUCKET_NAME") != ""
 			},
 		},
 	}
 
 	fmt.Printf("\n%-20s %-10s\n", "PROVIDER", "STATUS")
 	fmt.Println(strings.Repeat("-", 35))
-	
+
 	for _, p := range providers {
 		status := "SKIPPED"
 		if p.check() {
@@ -86,6 +86,9 @@ func TestMain(m *testing.M) {
 	// Cleanup shared MinIO servers
 	if minioServer != nil {
 		minioServer.StopForce()
+	}
+	if garageServer != nil {
+		garageServer.StopForce()
 	}
 	// Note: minioProviderServer cleanup disabled to avoid stopping shared server between tests
 	// if minioProviderServer != nil {
@@ -643,8 +646,8 @@ func testMultipartUploadFlow(t *testing.T, client *http.Client, gatewayAddr, buc
 	}
 
 	var completeResult struct {
-		XMLName  xml.Name `xml:"CompleteMultipartUploadResult"`
-		ETag     string   `xml:"ETag"`
+		XMLName xml.Name `xml:"CompleteMultipartUploadResult"`
+		ETag    string   `xml:"ETag"`
 	}
 	if err := xml.NewDecoder(completeResp.Body).Decode(&completeResult); err != nil {
 		t.Fatalf("Failed to decode complete response: %v", err)

@@ -239,6 +239,7 @@ index = "index.html"
 	s.cleanup = func() {
 		if s.cmd != nil && s.cmd.Process != nil {
 			s.cmd.Process.Kill()
+			s.cmd.Wait() // Wait for process to exit and release I/O handles
 		}
 		os.RemoveAll(tmpDir)
 	}
