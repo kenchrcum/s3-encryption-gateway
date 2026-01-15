@@ -218,7 +218,7 @@ Cosmian publishes an all-in-one Docker image that exposes the HTTPS admin UI on 
 
 ```bash
 docker run -d --rm --name cosmian-kms \
-  -p 5696:5696 -p 9998:9998 ghcr.io/cosmian/kms:5.14.1 server
+  -p 5696:5696 -p 9998:9998 --entrypoint cosmian_kms ghcr.io/cosmian/kms:5.14.1
 ```
 
 **Recommended: JSON/HTTP Endpoint** (tested and verified):

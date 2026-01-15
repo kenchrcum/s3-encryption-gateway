@@ -103,7 +103,8 @@ start_kms() {
         --name "${KMS_CONTAINER}" \
         -p 9998:9998 \
         -p 5696:5696 \
-        ghcr.io/cosmian/kms:5.14.1 server > /dev/null
+        --entrypoint cosmian_kms \
+        ghcr.io/cosmian/kms:5.14.1 > /dev/null
     
     log_info "Waiting for KMS to be ready..."
     local max_attempts=30

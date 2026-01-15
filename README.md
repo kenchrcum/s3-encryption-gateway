@@ -250,8 +250,8 @@ The gateway supports external Key Management Systems (KMS) for envelope encrypti
 
 ```bash
 docker run -d --rm --name cosmian-kms \
-  -p 5696:5696 -p 9998:9998 \
-  ghcr.io/cosmian/kms:5.14.1 server
+  -p 5696:5696 -p 9998:9998 --entrypoint cosmian_kms \
+  ghcr.io/cosmian/kms:5.14.1
 ```
 
 2. **Create a wrapping key** via the Cosmian KMS UI (http://localhost:9998/ui) and note the key ID.
