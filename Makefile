@@ -85,18 +85,19 @@ test-all: test test-integration
 test-comprehensive:
 	@echo "Running comprehensive test suite..."
 	@echo "1. Running code tests..."
-	@go test ./internal/* -v
+	@go test ./internal/* -v &> comprehensive_step_1.log
 	@echo "2. Running fuzz tests (regression mode)..."
-	@make test-fuzz
+	@make test-fuzz &> comprehensive_step_2.log
 	@echo "3. Running integration tests (standard integration tests)..."
-	@go test -v ./test
+	@go test -v ./test &> comprehensive_step_3.log
 	@echo "4. Running integration tests with build tags (KMS and Backblaze B2 tests)..."
-	@go test -v -tags=integration ./test
+	@go test -v -tags=integration ./test &> comprehensive_step_4.log
 	@echo "5. Running key rotation tests..."
-	@make test-rotation
-	@echo "6. Running load tests..."
-	@make test-load-minio
-	@make test-load-garage
+	@make test-rotation &> comprehensive_step_5.log
+	@echo "6. Running load tests with Minio"
+	@make test-load-minio &> comprehensive_step_6.log
+	@echo "7. Running load tests with Garage"
+	@make test-load-garage &> comprehensive_step_7.log
 
 # Run tests with coverage
 test-coverage: test
