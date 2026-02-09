@@ -1,7 +1,7 @@
 # S3 Encryption Gateway
 
 [![AI Assisted](https://img.shields.io/badge/AI-Assisted_Development-blueviolet)](AI_DISCLAIMER.md)
-![Version](https://img.shields.io/badge/version-0.5.6-blue.svg)
+![Version](https://img.shields.io/badge/version-0.5.7-blue.svg)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 [![Artifact Hub](https://img.shields.io/endpoint?url=https://artifacthub.io/badge/repository/s3-encryption-gateway)](https://artifacthub.io/packages/search?repo=s3-encryption-gateway)
 
