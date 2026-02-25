@@ -68,6 +68,14 @@ The S3 Encryption Gateway must maintain full compatibility with the Amazon S3 AP
   - `GET /{bucket}?delimiter=...` (ListObjects with delimiter)
 - **Implementation**: Pass-through to backend, no modification needed
 
+#### Head Bucket
+- **Endpoint**: `HEAD /{bucket}`
+- **Implementation**:
+  - Validate bucket-level existence/access against backend
+  - Return `200 OK` with empty body on success
+  - Return translated S3 error codes (`NoSuchBucket`, `AccessDenied`, etc.) on failure
+
+
 #### Head Object
 - **Endpoint**: `HEAD /{bucket}/{key}`
 - **Implementation**:
