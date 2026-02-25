@@ -431,6 +431,67 @@ func TestHandler_HandleHeadObject(t *testing.T) {
 	}
 }
 
+func TestHandler_HandleHeadBucket(t *testing.T) {
+	logger := logrus.New()
+	logger.SetLevel(logrus.ErrorLevel)
+	mockClient := newMockS3Client()
+	mockEngine, _ := crypto.NewEngine("test-password-123456")
+	handler := NewHandler(mockClient, mockEngine, logger, getTestMetrics())
+
+	router := mux.NewRouter()
+	handler.RegisterRoutes(router)
+
+	req := httptest.NewRequest("HEAD", "/test-bucket", nil)
+	w := httptest.NewRecorder()
+
+	router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("expected status %d, got %d", http.StatusOK, w.Code)
+	}
+}
+
+func TestHandler_HandleHeadBucket_NotFound(t *testing.T) {
+	logger := logrus.New()
+	logger.SetLevel(logrus.ErrorLevel)
+	mockClient := newMockS3Client()
+	mockEngine, _ := crypto.NewEngine("test-password-123456")
+	handler := NewHandler(mockClient, mockEngine, logger, getTestMetrics())
+	mockClient.errors["missing-bucket/list"] = &mockAPIError{code: "NoSuchBucket", message: "The specified bucket does not exist"}
+
+	router := mux.NewRouter()
+	handler.RegisterRoutes(router)
+
+	req := httptest.NewRequest("HEAD", "/missing-bucket", nil)
+	w := httptest.NewRecorder()
+
+	router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusNotFound {
+		t.Errorf("expected status %d, got %d", http.StatusNotFound, w.Code)
+	}
+}
+
+func TestHandler_HeadBucketTrailingSlash_NotRoutedAsHeadObject(t *testing.T) {
+	logger := logrus.New()
+	logger.SetLevel(logrus.ErrorLevel)
+	mockClient := newMockS3Client()
+	mockEngine, _ := crypto.NewEngine("test-password-123456")
+	handler := NewHandler(mockClient, mockEngine, logger, getTestMetrics())
+
+	router := mux.NewRouter()
+	handler.RegisterRoutes(router)
+
+	req := httptest.NewRequest("HEAD", "/test-bucket/", nil)
+	w := httptest.NewRecorder()
+
+	router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusNotFound {
+		t.Errorf("expected status %d, got %d", http.StatusNotFound, w.Code)
+	}
+}
+
 func TestHandler_HandleListObjects(t *testing.T) {
 	logger := logrus.New()
 	logger.SetLevel(logrus.ErrorLevel)
