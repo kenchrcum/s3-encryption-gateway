@@ -2,6 +2,28 @@ apiVersion: v1
 entries:
   s3-encryption-gateway:
   - apiVersion: v2
+    appVersion: 0.5.8
+    created: "2026-03-02T12:08:19.257024071Z"
+    description: A Helm chart for S3 Encryption Gateway - a transparent proxy providing
+      client-side encryption for S3-compatible storage services
+    digest: 07e8e72c0c2e2448ed66d99b1a9e029d37a40e8a39b1a3bda85493739a2f517c
+    home: https://github.com/kenchrcum/s3-encryption-gateway
+    keywords:
+    - s3
+    - encryption
+    - gateway
+    - storage
+    maintainers:
+    - name: kenchrcum
+      url: https://github.com/kenchrcum
+    name: s3-encryption-gateway
+    sources:
+    - https://github.com/kenchrcum/s3-encryption-gateway
+    type: application
+    urls:
+    - https://github.com/kenchrcum/s3-encryption-gateway/releases/download/s3-encryption-gateway-0.5.8/s3-encryption-gateway-0.5.8.tgz
+    version: 0.5.8
+  - apiVersion: v2
     appVersion: 0.5.7
     created: "2026-02-09T13:12:34.475780416Z"
     description: A Helm chart for S3 Encryption Gateway - a transparent proxy providing
@@ -529,4 +551,4 @@ entries:
     urls:
     - https://github.com/kenchrcum/s3-encryption-gateway/releases/download/s3-encryption-gateway-0.1.0/s3-encryption-gateway-0.1.0.tgz
     version: 0.1.0
-generated: "2026-02-09T13:12:34.476020982Z"
+generated: "2026-03-02T12:08:19.257243659Z"
