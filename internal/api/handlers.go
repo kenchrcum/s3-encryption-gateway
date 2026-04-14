@@ -95,21 +95,22 @@ func (h *Handler) RegisterRoutes(r *mux.Router) {
 	s3Router := r.PathPrefix("/").Subrouter()
 
 	// Multipart upload routes (must be registered first to ensure query parameter matching)
-	s3Router.HandleFunc("/{bucket:[^/]+}/{key:.*}", h.handleCreateMultipartUpload).Methods("POST").Queries("uploads", "")
-	s3Router.HandleFunc("/{bucket:[^/]+}/{key:.*}", h.handleCompleteMultipartUpload).Methods("POST").Queries("uploadId", "{uploadId}")
-	s3Router.HandleFunc("/{bucket:[^/]+}/{key:.*}", h.handleAbortMultipartUpload).Methods("DELETE").Queries("uploadId", "{uploadId}")
-	s3Router.HandleFunc("/{bucket:[^/]+}/{key:.*}", h.handleListParts).Methods("GET").Queries("uploadId", "{uploadId}")
+	s3Router.HandleFunc("/{bucket:[^/]+}/{key:.+}", h.handleCreateMultipartUpload).Methods("POST").Queries("uploads", "")
+	s3Router.HandleFunc("/{bucket:[^/]+}/{key:.+}", h.handleCompleteMultipartUpload).Methods("POST").Queries("uploadId", "{uploadId}")
+	s3Router.HandleFunc("/{bucket:[^/]+}/{key:.+}", h.handleAbortMultipartUpload).Methods("DELETE").Queries("uploadId", "{uploadId}")
+	s3Router.HandleFunc("/{bucket:[^/]+}/{key:.+}", h.handleListParts).Methods("GET").Queries("uploadId", "{uploadId}")
 
 	// Multipart-specific PUT route
-	s3Router.HandleFunc("/{bucket:[^/]+}/{key:.*}", h.handleUploadPart).Methods("PUT").Queries("partNumber", "{partNumber:[0-9]+}", "uploadId", "{uploadId}")
+	s3Router.HandleFunc("/{bucket:[^/]+}/{key:.+}", h.handleUploadPart).Methods("PUT").Queries("partNumber", "{partNumber:[0-9]+}", "uploadId", "{uploadId}")
 
 	// Generic S3 routes
 	s3Router.HandleFunc("/{bucket}", h.handleListObjects).Methods("GET")
+	s3Router.HandleFunc("/{bucket}", h.handleHeadBucket).Methods("HEAD")
 	s3Router.HandleFunc("/{bucket}", h.handleCreateBucket).Methods("PUT")
-	s3Router.HandleFunc("/{bucket:[^/]+}/{key:.*}", h.handleGetObject).Methods("GET")
-	s3Router.HandleFunc("/{bucket:[^/]+}/{key:.*}", h.handlePutObject).Methods("PUT")
-	s3Router.HandleFunc("/{bucket:[^/]+}/{key:.*}", h.handleDeleteObject).Methods("DELETE")
-	s3Router.HandleFunc("/{bucket:[^/]+}/{key:.*}", h.handleHeadObject).Methods("HEAD")
+	s3Router.HandleFunc("/{bucket:[^/]+}/{key:.+}", h.handleGetObject).Methods("GET")
+	s3Router.HandleFunc("/{bucket:[^/]+}/{key:.+}", h.handlePutObject).Methods("PUT")
+	s3Router.HandleFunc("/{bucket:[^/]+}/{key:.+}", h.handleDeleteObject).Methods("DELETE")
+	s3Router.HandleFunc("/{bucket:[^/]+}/{key:.+}", h.handleHeadObject).Methods("HEAD")
 
 	// Batch operations
 	s3Router.HandleFunc("/{bucket}", h.handleDeleteObjects).Methods("POST").Queries("delete", "")
@@ -1621,6 +1622,42 @@ func (h *Handler) handleListObjects(w http.ResponseWriter, r *http.Request) {
 
 	h.metrics.RecordS3Operation(r.Context(), "ListObjects", bucket, time.Since(start))
 	h.metrics.RecordHTTPRequest(r.Context(), "GET", r.URL.Path, http.StatusOK, time.Since(start), int64(len(xmlResponse)))
+}
+
+// handleHeadBucket handles HEAD bucket requests.
+func (h *Handler) handleHeadBucket(w http.ResponseWriter, r *http.Request) {
+	start := time.Now()
+	vars := mux.Vars(r)
+	bucket := vars["bucket"]
+
+	if bucket == "" {
+		s3Err := ErrInvalidBucketName
+		s3Err.Resource = r.URL.Path
+		s3Err.WriteXML(w)
+		h.metrics.RecordHTTPRequest(r.Context(), "HEAD", r.URL.Path, s3Err.HTTPStatus, time.Since(start), 0)
+		return
+	}
+
+	s3Client, err := h.getS3Client(r)
+	if err != nil {
+		h.logger.WithError(err).Error("Failed to get S3 client")
+		h.writeS3ClientError(w, r, err, "HEAD", start)
+		return
+	}
+
+	// Use a minimal list request as a backend existence/accessibility check.
+	_, err = s3Client.ListObjects(r.Context(), bucket, "", s3.ListOptions{MaxKeys: 1})
+	if err != nil {
+		s3Err := TranslateError(err, bucket, "")
+		s3Err.WriteXML(w)
+		h.metrics.RecordS3Error(r.Context(), "HeadBucket", bucket, s3Err.Code)
+		h.metrics.RecordHTTPRequest(r.Context(), "HEAD", r.URL.Path, s3Err.HTTPStatus, time.Since(start), 0)
+		return
+	}
+
+	w.WriteHeader(http.StatusOK)
+	h.metrics.RecordS3Operation(r.Context(), "HeadBucket", bucket, time.Since(start))
+	h.metrics.RecordHTTPRequest(r.Context(), "HEAD", r.URL.Path, http.StatusOK, time.Since(start), 0)
 }
 
 // handleCreateBucket handles PUT bucket requests (bucket creation).
