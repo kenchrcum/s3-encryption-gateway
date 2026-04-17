@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/xml"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -116,62 +117,71 @@ func (h *Handler) RegisterRoutes(r *mux.Router) {
 	s3Router.HandleFunc("/{bucket}", h.handleDeleteObjects).Methods("POST").Queries("delete", "")
 }
 
-// writeS3ClientError writes an appropriate S3 error response for client initialization failures.
+// writeS3ClientError writes an appropriate S3 error response for client
+// initialization / authentication failures.
+//
+// SECURITY: This function MUST NOT embed err.Error() (or any substring of it)
+// into the response body. Upstream error strings may contain sensitive
+// diagnostic detail (e.g. computed HMAC signatures — see the history of
+// ValidateSignatureV4). Classify the error via errors.Is against the typed
+// sentinels defined in auth.go and return a fixed, opaque message per class.
+// The raw err is logged by call sites for operator diagnostics.
 func (h *Handler) writeS3ClientError(w http.ResponseWriter, r *http.Request, err error, method string, start time.Time) {
-	errMsg := ""
+	s3Err := classifyAuthError(err, r.URL.Path)
+	// Log the underlying error so operators retain diagnostic visibility even
+	// though it is not returned to the client. Call sites already log with
+	// WithError, but re-log at debug level here so a single grep on the
+	// response classification correlates with the upstream detail.
 	if err != nil {
-		errMsg = err.Error()
-	}
-
-	// When use_client_credentials is enabled, provide specific error messages
-	if h.config != nil && h.config.Backend.UseClientCredentials {
-		var s3Err *S3Error
-
-		// Check if this is a Signature V4 limitation
-		if strings.Contains(errMsg, "Signature V4") {
-			s3Err = &S3Error{
-				Code: "SignatureDoesNotMatch",
-				Message: "Signature V4 authentication is not supported when use_client_credentials is enabled. " +
-					"The signature includes the Host header, which prevents forwarding requests to the backend. " +
-					"Please use query parameter authentication (AWSAccessKeyId and AWSSecretAccessKey in URL) instead. " +
-					"For AWS CLI, you may need to use a custom client that supports query parameter authentication.",
-				Resource:   r.URL.Path,
-				HTTPStatus: http.StatusForbidden,
-			}
-		} else if strings.Contains(errMsg, "failed to extract credentials") || strings.Contains(errMsg, "incomplete") {
-			// Missing or incomplete credentials
-			s3Err = &S3Error{
-				Code: "AccessDenied",
-				Message: "Missing or invalid credentials in request. " +
-					"When use_client_credentials is enabled, credentials must be provided via query parameters " +
-					"(AWSAccessKeyId and AWSSecretAccessKey) or Authorization header.",
-				Resource:   r.URL.Path,
-				HTTPStatus: http.StatusForbidden,
-			}
-		} else {
-			// Generic credential error
-			s3Err = &S3Error{
-				Code:       "AccessDenied",
-				Message:    "Failed to authenticate request: " + errMsg,
-				Resource:   r.URL.Path,
-				HTTPStatus: http.StatusForbidden,
-			}
-		}
-
-		s3Err.WriteXML(w)
-		h.metrics.RecordHTTPRequest(r.Context(), method, r.URL.Path, s3Err.HTTPStatus, time.Since(start), 0)
-		return
-	}
-
-	// Otherwise return InternalError (when use_client_credentials is not enabled)
-	s3Err := &S3Error{
-		Code:       "InternalError",
-		Message:    "Failed to initialize S3 client: " + errMsg,
-		Resource:   r.URL.Path,
-		HTTPStatus: http.StatusInternalServerError,
+		h.logger.WithError(err).WithField("response_code", s3Err.Code).Debug("auth error classified")
 	}
 	s3Err.WriteXML(w)
 	h.metrics.RecordHTTPRequest(r.Context(), method, r.URL.Path, s3Err.HTTPStatus, time.Since(start), 0)
+}
+
+// classifyAuthError maps an error returned from getS3Client to a fixed
+// client-facing S3Error. It is deliberately total: every input produces a
+// response without consulting err.Error(). Pure function, no I/O — kept
+// separate so it can be unit-tested.
+func classifyAuthError(err error, resource string) *S3Error {
+	switch {
+	case errors.Is(err, ErrSignatureMismatch):
+		return &S3Error{
+			Code:       "SignatureDoesNotMatch",
+			Message:    "The request signature we calculated does not match the signature you provided. Check your key and signing method.",
+			Resource:   resource,
+			HTTPStatus: http.StatusForbidden,
+		}
+	case errors.Is(err, ErrUnknownAccessKey):
+		return &S3Error{
+			Code:       "InvalidAccessKeyId",
+			Message:    "The AWS access key ID you provided does not exist in our records.",
+			Resource:   resource,
+			HTTPStatus: http.StatusForbidden,
+		}
+	case errors.Is(err, ErrMissingCredentials):
+		return &S3Error{
+			Code:       "AccessDenied",
+			Message:    "Missing or invalid credentials in request.",
+			Resource:   resource,
+			HTTPStatus: http.StatusForbidden,
+		}
+	case errors.Is(err, ErrSigV4NotSupportedWithPassthrough):
+		return &S3Error{
+			Code:       "SignatureDoesNotMatch",
+			Message:    "Signature V4 authentication is not supported in this configuration. Please use query parameter authentication instead.",
+			Resource:   resource,
+			HTTPStatus: http.StatusForbidden,
+		}
+	default:
+		// Unknown / server-side failure. Never echo err.Error().
+		return &S3Error{
+			Code:       "InternalError",
+			Message:    "We encountered an internal error. Please try again.",
+			Resource:   resource,
+			HTTPStatus: http.StatusInternalServerError,
+		}
+	}
 }
 
 // forwardSignatureV4Request forwards a Signature V4 request directly to the backend,
@@ -422,17 +432,19 @@ func (h *Handler) getS3Client(r *http.Request) (s3.Client, error) {
 						// Validate signature using backend secret
 						if err := ValidateSignatureV4(r, h.config.Backend.SecretKey); err != nil {
 							h.logger.WithError(err).Warn("Signature validation failed")
-							// Return error to block request
-							return nil, fmt.Errorf("signature validation failed: %w", err)
+							// Return a classified sentinel so response writers
+							// never serialise the underlying diagnostic (which
+							// historically leaked computed signatures).
+							return nil, fmt.Errorf("%w: %v", ErrSignatureMismatch, err)
 						}
 						// Validation succeeded
 					} else {
 						h.logger.WithField("access_key", creds.AccessKey).Warn("Unknown access key in V4 request")
-						return nil, fmt.Errorf("access denied: unknown access key")
+						return nil, ErrUnknownAccessKey
 					}
 				} else {
 					h.logger.WithError(err).Warn("Failed to extract credentials for validation")
-					return nil, fmt.Errorf("authentication failed: %w", err)
+					return nil, fmt.Errorf("%w: %v", ErrMissingCredentials, err)
 				}
 			}
 		}
@@ -452,14 +464,10 @@ func (h *Handler) getS3Client(r *http.Request) (s3.Client, error) {
 	if IsSignatureV4Request(r) {
 		clientCreds, err := ExtractCredentials(r)
 		if err == nil && clientCreds.AccessKey != "" {
-			// Return a helpful error explaining the limitation
 			h.logger.WithFields(logrus.Fields{
 				"access_key": clientCreds.AccessKey,
 			}).Warn("Signature V4 requests cannot be forwarded - signature validation will fail")
-			return nil, fmt.Errorf("Signature V4 requests are not supported when use_client_credentials is enabled. " +
-				"The signature includes the Host header, so forwarding to the backend fails validation. " +
-				"Please use query parameter authentication (AWSAccessKeyId and AWSSecretAccessKey in URL) instead, " +
-				"or configure the client to use query parameters rather than Signature V4")
+			return nil, ErrSigV4NotSupportedWithPassthrough
 		}
 	}
 
@@ -467,20 +475,20 @@ func (h *Handler) getS3Client(r *http.Request) (s3.Client, error) {
 	clientCreds, err := ExtractCredentials(r)
 	if err != nil {
 		h.logger.WithError(err).Warn("Failed to extract client credentials from request")
-		return nil, fmt.Errorf("failed to extract credentials from request: %w", err)
+		return nil, fmt.Errorf("%w: %v", ErrMissingCredentials, err)
 	}
 
 	// Both access key and secret key are required for non-Signature V4 requests
 	if clientCreds.AccessKey == "" {
 		h.logger.Warn("Client credentials incomplete: missing access key")
-		return nil, fmt.Errorf("client credentials incomplete: missing access key")
+		return nil, ErrMissingCredentials
 	}
 
 	if clientCreds.SecretKey == "" {
 		h.logger.WithFields(logrus.Fields{
 			"access_key": clientCreds.AccessKey,
 		}).Warn("Client credentials incomplete: missing secret key")
-		return nil, fmt.Errorf("client credentials incomplete: missing secret key")
+		return nil, ErrMissingCredentials
 	}
 
 	// Create client with extracted credentials
@@ -1650,6 +1658,10 @@ func (h *Handler) handleHeadBucket(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		s3Err := TranslateError(err, bucket, "")
 		s3Err.WriteXML(w)
+		// Log err here: TranslateError no longer echoes err into the response
+		// body, so this is the only place the underlying diagnostic is
+		// recorded for this code path.
+		h.logger.WithError(err).WithField("bucket", bucket).Error("Failed to head bucket")
 		h.metrics.RecordS3Error(r.Context(), "HeadBucket", bucket, s3Err.Code)
 		h.metrics.RecordHTTPRequest(r.Context(), "HEAD", r.URL.Path, s3Err.HTTPStatus, time.Since(start), 0)
 		return

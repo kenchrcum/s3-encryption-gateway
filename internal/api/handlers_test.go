@@ -12,6 +12,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/aws/smithy-go"
 	"github.com/gorilla/mux"
 	"github.com/kenneth/s3-encryption-gateway/internal/config"
 	"github.com/kenneth/s3-encryption-gateway/internal/crypto"
@@ -38,8 +39,8 @@ func (e *mockAPIError) ErrorMessage() string {
 	return e.message
 }
 
-func (e *mockAPIError) ErrorFault() int32 {
-	return 0
+func (e *mockAPIError) ErrorFault() smithy.ErrorFault {
+	return smithy.FaultUnknown
 }
 
 // mockS3Client is a mock implementation of s3.Client for testing.
@@ -177,10 +178,10 @@ func (m *mockS3Client) ListObjects(ctx context.Context, bucket, prefix string, o
 	}
 
 	return s3.ListResult{
-		Objects:              objects,
-		CommonPrefixes:       commonPrefixes,
+		Objects:               objects,
+		CommonPrefixes:        commonPrefixes,
 		NextContinuationToken: nextToken,
-		IsTruncated:          isTruncated,
+		IsTruncated:           isTruncated,
 	}, nil
 }
 
@@ -212,12 +213,12 @@ func (m *mockS3Client) CopyObject(ctx context.Context, dstBucket, dstKey string,
 	}
 	defer srcReader.Close()
 	data, _ := io.ReadAll(srcReader)
-	
+
 	// Put as destination
-    if err := m.PutObject(ctx, dstBucket, dstKey, bytes.NewReader(data), metadata, nil, ""); err != nil {
+	if err := m.PutObject(ctx, dstBucket, dstKey, bytes.NewReader(data), metadata, nil, ""); err != nil {
 		return "", nil, err
 	}
-	
+
 	resultMeta := make(map[string]string)
 	if srcMeta != nil {
 		for k, v := range srcMeta {
@@ -230,7 +231,7 @@ func (m *mockS3Client) CopyObject(ctx context.Context, dstBucket, dstKey string,
 func (m *mockS3Client) DeleteObjects(ctx context.Context, bucket string, keys []s3.ObjectIdentifier) ([]s3.DeletedObject, []s3.ErrorObject, error) {
 	deleted := []s3.DeletedObject{}
 	errors := []s3.ErrorObject{}
-	
+
 	for _, k := range keys {
 		if err := m.DeleteObject(ctx, bucket, k.Key, nil); err != nil {
 			errors = append(errors, s3.ErrorObject{
@@ -244,7 +245,7 @@ func (m *mockS3Client) DeleteObjects(ctx context.Context, bucket string, keys []
 			})
 		}
 	}
-	
+
 	return deleted, errors, nil
 }
 
@@ -341,13 +342,13 @@ func TestHandler_HandlePutObject(t *testing.T) {
 				t.Errorf("expected status %d, got %d", tt.wantCode, w.Code)
 			}
 
-		if tt.wantCode == http.StatusOK {
-			// Verify object was stored
-			_, _, err := mockClient.GetObject(context.Background(), tt.bucket, tt.key, nil, nil)
-			if err != nil {
-				t.Errorf("object should have been stored: %v", err)
+			if tt.wantCode == http.StatusOK {
+				// Verify object was stored
+				_, _, err := mockClient.GetObject(context.Background(), tt.bucket, tt.key, nil, nil)
+				if err != nil {
+					t.Errorf("object should have been stored: %v", err)
+				}
 			}
-		}
 		})
 	}
 }
@@ -360,7 +361,7 @@ func TestHandler_HandleGetObject(t *testing.T) {
 	handler := NewHandler(mockClient, mockEngine, logger, getTestMetrics())
 
 	// Pre-populate with test data
-    mockClient.PutObject(context.Background(), "test-bucket", "test-key", bytes.NewReader([]byte("test data")), nil, nil, "")
+	mockClient.PutObject(context.Background(), "test-bucket", "test-key", bytes.NewReader([]byte("test data")), nil, nil, "")
 
 	router := mux.NewRouter()
 	handler.RegisterRoutes(router)
@@ -387,7 +388,7 @@ func TestHandler_HandleDeleteObject(t *testing.T) {
 	handler := NewHandler(mockClient, mockEngine, logger, getTestMetrics())
 
 	// Pre-populate with test data
-    mockClient.PutObject(context.Background(), "test-bucket", "test-key", bytes.NewReader([]byte("test data")), nil, nil, "")
+	mockClient.PutObject(context.Background(), "test-bucket", "test-key", bytes.NewReader([]byte("test data")), nil, nil, "")
 
 	router := mux.NewRouter()
 	handler.RegisterRoutes(router)
@@ -416,7 +417,7 @@ func TestHandler_HandleHeadObject(t *testing.T) {
 	handler := NewHandler(mockClient, mockEngine, logger, getTestMetrics())
 
 	metadata := map[string]string{"content-type": "text/plain"}
-    mockClient.PutObject(context.Background(), "test-bucket", "test-key", bytes.NewReader([]byte("test")), metadata, nil, "")
+	mockClient.PutObject(context.Background(), "test-bucket", "test-key", bytes.NewReader([]byte("test")), metadata, nil, "")
 
 	router := mux.NewRouter()
 	handler.RegisterRoutes(router)
@@ -500,8 +501,8 @@ func TestHandler_HandleListObjects(t *testing.T) {
 	handler := NewHandler(mockClient, mockEngine, logger, getTestMetrics())
 
 	// Pre-populate with test data
-    mockClient.PutObject(context.Background(), "test-bucket", "key1", bytes.NewReader([]byte("data1")), nil, nil, "")
-    mockClient.PutObject(context.Background(), "test-bucket", "key2", bytes.NewReader([]byte("data2")), nil, nil, "")
+	mockClient.PutObject(context.Background(), "test-bucket", "key1", bytes.NewReader([]byte("data1")), nil, nil, "")
+	mockClient.PutObject(context.Background(), "test-bucket", "key2", bytes.NewReader([]byte("data2")), nil, nil, "")
 
 	router := mux.NewRouter()
 	handler.RegisterRoutes(router)
@@ -675,21 +676,21 @@ func TestHandler_HandleListObjects_Prefix(t *testing.T) {
 	handler.RegisterRoutes(router)
 
 	tests := []struct {
-		name       string
-		prefix     string
-		expected   []string
+		name        string
+		prefix      string
+		expected    []string
 		notExpected []string
 	}{
 		{
-			name:     "prefix app/",
-			prefix:   "app/",
-			expected: []string{"app/logs/error.log", "app/logs/info.log", "app/config/settings.json"},
+			name:        "prefix app/",
+			prefix:      "app/",
+			expected:    []string{"app/logs/error.log", "app/logs/info.log", "app/config/settings.json"},
 			notExpected: []string{"data/file1.txt", "data/file2.txt"},
 		},
 		{
-			name:     "prefix app/logs/",
-			prefix:   "app/logs/",
-			expected: []string{"app/logs/error.log", "app/logs/info.log"},
+			name:        "prefix app/logs/",
+			prefix:      "app/logs/",
+			expected:    []string{"app/logs/error.log", "app/logs/info.log"},
 			notExpected: []string{"app/config/settings.json", "data/file1.txt"},
 		},
 		{
@@ -805,8 +806,8 @@ func TestContentRangeMapping(t *testing.T) {
 
 	// Update metadata for chunked format
 	metadata[crypto.MetaEncrypted] = "true"
-	metadata[crypto.MetaChunkCount] = "2"  // 32KB / 16KB = 2 chunks
-	metadata[crypto.MetaChunkSize] = "16384"  // 16KB
+	metadata[crypto.MetaChunkCount] = "2"    // 32KB / 16KB = 2 chunks
+	metadata[crypto.MetaChunkSize] = "16384" // 16KB
 	metadata[crypto.MetaChunkedFormat] = "true"
 
 	// Create mock S3 client and populate it
@@ -820,44 +821,44 @@ func TestContentRangeMapping(t *testing.T) {
 
 	// Test various range requests
 	testCases := []struct {
-		name                 string
-		rangeHeader          string
-		expectedStatus       int
-		expectedContentRange string
+		name                  string
+		rangeHeader           string
+		expectedStatus        int
+		expectedContentRange  string
 		expectedContentLength string
-		expectedDataLength   int
+		expectedDataLength    int
 	}{
 		{
-			name:                 "simple range",
-			rangeHeader:          "bytes=1000-1999",
-			expectedStatus:       http.StatusPartialContent,
-			expectedContentRange: "bytes 1000-1999/32768",
+			name:                  "simple range",
+			rangeHeader:           "bytes=1000-1999",
+			expectedStatus:        http.StatusPartialContent,
+			expectedContentRange:  "bytes 1000-1999/32768",
 			expectedContentLength: "1000",
-			expectedDataLength:   1000,
+			expectedDataLength:    1000,
 		},
 		{
-			name:                 "first byte",
-			rangeHeader:          "bytes=0-0",
-			expectedStatus:       http.StatusPartialContent,
-			expectedContentRange: "bytes 0-0/32768",
+			name:                  "first byte",
+			rangeHeader:           "bytes=0-0",
+			expectedStatus:        http.StatusPartialContent,
+			expectedContentRange:  "bytes 0-0/32768",
 			expectedContentLength: "1",
-			expectedDataLength:   1,
+			expectedDataLength:    1,
 		},
 		{
-			name:                 "last byte",
-			rangeHeader:          "bytes=32767-32767",
-			expectedStatus:       http.StatusPartialContent,
-			expectedContentRange: "bytes 32767-32767/32768",
+			name:                  "last byte",
+			rangeHeader:           "bytes=32767-32767",
+			expectedStatus:        http.StatusPartialContent,
+			expectedContentRange:  "bytes 32767-32767/32768",
 			expectedContentLength: "1",
-			expectedDataLength:   1,
+			expectedDataLength:    1,
 		},
 		{
-			name:                 "cross chunk boundary",
-			rangeHeader:          "bytes=16380-16390", // Spans chunk boundary
-			expectedStatus:       http.StatusPartialContent,
-			expectedContentRange: "bytes 16380-16390/32768",
+			name:                  "cross chunk boundary",
+			rangeHeader:           "bytes=16380-16390", // Spans chunk boundary
+			expectedStatus:        http.StatusPartialContent,
+			expectedContentRange:  "bytes 16380-16390/32768",
 			expectedContentLength: "11",
-			expectedDataLength:   11,
+			expectedDataLength:    11,
 		},
 	}
 
@@ -1020,7 +1021,7 @@ func TestValidateCompleteMultipartUploadRequest(t *testing.T) {
 			errorCode:   "InvalidArgument",
 		},
 		{
-			name:        "duplicate part numbers",
+			name: "duplicate part numbers",
 			req: &CompleteMultipartUpload{
 				Parts: []struct {
 					XMLName    xml.Name `xml:"Part"`
@@ -1141,10 +1142,10 @@ func TestIsValidETag(t *testing.T) {
 		{`"ABCDEF123"`, true},
 		{`"a-b-c-d-e"`, true},
 		{`"1234567890abcdef"`, true},
-		{`""`, false}, // Empty
-		{`"abc`, false}, // Unclosed quote
-		{`abc"`, false}, // Unopened quote
-		{`abc123`, false}, // No quotes
+		{`""`, false},        // Empty
+		{`"abc`, false},      // Unclosed quote
+		{`abc"`, false},      // Unopened quote
+		{`abc123`, false},    // No quotes
 		{`"abc 123"`, false}, // Invalid character (space)
 		{`"abc@123"`, false}, // Invalid character (@)
 		{`"abc_123"`, false}, // Invalid character (_)
@@ -1172,17 +1173,17 @@ func TestHandler_HandleCreateBucket(t *testing.T) {
 		{
 			name:           "nil config manages all buckets",
 			bucket:         "test-bucket",
-			proxiedBucket:  "", // nil config case handled separately
+			proxiedBucket:  "",                     // nil config case handled separately
 			setupMock:      func(*mockS3Client) {}, // no setup needed
 			expectedCode:   "BucketAlreadyExists",
 			expectedStatus: http.StatusConflict,
 		},
 		{
-			name:          "empty proxied bucket manages all buckets - bucket exists",
-			bucket:        "test-bucket",
-			proxiedBucket: "",
-			setupMock:     func(*mockS3Client) {}, // no setup needed, bucket "exists"
-			expectedCode:  "BucketAlreadyExists",
+			name:           "empty proxied bucket manages all buckets - bucket exists",
+			bucket:         "test-bucket",
+			proxiedBucket:  "",
+			setupMock:      func(*mockS3Client) {}, // no setup needed, bucket "exists"
+			expectedCode:   "BucketAlreadyExists",
 			expectedStatus: http.StatusConflict,
 		},
 		{

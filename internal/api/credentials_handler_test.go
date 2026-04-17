@@ -1,9 +1,9 @@
 package api
 
 import (
+	"errors"
 	"net/http"
 	"net/url"
-	"strings"
 	"testing"
 
 	"github.com/kenneth/s3-encryption-gateway/internal/config"
@@ -16,18 +16,18 @@ func TestHandler_getS3Client_DefaultMode(t *testing.T) {
 	logger.SetLevel(logrus.ErrorLevel)
 	mockClient := newMockS3Client()
 	mockEngine, _ := crypto.NewEngine("test-password-123456")
-	
+
 	cfg := &config.Config{
 		Backend: config.BackendConfig{
-			Endpoint:            "http://localhost:9000",
-			AccessKey:           "test-key",
-			SecretKey:           "test-secret",
+			Endpoint:             "http://localhost:9000",
+			AccessKey:            "test-key",
+			SecretKey:            "test-secret",
 			UseClientCredentials: false,
 		},
 	}
 
 	handler := NewHandlerWithFeatures(mockClient, mockEngine, logger, getTestMetrics(), nil, nil, nil, cfg, nil)
-	
+
 	req := &http.Request{
 		URL: &url.URL{Path: "/test-bucket/test-key"},
 	}
@@ -37,11 +37,11 @@ func TestHandler_getS3Client_DefaultMode(t *testing.T) {
 	if err != nil {
 		t.Fatalf("getS3Client() error = %v, want nil", err)
 	}
-	
+
 	if client == nil {
 		t.Fatal("getS3Client() returned nil client")
 	}
-	
+
 	// Should be the same as the configured client
 	if client != mockClient {
 		t.Error("getS3Client() should return configured client in default mode")
@@ -52,19 +52,19 @@ func TestHandler_getS3Client_UseClientCredentials_WithQueryParams(t *testing.T) 
 	logger := logrus.New()
 	logger.SetLevel(logrus.ErrorLevel)
 	mockEngine, _ := crypto.NewEngine("test-password-123456")
-	
+
 	cfg := &config.Config{
 		Backend: config.BackendConfig{
-			Endpoint:            "http://localhost:9000",
-			Region:              "us-east-1",
+			Endpoint:             "http://localhost:9000",
+			Region:               "us-east-1",
 			UseClientCredentials: true,
-			UseSSL:              false,
+			UseSSL:               false,
 		},
 	}
 
 	// Create handler without pre-configured client (useClientCredentials mode)
 	handler := NewHandlerWithFeatures(nil, mockEngine, logger, getTestMetrics(), nil, nil, nil, cfg, nil)
-	
+
 	// Request with query parameters
 	req := &http.Request{
 		URL: &url.URL{
@@ -83,7 +83,7 @@ func TestHandler_getS3Client_UseClientCredentials_WithQueryParams(t *testing.T) 
 		t.Logf("getS3Client() returned expected error (no real S3 backend): %v", err)
 		return
 	}
-	
+
 	if client == nil {
 		t.Fatal("getS3Client() returned nil client")
 	}
@@ -93,18 +93,18 @@ func TestHandler_getS3Client_UseClientCredentials_MissingCredentials(t *testing.
 	logger := logrus.New()
 	logger.SetLevel(logrus.ErrorLevel)
 	mockEngine, _ := crypto.NewEngine("test-password-123456")
-	
+
 	cfg := &config.Config{
 		Backend: config.BackendConfig{
-			Endpoint:            "http://localhost:9000",
-			Region:              "us-east-1",
+			Endpoint:             "http://localhost:9000",
+			Region:               "us-east-1",
 			UseClientCredentials: true,
-			UseSSL:              false,
+			UseSSL:               false,
 		},
 	}
 
 	handler := NewHandlerWithFeatures(nil, mockEngine, logger, getTestMetrics(), nil, nil, nil, cfg, nil)
-	
+
 	// Request without credentials
 	req := &http.Request{
 		URL: &url.URL{
@@ -117,14 +117,14 @@ func TestHandler_getS3Client_UseClientCredentials_MissingCredentials(t *testing.
 		t.Error("getS3Client() expected error for missing credentials, got nil")
 		return
 	}
-	
+
 	if client != nil {
 		t.Error("getS3Client() should return nil client when credentials missing")
 	}
-	
-	// Verify error message indicates missing credentials
-	if !strings.Contains(err.Error(), "failed to extract credentials") {
-		t.Errorf("getS3Client() error = %v, want error about missing credentials", err)
+
+	// Verify error is classified as missing credentials via sentinel.
+	if !errors.Is(err, ErrMissingCredentials) {
+		t.Errorf("getS3Client() error = %v, want ErrMissingCredentials", err)
 	}
 }
 
@@ -132,18 +132,18 @@ func TestHandler_getS3Client_UseClientCredentials_IncompleteCredentials(t *testi
 	logger := logrus.New()
 	logger.SetLevel(logrus.ErrorLevel)
 	mockEngine, _ := crypto.NewEngine("test-password-123456")
-	
+
 	cfg := &config.Config{
 		Backend: config.BackendConfig{
-			Endpoint:            "http://localhost:9000",
-			Region:              "us-east-1",
+			Endpoint:             "http://localhost:9000",
+			Region:               "us-east-1",
 			UseClientCredentials: true,
-			UseSSL:              false,
+			UseSSL:               false,
 		},
 	}
 
 	handler := NewHandlerWithFeatures(nil, mockEngine, logger, getTestMetrics(), nil, nil, nil, cfg, nil)
-	
+
 	// Request with only access key (from Authorization header)
 	req := &http.Request{
 		URL: &url.URL{
@@ -159,15 +159,13 @@ func TestHandler_getS3Client_UseClientCredentials_IncompleteCredentials(t *testi
 		t.Error("getS3Client() expected error for incomplete credentials, got nil")
 		return
 	}
-	
+
 	if client != nil {
 		t.Error("getS3Client() should return nil client when credentials incomplete")
 	}
-	
-	// Verify error message indicates Signature V4 incompatibility
-	if !strings.Contains(err.Error(), "Signature V4 requests are not supported") {
-		t.Errorf("getS3Client() error = %v, want error about Signature V4 incompatibility", err)
+
+	// Verify error is classified as SigV4-with-passthrough via sentinel.
+	if !errors.Is(err, ErrSigV4NotSupportedWithPassthrough) {
+		t.Errorf("getS3Client() error = %v, want ErrSigV4NotSupportedWithPassthrough", err)
 	}
 }
-
-

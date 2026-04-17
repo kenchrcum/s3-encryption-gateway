@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"strings"
 
 	"github.com/aws/smithy-go"
 )
@@ -117,9 +116,15 @@ func TranslateError(err error, bucket, key string) *S3Error {
 				HTTPStatus: http.StatusBadRequest,
 			}
 		case "InvalidArgument":
+			// SECURITY: Deliberately do NOT include apiErr.ErrorMessage() in
+			// the response. The ErrorMessage comes from the backend and is
+			// attacker-influenceable (compromised/malicious backend, or
+			// non-AWS implementations with different conventions). The
+			// structured Code is the stable contract for clients; the
+			// underlying detail is logged by callers via WithError.
 			return &S3Error{
 				Code:       "InvalidArgument",
-				Message:    fmt.Sprintf("Invalid argument: %s", apiErr.ErrorMessage()),
+				Message:    "The request contains an invalid argument.",
 				Resource:   resource,
 				RequestID:  requestID,
 				HTTPStatus: http.StatusBadRequest,
@@ -127,22 +132,21 @@ func TranslateError(err error, bucket, key string) *S3Error {
 		}
 	}
 
-	// Check for mock errors that contain error codes in the message
-	errStr := err.Error()
-	if strings.Contains(errStr, "does not exist") {
-		return &S3Error{
-			Code:       "NoSuchBucket",
-			Message:    fmt.Sprintf("The specified bucket does not exist: %s", bucket),
-			Resource:   resource,
-			RequestID:  requestID,
-			HTTPStatus: http.StatusNotFound,
-		}
-	}
-
-	// Default to internal error
+	// Default to internal error.
+	//
+	// SECURITY: Do NOT embed err.Error() or %v-formatted err into the Message.
+	// Upstream errors may contain:
+	//   - internal endpoint URLs / hostnames (from SDK transport errors)
+	//   - bucket paths and keys beyond what the caller requested
+	//   - credential metadata in transport-level errors
+	//   - wrapped diagnostic detail from other layers (e.g. computed HMAC
+	//     signatures — see the history of ValidateSignatureV4)
+	// Callers are expected to log err themselves via logger.WithError(err);
+	// all 14 production call sites in handlers.go do so. The client-facing
+	// Message is the canonical AWS S3 InternalError string.
 	return &S3Error{
 		Code:       "InternalError",
-		Message:    fmt.Sprintf("We encountered an internal error. Please try again: %v", err),
+		Message:    "We encountered an internal error. Please try again.",
 		Resource:   resource,
 		RequestID:  requestID,
 		HTTPStatus: http.StatusInternalServerError,

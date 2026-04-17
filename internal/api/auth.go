@@ -4,12 +4,37 @@ import (
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
 	"sort"
 	"strings"
 	"time"
+)
+
+// Sentinel authentication errors.
+//
+// These are used to classify failures in a way that does not rely on string
+// matching of wrapped error messages. Call sites wrap these with %w so that
+// response writers can use errors.Is to select the appropriate client-facing
+// response without ever reading err.Error() (which may contain sensitive
+// diagnostic detail intended only for logs).
+var (
+	// ErrSignatureMismatch indicates SigV4 validation failed (bad signature).
+	ErrSignatureMismatch = errors.New("signature validation failed")
+
+	// ErrUnknownAccessKey indicates the request's access key is not recognised.
+	ErrUnknownAccessKey = errors.New("unknown access key")
+
+	// ErrMissingCredentials indicates credentials could not be extracted or
+	// were incomplete (missing access key or secret key).
+	ErrMissingCredentials = errors.New("missing or incomplete credentials")
+
+	// ErrSigV4NotSupportedWithPassthrough indicates a SigV4 request was
+	// received while use_client_credentials is enabled, which cannot be
+	// forwarded because the Host header is part of the signature.
+	ErrSigV4NotSupportedWithPassthrough = errors.New("signature v4 not supported with credential passthrough")
 )
 
 // ValidateSignatureV4 validates the AWS Signature V4 in the request.
@@ -90,9 +115,13 @@ func ValidateSignatureV4(r *http.Request, secretKey string) error {
 	signingKey := getSignatureKey(secretKey, date, region, service)
 	calculatedSignature := hex.EncodeToString(sign(signingKey, []byte(stringToSign)))
 
-	// 4. Compare
-	if calculatedSignature != signature {
-		return fmt.Errorf("signature mismatch: computed %s, expected %s", calculatedSignature, signature)
+	// 4. Compare using constant-time comparison to avoid timing side channels.
+	// Do NOT include the computed or expected signatures in the error: the error
+	// message propagates into HTTP response bodies (see writeS3ClientError),
+	// and leaking the computed signature would turn this endpoint into a
+	// signing oracle for the shared secret.
+	if !hmac.Equal([]byte(calculatedSignature), []byte(signature)) {
+		return ErrSignatureMismatch
 	}
 
 	// Check Expiry for Presigned URLs
