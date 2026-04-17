@@ -186,15 +186,17 @@ func NewEngineWithResolverAndProvider(password string, compressionEngine Compres
 	if err != nil {
 		return nil, err
 	}
-	// Set resolver on concrete type
-	if e, ok := eng.(*engine); ok {
-		e.keyResolver = resolver
+	if resolver != nil {
+		SetKeyResolver(eng, resolver)
 	}
 	return eng, nil
 }
 
 // SetKeyResolver sets a key resolver on an existing engine instance.
 // This allows decryption using older key versions without reconstructing the engine.
+//
+// Deprecated: Pass [WithKeyResolver] to [NewEngineWithOpts] instead. This function
+// will be removed in a future release.
 func SetKeyResolver(enc EncryptionEngine, resolver func(version int) (string, bool)) {
 	if e, ok := enc.(*engine); ok {
 		e.keyResolver = resolver
@@ -202,6 +204,9 @@ func SetKeyResolver(enc EncryptionEngine, resolver func(version int) (string, bo
 }
 
 // SetKeyManager wires an external KeyManager into the engine for envelope encryption.
+//
+// Deprecated: Pass [WithKeyManager] to [NewEngineWithOpts] instead. This function
+// will be removed in a future release.
 func SetKeyManager(enc EncryptionEngine, manager KeyManager) {
 	if e, ok := enc.(*engine); ok {
 		e.kmsManager = manager
@@ -283,7 +288,7 @@ func (e *engine) Encrypt(reader io.Reader, metadata map[string]string) (io.Reade
 
 	// If chunked mode is enabled, use streaming chunked encryption
 	if e.chunkedMode {
-		encryptedReader, meta, err := e.encryptChunked(reader, metadata)
+		encryptedReader, meta, err := e.encryptChunked(ctx, reader, metadata)
 		if err != nil {
 			span.SetStatus(codes.Error, err.Error())
 			return nil, nil, err
@@ -416,7 +421,7 @@ func (e *engine) Encrypt(reader io.Reader, metadata map[string]string) (io.Reade
 	}
 	// Encrypt the data using AEAD with AAD
 	ciphertext := gcm.Seal(nil, nonce, dataToEncrypt, aad)
-	
+
 	// Debug: log encryption info for troubleshooting
 	if debug.Enabled() && len(ciphertext) > 0 {
 		preview := ""
@@ -435,7 +440,7 @@ func (e *engine) Encrypt(reader io.Reader, metadata map[string]string) (io.Reade
 		if len(ivPreview) > 20 {
 			ivPreview = ivPreview[:20]
 		}
-		fmt.Printf("DEBUG Encrypt: ciphertext len=%d, preview=%s, salt=%s..., iv=%s...\n", 
+		fmt.Printf("DEBUG Encrypt: ciphertext len=%d, preview=%s, salt=%s..., iv=%s...\n",
 			len(ciphertext), preview, saltPreview, ivPreview)
 	}
 
@@ -528,7 +533,7 @@ func (e *engine) Decrypt(reader io.Reader, metadata map[string]string) (io.Reade
 
 	// Check if this is chunked format
 	if isChunkedFormat(expandedMetadata) {
-		return e.decryptChunked(reader, expandedMetadata)
+		return e.decryptChunked(ctx, reader, expandedMetadata)
 	}
 
 	// Legacy buffered mode for backward compatibility
@@ -636,7 +641,7 @@ func (e *engine) Decrypt(reader io.Reader, metadata map[string]string) (io.Reade
 			if len(ivPreview) > 20 {
 				ivPreview = ivPreview[:20]
 			}
-			fmt.Printf("DEBUG Decrypt: ciphertext len=%d, salt=%s..., iv=%s..., algorithm=%s\n", 
+			fmt.Printf("DEBUG Decrypt: ciphertext len=%d, salt=%s..., iv=%s..., algorithm=%s\n",
 				len(ciphertext), saltPreview, ivPreview, algorithm)
 		}
 	}
@@ -744,7 +749,7 @@ func (e *engine) Decrypt(reader io.Reader, metadata map[string]string) (io.Reade
 }
 
 // encryptChunked implements streaming chunked encryption.
-func (e *engine) encryptChunked(reader io.Reader, metadata map[string]string) (io.Reader, map[string]string, error) {
+func (e *engine) encryptChunked(ctx context.Context, reader io.Reader, metadata map[string]string) (io.Reader, map[string]string, error) {
 	// Read all data for chunked encryption to check metadata size
 	plaintext, err := io.ReadAll(reader)
 	if err != nil {
@@ -777,7 +782,7 @@ func (e *engine) encryptChunked(reader io.Reader, metadata map[string]string) (i
 
 	// Check if we need fallback metadata storage
 	if e.needsMetadataFallback(encMetadata) {
-		return e.encryptChunkedWithMetadataFallback(plaintext, encMetadata, contentType, originalSize, originalETag)
+		return e.encryptChunkedWithMetadataFallback(ctx, plaintext, encMetadata, contentType, originalSize, originalETag)
 	}
 
 	// Determine algorithm to use
@@ -809,7 +814,7 @@ func (e *engine) encryptChunked(reader io.Reader, metadata map[string]string) (i
 		if err != nil {
 			return nil, nil, fmt.Errorf("failed to generate data key: %w", err)
 		}
-		envelope, err = e.kmsManager.WrapKey(context.Background(), key, metadata)
+		envelope, err = e.kmsManager.WrapKey(ctx, key, metadata)
 		if err != nil {
 			zeroBytes(key)
 			return nil, nil, fmt.Errorf("failed to wrap data key: %w", err)
@@ -906,7 +911,7 @@ func (e *engine) encryptChunked(reader io.Reader, metadata map[string]string) (i
 }
 
 // encryptChunkedWithMetadataFallback encrypts chunked data with metadata stored in object body
-func (e *engine) encryptChunkedWithMetadataFallback(plaintext []byte, fullMetadata map[string]string, contentType string, originalSize int64, originalETag string) (io.Reader, map[string]string, error) {
+func (e *engine) encryptChunkedWithMetadataFallback(ctx context.Context, plaintext []byte, fullMetadata map[string]string, contentType string, originalSize int64, originalETag string) (io.Reader, map[string]string, error) {
 	// Generate encryption parameters
 	salt, err := e.generateSalt()
 	if err != nil {
@@ -935,7 +940,7 @@ func (e *engine) encryptChunkedWithMetadataFallback(plaintext []byte, fullMetada
 		if err != nil {
 			return nil, nil, fmt.Errorf("failed to generate data key: %w", err)
 		}
-		envelope, err = e.kmsManager.WrapKey(context.Background(), key, fullMetadata)
+		envelope, err = e.kmsManager.WrapKey(ctx, key, fullMetadata)
 		if err != nil {
 			zeroBytes(key)
 			return nil, nil, fmt.Errorf("failed to wrap data key: %w", err)
@@ -1071,7 +1076,7 @@ func (e *engine) encryptChunkedWithMetadataFallback(plaintext []byte, fullMetada
 }
 
 // decryptChunked implements streaming chunked decryption.
-func (e *engine) decryptChunked(reader io.Reader, metadata map[string]string) (io.Reader, map[string]string, error) {
+func (e *engine) decryptChunked(ctx context.Context, reader io.Reader, metadata map[string]string) (io.Reader, map[string]string, error) {
 	// Load manifest from metadata
 	manifest, err := loadManifestFromMetadata(metadata)
 	if err != nil {
@@ -1115,7 +1120,7 @@ func (e *engine) decryptChunked(reader io.Reader, metadata map[string]string) (i
 			Provider:   metadata[MetaKMSProvider],
 			Ciphertext: wrapped,
 		}
-		key, err = e.kmsManager.UnwrapKey(context.Background(), env, metadata)
+		key, err = e.kmsManager.UnwrapKey(ctx, env, metadata)
 		if err != nil {
 			return nil, nil, fmt.Errorf("failed to unwrap data key: %w", err)
 		}
@@ -1203,6 +1208,7 @@ func (e *engine) decryptChunked(reader io.Reader, metadata map[string]string) (i
 // DecryptRange decrypts only the chunks needed for a specific plaintext range.
 // This optimizes range requests by decrypting only necessary chunks.
 func (e *engine) DecryptRange(reader io.Reader, metadata map[string]string, plaintextStart, plaintextEnd int64) (io.Reader, map[string]string, error) {
+	ctx := context.Background() // TODO: propagate caller context once EncryptionEngine interface adds context
 	if !e.IsEncrypted(metadata) {
 		return nil, nil, fmt.Errorf("object is not encrypted")
 	}
@@ -1277,7 +1283,7 @@ func (e *engine) DecryptRange(reader io.Reader, metadata map[string]string, plai
 			Provider:   expandedMetadata[MetaKMSProvider],
 			Ciphertext: wrapped,
 		}
-		key, err = e.kmsManager.UnwrapKey(context.Background(), env, expandedMetadata)
+		key, err = e.kmsManager.UnwrapKey(ctx, env, expandedMetadata)
 		if err != nil {
 			return nil, nil, fmt.Errorf("failed to unwrap data key: %w", err)
 		}

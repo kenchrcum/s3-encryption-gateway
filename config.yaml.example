@@ -40,8 +40,25 @@ encryption:
   chunk_size: 65536   # Chunk size in bytes (default: 65536 = 64KB). Range: 16KB-1MB
   key_manager:
     enabled: false  # Set to true to enable key rotation/KMS mode (default: single password mode)
-    provider: "cosmian"  # KMS provider: "cosmian" (currently supported), "aws", "vault" (planned for v1.0)
+    provider: "cosmian"  # KMS provider (v0.6+):
+                         #   "cosmian" / "kmip" — Cosmian KMIP (production-ready)
+                         #   "memory"            — In-process AES key-wrap (tests / single-node)
+                         #   "hsm"               — PKCS#11 HSM skeleton (-tags hsm; functional in v1.0)
+                         # Planned (v1.0): "aws", "vault"
+                         # Set via KEY_MANAGER_PROVIDER env var
     dual_read_window: 1  # Number of previous key versions to try during rotation (default: 1)
+
+    # ---------------------------------------------------------------------------
+    # memory provider — in-process AES-256 key-wrap (RFC 3394)
+    # ---------------------------------------------------------------------------
+    # memory:
+    #   master_key_source: ""  # Secret reference for the AES-256 master key.
+    #                          # Formats: "env:VAR", "file:PATH", or "" (auto-generate).
+    #                          # WARNING: An auto-generated key is lost on restart —
+    #                          # all wrapped DEKs become unrecoverable. Use only for
+    #                          # local development or tests.
+    #                          # Set via MEMORY_KM_MASTER_KEY_SOURCE env var
+
     cosmian:
       # Cosmian KMIP endpoint (supports both binary and JSON protocols)
       # RECOMMENDED: JSON/HTTP endpoint (tested and verified)

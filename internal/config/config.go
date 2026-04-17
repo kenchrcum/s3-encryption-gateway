@@ -76,22 +76,42 @@ type HardwareConfig struct {
 // KeyManagerConfig holds key manager (KMS) configuration.
 //
 // Currently supported providers:
-//   - "cosmian" or "cosmian-kmip": Cosmian KMIP (fully implemented in v0.5)
+//   - "cosmian" or "kmip": Cosmian KMIP (fully implemented in v0.5)
+//   - "memory": In-process AES key-wrap — suitable for single-node deployments,
+//     tests, and local development without an external KMS (v0.6)
+//   - "hsm": PKCS#11 Hardware Security Module (skeleton in v0.6; functional in v1.0;
+//     requires -tags hsm build flag — see docs/adr/0004-hsm-adapter-contract.md)
 //
 // Planned providers (v1.0):
 //   - "aws" or "aws-kms": AWS KMS (see V1.0-KMS-2)
 //   - "vault" or "vault-transit": HashiCorp Vault Transit (see V1.0-KMS-3)
 //
-// See docs/KMS_COMPATIBILITY.md for implementation status.
+// See docs/KMS_COMPATIBILITY.md for implementation status and adapter options.
 type KeyManagerConfig struct {
 	Enabled        bool                 `yaml:"enabled" env:"KEY_MANAGER_ENABLED"`
 	Provider       string               `yaml:"provider" env:"KEY_MANAGER_PROVIDER"`
 	DualReadWindow int                  `yaml:"dual_read_window" env:"KEY_MANAGER_DUAL_READ_WINDOW"`
 	RotationPolicy RotationPolicyConfig `yaml:"rotation_policy"`
 	Cosmian        CosmianConfig        `yaml:"cosmian"`
+	Memory         MemoryKMConfig       `yaml:"memory"`
 	// TODO(v1.0): Add AWS and Vault config fields when adapters are implemented
 	// AWS        AWSKMSConfig  `yaml:"aws"`
 	// Vault      VaultConfig   `yaml:"vault"`
+}
+
+// MemoryKMConfig captures settings for the in-memory key manager adapter.
+//
+// The master key is loaded from the configured source once at startup and is
+// never written to disk by the gateway. Supported secret reference formats for
+// MasterKeySource:
+//
+//   - "env:VAR"   — read from environment variable VAR
+//   - "file:PATH" — read from file at PATH (hex-encoded or raw bytes)
+//   - ""          — auto-generate a random key (suitable for tests only;
+//     keys are NOT persisted and all wrapped DEKs are lost on restart)
+type MemoryKMConfig struct {
+	// MasterKeySource is a secret reference or empty string (auto-generate).
+	MasterKeySource string `yaml:"master_key_source" env:"MEMORY_KM_MASTER_KEY_SOURCE"`
 }
 
 // RotationPolicyConfig holds key rotation policy configuration.
@@ -166,10 +186,10 @@ type CacheConfig struct {
 
 // AuditConfig holds audit logging configuration.
 type AuditConfig struct {
-	Enabled   bool       `yaml:"enabled" env:"AUDIT_ENABLED"`
-	MaxEvents int        `yaml:"max_events" env:"AUDIT_MAX_EVENTS"` // Max events to keep in memory
-	Sink      SinkConfig `yaml:"sink"`
-	RedactMetadataKeys []string `yaml:"redact_metadata_keys" env:"AUDIT_REDACT_METADATA_KEYS"`
+	Enabled            bool       `yaml:"enabled" env:"AUDIT_ENABLED"`
+	MaxEvents          int        `yaml:"max_events" env:"AUDIT_MAX_EVENTS"` // Max events to keep in memory
+	Sink               SinkConfig `yaml:"sink"`
+	RedactMetadataKeys []string   `yaml:"redact_metadata_keys" env:"AUDIT_REDACT_METADATA_KEYS"`
 }
 
 // SinkConfig holds audit sink configuration.
@@ -684,8 +704,12 @@ func (c *Config) Validate() error {
 			if len(c.Encryption.KeyManager.Cosmian.Keys) == 0 {
 				return fmt.Errorf("encryption.key_manager.cosmian.keys must include at least one entry")
 			}
+		case "memory":
+			// No mandatory fields; master_key_source is optional (auto-generate if empty)
+		case "hsm":
+			// Validated at runtime by the HSM adapter; build-tag check not possible here
 		default:
-			return fmt.Errorf("unsupported key manager provider: %s", c.Encryption.KeyManager.Provider)
+			return fmt.Errorf("unsupported key manager provider: %s (supported: cosmian, kmip, memory, hsm)", c.Encryption.KeyManager.Provider)
 		}
 	}
 

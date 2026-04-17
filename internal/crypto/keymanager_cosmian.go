@@ -139,6 +139,12 @@ func (m *cosmianKMIPManager) WrapKey(ctx context.Context, plaintext []byte, _ ma
 	if len(plaintext) == 0 {
 		return nil, errors.New("kms: plaintext DEK is empty")
 	}
+	m.mu.RLock()
+	if m.client == nil {
+		m.mu.RUnlock()
+		return nil, ErrProviderUnavailable
+	}
+	m.mu.RUnlock()
 	ctx, cancel := m.state.withTimeout(ctx)
 	defer cancel()
 	active := m.state.opts.Keys[0]
@@ -172,11 +178,17 @@ func (m *cosmianKMIPManager) WrapKey(ctx context.Context, plaintext []byte, _ ma
 // UnwrapKey implements KeyManager.
 func (m *cosmianKMIPManager) UnwrapKey(ctx context.Context, envelope *KeyEnvelope, _ map[string]string) ([]byte, error) {
 	if envelope == nil {
-		return nil, errors.New("kms: key envelope is nil")
+		return nil, fmt.Errorf("%w: envelope is nil", ErrInvalidEnvelope)
 	}
 	if len(envelope.Ciphertext) == 0 {
-		return nil, errors.New("kms: wrapped key is empty")
+		return nil, fmt.Errorf("%w: wrapped key is empty", ErrInvalidEnvelope)
 	}
+	m.mu.RLock()
+	if m.client == nil {
+		m.mu.RUnlock()
+		return nil, ErrProviderUnavailable
+	}
+	m.mu.RUnlock()
 	ctx, cancel := m.state.withTimeout(ctx)
 	defer cancel()
 
@@ -213,7 +225,7 @@ func (m *cosmianKMIPManager) UnwrapKey(ctx context.Context, envelope *KeyEnvelop
 	if lastErr == nil {
 		lastErr = errors.New("kms: unwrap failed with no attempts recorded")
 	}
-	return nil, fmt.Errorf("kms: decrypt failed: %w", lastErr)
+	return nil, fmt.Errorf("kms: decrypt failed: %w", fmt.Errorf("%w: %w", ErrUnwrapFailed, lastErr))
 }
 
 // ActiveKeyVersion implements KeyManager.
@@ -226,8 +238,11 @@ func (m *cosmianKMIPManager) ActiveKeyVersion(_ context.Context) (int, error) {
 
 // HealthCheck implements KeyManager.
 func (m *cosmianKMIPManager) HealthCheck(ctx context.Context) error {
-	if m.client == nil {
-		return errors.New("kms: client not initialized")
+	m.mu.RLock()
+	closed := m.client == nil
+	m.mu.RUnlock()
+	if closed {
+		return fmt.Errorf("kms: client not initialized: %w", ErrProviderUnavailable)
 	}
 	if len(m.state.opts.Keys) == 0 {
 		return errors.New("kms: no keys configured")

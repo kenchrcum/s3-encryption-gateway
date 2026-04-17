@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
 )
 
 const (
@@ -27,6 +28,8 @@ type cosmianKMIPJSONManager struct {
 	state    *cosmianKeyState
 	client   *http.Client
 	endpoint string
+	closed   bool
+	mu       sync.RWMutex
 }
 
 func newCosmianKMIPJSONManager(state *cosmianKeyState) (KeyManager, error) {
@@ -75,6 +78,12 @@ func (m *cosmianKMIPJSONManager) WrapKey(ctx context.Context, plaintext []byte, 
 	if len(plaintext) == 0 {
 		return nil, errors.New("kms: plaintext DEK is empty")
 	}
+	m.mu.RLock()
+	if m.closed {
+		m.mu.RUnlock()
+		return nil, ErrProviderUnavailable
+	}
+	m.mu.RUnlock()
 
 	ctx, cancel := m.state.withTimeout(ctx)
 	defer cancel()
@@ -107,11 +116,17 @@ func (m *cosmianKMIPJSONManager) WrapKey(ctx context.Context, plaintext []byte, 
 
 func (m *cosmianKMIPJSONManager) UnwrapKey(ctx context.Context, envelope *KeyEnvelope, _ map[string]string) ([]byte, error) {
 	if envelope == nil {
-		return nil, errors.New("kms: key envelope is nil")
+		return nil, fmt.Errorf("%w: envelope is nil", ErrInvalidEnvelope)
 	}
 	if len(envelope.Ciphertext) == 0 {
-		return nil, errors.New("kms: wrapped key is empty")
+		return nil, fmt.Errorf("%w: wrapped key is empty", ErrInvalidEnvelope)
 	}
+	m.mu.RLock()
+	if m.closed {
+		m.mu.RUnlock()
+		return nil, ErrProviderUnavailable
+	}
+	m.mu.RUnlock()
 
 	ctx, cancel := m.state.withTimeout(ctx)
 	defer cancel()
@@ -144,7 +159,7 @@ func (m *cosmianKMIPJSONManager) UnwrapKey(ctx context.Context, envelope *KeyEnv
 	if lastErr == nil {
 		lastErr = errors.New("kms: decrypt failed with no attempts recorded")
 	}
-	return nil, lastErr
+	return nil, fmt.Errorf("%w: %w", ErrUnwrapFailed, lastErr)
 }
 
 func (m *cosmianKMIPJSONManager) ActiveKeyVersion(_ context.Context) (int, error) {
@@ -154,10 +169,7 @@ func (m *cosmianKMIPJSONManager) ActiveKeyVersion(_ context.Context) (int, error
 	return m.state.opts.Keys[0].Version, nil
 }
 
-func (m *cosmianKMIPJSONManager) HealthCheck(ctx context.Context) error {
-	if m.client == nil {
-		return errors.New("kms: client not initialized")
-	}
+func (m *cosmianKMIPJSONManager) healthCheckInner(ctx context.Context) error {
 	if len(m.state.opts.Keys) == 0 {
 		return errors.New("kms: no keys configured")
 	}
@@ -197,10 +209,28 @@ func (m *cosmianKMIPJSONManager) HealthCheck(ctx context.Context) error {
 }
 
 func (m *cosmianKMIPJSONManager) Close(context.Context) error {
-	if tr, ok := m.client.Transport.(*http.Transport); ok {
-		tr.CloseIdleConnections()
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if !m.closed {
+		m.closed = true
+		if tr, ok := m.client.Transport.(*http.Transport); ok {
+			tr.CloseIdleConnections()
+		}
 	}
 	return nil
+}
+
+func (m *cosmianKMIPJSONManager) HealthCheck(ctx context.Context) error {
+	m.mu.RLock()
+	closed := m.closed
+	m.mu.RUnlock()
+	if closed {
+		return fmt.Errorf("kms: provider closed: %w", ErrProviderUnavailable)
+	}
+	if m.client == nil {
+		return fmt.Errorf("kms: client not initialized: %w", ErrProviderUnavailable)
+	}
+	return m.healthCheckInner(ctx)
 }
 
 func (m *cosmianKMIPJSONManager) encrypt(ctx context.Context, keyID string, plaintext []byte) ([]byte, string, error) {
@@ -240,11 +270,11 @@ func (m *cosmianKMIPJSONManager) encrypt(ctx context.Context, keyID string, plai
 			keyValue = v
 		}
 	}
-	
+
 	// Note: For NIST Key Wrap, the IVCounterNonce is typically not returned in the response
 	// and should be the same fixed value (0xA6A6A6A6A6A6A6A6) for both encrypt and decrypt.
 	// We use defaultKeyWrapIV for both operations, which should be correct.
-	
+
 	return ciphertext, keyValue, nil
 }
 

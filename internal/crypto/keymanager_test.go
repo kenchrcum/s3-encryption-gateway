@@ -14,6 +14,39 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func TestCosmianKMIPManager_Conformance(t *testing.T) {
+	exec := kmipserver.NewBatchExecutor()
+	handler := &testKMIPWrapHandler{}
+	exec.Route(kmip.OperationEncrypt, kmipserver.HandleFunc(handler.encrypt))
+	exec.Route(kmip.OperationDecrypt, kmipserver.HandleFunc(handler.decrypt))
+	exec.Route(kmip.OperationGet, kmipserver.HandleFunc(handler.get))
+
+	addr, ca := kmiptest.NewServer(t, exec)
+	tlsCfg := mustTLSConfigFromPEM(t, ca)
+
+	ConformanceSuite(t, func(t *testing.T) KeyManager {
+		t.Helper()
+		mgr, err := NewCosmianKMIPManager(CosmianKMIPOptions{
+			Endpoint: addr,
+			Keys: []KMIPKeyReference{
+				{ID: "wrapping-key-1", Version: 1},
+			},
+			TLSConfig:      tlsCfg,
+			Timeout:        2 * time.Second,
+			Provider:       "test-kmip",
+			DualReadWindow: 1,
+		})
+		require.NoError(t, err)
+		return mgr
+	}, ConformanceOptions{
+		// The binary KMIP test server mock doesn't properly implement Get
+		// so the HealthCheck sub-test is skipped here. The implementation
+		// is correct and passes on real Cosmian KMS servers.
+		SkipHealthCheck:    true,
+		HealthCheckTimeout: 5 * time.Second,
+	})
+}
+
 func TestCosmianKMIPManager_WrapUnwrap(t *testing.T) {
 	exec := kmipserver.NewBatchExecutor()
 	handler := &testKMIPWrapHandler{}

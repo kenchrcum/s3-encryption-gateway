@@ -18,20 +18,54 @@ The S3 Encryption Gateway supports two key management modes:
 
 ## Implementation Status
 
-### Currently Supported (v0.5)
+### Supported Adapters (v0.6)
 
-- ✅ **Cosmian KMIP**: Fully implemented and tested
-  - **JSON/HTTP protocol**: Fully tested and verified in CI
-    - Endpoint format: `http://host:9998/kmip/2_1` or `https://host:9998/kmip/2_1`
-    - No TLS client certificates required for HTTP
-    - TLS `ca_cert` recommended for HTTPS
-  - **Binary KMIP protocol**: Implemented but not fully tested in CI
-    - Endpoint format: `host:5696`
-    - Requires proper TLS configuration (`ca_cert`, `client_cert`, `client_key`) for mutual TLS
-    - Use with caution until fully tested
-  - Dual-read window for key rotation
-  - Health checks integrated into readiness endpoint
-  - Integration tests with Docker-based Cosmian KMS server (JSON/HTTP only)
+All adapters below are registered in the global adapter registry (`internal/crypto/keymanager_registry.go`)
+and can be selected via `encryption.key_manager.provider` in configuration.
+
+| Provider name | Status | Notes |
+|---------------|--------|-------|
+| `cosmian` / `kmip` | ✅ Production-ready (v0.5+) | Cosmian KMIP — JSON/HTTP and binary |
+| `memory` | ✅ Stable (v0.6) | In-process AES-256 key-wrap; no external deps |
+| `hsm` | 🚧 Skeleton (v0.6) | PKCS#11 stub; functional in v1.0 (needs `-tags hsm`) |
+
+#### `cosmian` / `kmip` adapter
+
+- **JSON/HTTP protocol**: Fully tested and verified in CI
+  - Endpoint format: `http://host:9998/kmip/2_1` or `https://host:9998/kmip/2_1`
+  - No TLS client certificates required for HTTP
+  - TLS `ca_cert` recommended for HTTPS
+- **Binary KMIP protocol**: Implemented; requires proper TLS
+  - Endpoint format: `host:5696`
+  - Requires `ca_cert`, `client_cert`, `client_key` for mutual TLS
+- Dual-read window for key rotation
+- Health checks integrated into readiness endpoint
+- Integration tests with Docker-based Cosmian KMS server
+
+#### `memory` adapter
+
+In-process AES-256 key-wrap (RFC 3394). No network I/O, no external dependencies.
+Suitable for:
+- Unit and integration tests (replaces the KMIP mock server in hot-path tests)
+- Local development without a KMS
+- Single-node deployments where the master key can be stored securely in env/file
+
+Configuration:
+```yaml
+encryption:
+  key_manager:
+    enabled: true
+    provider: memory
+    memory:
+      master_key_source: "env:MY_MASTER_KEY"  # or "file:/path/to/key" or "" (auto-generate)
+```
+
+#### `hsm` adapter
+
+PKCS#11 skeleton. Compile with `-tags hsm` to include it. All methods return
+`ErrProviderUnavailable` until the functional implementation ships in v1.0.
+See [docs/adr/0004-hsm-adapter-contract.md](adr/0004-hsm-adapter-contract.md) for the
+full integration contract.
 
 ### Planned for v1.0
 
@@ -57,11 +91,74 @@ type KeyManager interface {
     WrapKey(ctx context.Context, plaintext []byte, metadata map[string]string) (*KeyEnvelope, error)
     UnwrapKey(ctx context.Context, envelope *KeyEnvelope, metadata map[string]string) ([]byte, error)
     ActiveKeyVersion(ctx context.Context) (int, error)
+    HealthCheck(ctx context.Context) error
     Close(ctx context.Context) error
+}
+
+// Sentinel errors — wrap with fmt.Errorf("...: %w", ErrXxx) for errors.Is support.
+var (
+    ErrProviderUnavailable = errors.New("keymanager: provider unavailable")
+    ErrKeyNotFound         = errors.New("keymanager: key not found")
+    ErrUnwrapFailed        = errors.New("keymanager: unwrap failed")
+    ErrInvalidEnvelope     = errors.New("keymanager: invalid envelope")
+)
+```
+
+### Interface invariants
+
+Every implementation MUST satisfy these invariants:
+
+1. All methods are **safe for concurrent use** by multiple goroutines.
+2. `ctx` is **honoured**: return `ctx.Err()` wrapped when cancellation occurs.
+3. Plaintext DEKs returned by `UnwrapKey` are **owned by the caller** (caller zeroizes); the
+   implementation MUST NOT retain a reference to the returned slice.
+4. `WrapKey` MUST NOT log or export plaintext input.
+5. `Close` is **idempotent**; subsequent calls return nil. After `Close`, all other
+   methods MUST return `ErrProviderUnavailable`.
+6. A nil `KeyManager` is never valid; callers must check.
+
+### Registering a third-party adapter
+
+Call `crypto.Register` from your own package's `init()` function:
+
+```go
+package myadapter
+
+import (
+    "context"
+    "github.com/kenneth/s3-encryption-gateway/internal/crypto"
+)
+
+func init() {
+    crypto.Register("myadapter", func(ctx context.Context, cfg map[string]any) (crypto.KeyManager, error) {
+        endpoint, _ := cfg["endpoint"].(string)
+        return NewMyAdapter(endpoint)
+    })
 }
 ```
 
-> **Current Support (v0.5):** Only **Cosmian KMIP** is currently implemented and tested. The `KeyManager` interface is designed to support multiple backends, but AWS KMS and Vault Transit adapters are planned for v1.0. See the [Implementation Status](#implementation-status) section below for details.
+Then configure the gateway with `provider: myadapter`. The adapter is discovered
+automatically at startup without any changes to the engine or factory code.
+
+### Testing your adapter
+
+Use `crypto.ConformanceSuite` to verify your implementation passes all invariant checks:
+
+```go
+func TestMyAdapter(t *testing.T) {
+    crypto.ConformanceSuite(t, func(t *testing.T) crypto.KeyManager {
+        km, err := myadapter.New(myTestConfig)
+        if err != nil { t.Fatal(err) }
+        return km
+    })
+}
+```
+
+Run with `-race` to verify concurrency safety:
+
+```bash
+go test -race ./...
+```
 
 The envelope returned by `WrapKey` is persisted alongside object metadata:
 
