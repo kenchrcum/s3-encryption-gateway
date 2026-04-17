@@ -26,25 +26,26 @@ type Config struct {
 
 // Metrics holds all application metrics.
 type Metrics struct {
-	config               Config
-	httpRequestsTotal    *prometheus.CounterVec
-	httpRequestDuration  *prometheus.HistogramVec
-	httpRequestBytes     *prometheus.CounterVec
-	s3OperationsTotal    *prometheus.CounterVec
-	s3OperationDuration  *prometheus.HistogramVec
-	s3OperationErrors    *prometheus.CounterVec
-	encryptionOperations *prometheus.CounterVec
-	encryptionDuration   *prometheus.HistogramVec
-	encryptionErrors     *prometheus.CounterVec
-	encryptionBytes      *prometheus.CounterVec
-	rotatedReads         *prometheus.CounterVec
-	bufferPoolHits       *prometheus.CounterVec
-	bufferPoolMisses     *prometheus.CounterVec
-	activeConnections    prometheus.Gauge
-	goroutines           prometheus.Gauge
-	memoryAllocBytes     prometheus.Gauge
-	memorySysBytes       prometheus.Gauge
+	config                      Config
+	httpRequestsTotal           *prometheus.CounterVec
+	httpRequestDuration         *prometheus.HistogramVec
+	httpRequestBytes            *prometheus.CounterVec
+	s3OperationsTotal           *prometheus.CounterVec
+	s3OperationDuration         *prometheus.HistogramVec
+	s3OperationErrors           *prometheus.CounterVec
+	encryptionOperations        *prometheus.CounterVec
+	encryptionDuration          *prometheus.HistogramVec
+	encryptionErrors            *prometheus.CounterVec
+	encryptionBytes             *prometheus.CounterVec
+	rotatedReads                *prometheus.CounterVec
+	bufferPoolHits              *prometheus.CounterVec
+	bufferPoolMisses            *prometheus.CounterVec
+	activeConnections           prometheus.Gauge
+	goroutines                  prometheus.Gauge
+	memoryAllocBytes            prometheus.Gauge
+	memorySysBytes              prometheus.Gauge
 	hardwareAccelerationEnabled *prometheus.GaugeVec
+	fipsMode                    prometheus.Gauge
 }
 
 // NewMetrics creates a new metrics instance with default configuration.
@@ -193,6 +194,12 @@ func newMetricsWithRegistry(reg prometheus.Registerer, cfg Config) *Metrics {
 			},
 			[]string{"type"},
 		),
+		fipsMode: factory.NewGauge(
+			prometheus.GaugeOpts{
+				Name: "gateway_fips_mode",
+				Help: "FIPS 140-3 mode status (1=enabled, 0=disabled)",
+			},
+		),
 	}
 }
 
@@ -203,6 +210,15 @@ func (m *Metrics) SetHardwareAccelerationStatus(accelType string, enabled bool) 
 		val = 1.0
 	}
 	m.hardwareAccelerationEnabled.WithLabelValues(accelType).Set(val)
+}
+
+// SetFIPSMode sets the FIPS 140-3 mode status metric.
+func (m *Metrics) SetFIPSMode(enabled bool) {
+	val := 0.0
+	if enabled {
+		val = 1.0
+	}
+	m.fipsMode.Set(val)
 }
 
 // GetHardwareAccelerationEnabledMetric returns the hardware acceleration enabled metric (for testing).
@@ -219,14 +235,14 @@ func (m *Metrics) GetRotatedReadsMetric() *prometheus.CounterVec {
 func (m *Metrics) RecordHTTPRequest(ctx context.Context, method, path string, status int, duration time.Duration, bytes int64) {
 	label := sanitizePathLabel(path)
 	labels := prometheus.Labels{"method": method, "path": label, "status": http.StatusText(status)}
-	
+
 	if exemplar := getExemplar(ctx); exemplar != nil {
 		if adder, ok := m.httpRequestsTotal.With(labels).(prometheus.ExemplarAdder); ok {
 			adder.AddWithExemplar(1, exemplar)
 		} else {
 			m.httpRequestsTotal.With(labels).Inc()
 		}
-		
+
 		if observer, ok := m.httpRequestDuration.With(labels).(prometheus.ExemplarObserver); ok {
 			observer.ObserveWithExemplar(duration.Seconds(), exemplar)
 		} else {
@@ -236,7 +252,7 @@ func (m *Metrics) RecordHTTPRequest(ctx context.Context, method, path string, st
 		m.httpRequestsTotal.With(labels).Inc()
 		m.httpRequestDuration.With(labels).Observe(duration.Seconds())
 	}
-	
+
 	// No exemplars for byte counters usually
 	m.httpRequestBytes.WithLabelValues(method, label).Add(float64(bytes))
 }
@@ -322,7 +338,7 @@ func (m *Metrics) RecordEncryptionOperation(ctx context.Context, operation strin
 		m.encryptionOperations.WithLabelValues(operation).Inc()
 		m.encryptionDuration.WithLabelValues(operation).Observe(duration.Seconds())
 	}
-	
+
 	m.encryptionBytes.WithLabelValues(operation).Add(float64(bytes))
 }
 

@@ -1,0 +1,68 @@
+# FIPS 140-3 Compliance Override Values
+#
+# Use this values file in conjunction with values.yaml to deploy a FIPS-compliant
+# S3 Encryption Gateway in Kubernetes. It assumes the chart's existing
+# `extraEnv` (see values.yaml) is rendered into the main container's env block
+# by templates/deployment.yaml.
+#
+# Installation:
+#   helm install s3-encryption-gateway \
+#     -f helm/s3-encryption-gateway/values.yaml \
+#     -f helm/s3-encryption-gateway/values.fips.yaml \
+#     ./helm/s3-encryption-gateway
+#
+# Lint:
+#   helm lint helm/s3-encryption-gateway \
+#     -f helm/s3-encryption-gateway/values.yaml \
+#     -f helm/s3-encryption-gateway/values.fips.yaml
+
+# Use the FIPS-compliant image (built with -tags=fips and GOFIPS140=v1.0.0).
+# Publish this image from Dockerfile.fips; the tag convention is "<version>-fips".
+image:
+  repository: kenchrcum/s3-encryption-gateway
+  tag: "latest-fips"
+
+# Pod annotations for FIPS compliance tracking / audit evidence.
+podAnnotations:
+  compliance/fips-mode: "enabled"
+  compliance/fips-version: "140-3"
+
+# Environment variables required to activate the Go FIPS 140-3 module at
+# runtime. The binary asserts these at startup (see crypto.AssertFIPS in
+# cmd/server/main.go); if GOFIPS140 is not honoured by the runtime, the
+# process exits with code 1.
+extraEnv:
+  - name: GOFIPS140
+    value: "v1.0.0"
+  - name: GODEBUG
+    value: "fips140=on"
+
+# Service labels for Prometheus scraping of the gateway_fips_mode metric.
+service:
+  labels:
+    prometheus: enabled
+
+# Resource limits (FIPS mode has minimal CPU overhead; same profile as base).
+resources:
+  limits:
+    cpu: 1000m
+    memory: 512Mi
+  requests:
+    cpu: 100m
+    memory: 128Mi
+
+# Security context inherits from values.yaml — the base chart already follows
+# FIPS operational best practices:
+#   runAsNonRoot: true, runAsUser: 1000,
+#   readOnlyRootFilesystem: true, allowPrivilegeEscalation: false.
+
+# Optional: pin pods to nodes that advertise FIPS support via a node label.
+# Uncomment when your clusters use a fips=enabled node label.
+# affinity:
+#   nodeAffinity:
+#     requiredDuringSchedulingIgnoredDuringExecution:
+#       nodeSelectorTerms:
+#         - matchExpressions:
+#             - key: fips
+#               operator: In
+#               values: ["enabled"]

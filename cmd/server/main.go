@@ -304,7 +304,7 @@ func main() {
 		level = logrus.InfoLevel
 	}
 	logger.SetLevel(level)
-	
+
 	// Initialize debug logging based on log level
 	debug.InitFromLogLevel(cfg.LogLevel)
 
@@ -312,6 +312,11 @@ func main() {
 		"version": version,
 		"commit":  commit,
 	}).Info("Starting S3 Encryption Gateway")
+
+	// Assert FIPS profile if binary was built with -tags=fips
+	if err := crypto.AssertFIPS(); err != nil {
+		logger.WithError(err).Fatal("FIPS profile assertion failed")
+	}
 
 	// Initialize tracing if enabled
 	var tracerProvider *sdktrace.TracerProvider
@@ -339,6 +344,10 @@ func main() {
 	}
 	m := metrics.NewMetricsWithConfig(metricsConfig)
 	metrics.SetVersion(version)
+	m.SetFIPSMode(crypto.FIPSEnabled())
+	logger.WithFields(logrus.Fields{
+		"fips": crypto.FIPSEnabled(),
+	}).Info("crypto profile")
 
 	// Start system metrics collector
 	m.StartSystemMetricsCollector()

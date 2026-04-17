@@ -6,6 +6,7 @@ import (
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/md5"
+	"crypto/pbkdf2"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
@@ -19,7 +20,6 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/trace"
-	"golang.org/x/crypto/pbkdf2"
 )
 
 const (
@@ -219,7 +219,12 @@ func (e *engine) deriveKey(salt []byte) ([]byte, error) {
 		return nil, fmt.Errorf("invalid salt size: expected %d bytes, got %d", saltSize, len(salt))
 	}
 
-	key := pbkdf2.Key([]byte(e.password), salt, pbkdf2Iterations, aesKeySize, sha256.New)
+	key, err := pbkdf2.Key(sha256.New, e.password, salt, pbkdf2Iterations, aesKeySize)
+	if err != nil {
+		// This error path should be statically unreachable with compile-time constant parameters,
+		// but we handle it to prevent silent failures in future refactors.
+		return nil, fmt.Errorf("failed to derive key with PBKDF2: %w", err)
+	}
 	return key, nil
 }
 
@@ -683,18 +688,20 @@ func (e *engine) Decrypt(reader io.Reader, metadata map[string]string) (io.Reade
 			if _, perr := fmt.Sscanf(kvStr, "%d", &ver); perr == nil {
 				if altPass, ok := e.keyResolver(ver); ok {
 					// derive alt key
-					altKey := pbkdf2.Key([]byte(altPass), salt, pbkdf2Iterations, keySize, sha256.New)
-					defer zeroBytes(altKey)
-					// create cipher
-					altCipher, cerr := createAEADCipher(algorithm, altKey)
-					if cerr == nil {
-						altGCM := altCipher.(cipher.AEAD)
-						if pt, err3 := altGCM.Open(nil, iv, ciphertext, aad); err3 == nil {
-							plaintext = pt
-							openErr = nil
-						} else if pt2, err4 := altGCM.Open(nil, iv, ciphertext, nil); err4 == nil {
-							plaintext = pt2
-							openErr = nil
+					altKey, derr := pbkdf2.Key(sha256.New, altPass, salt, pbkdf2Iterations, keySize)
+					if derr == nil {
+						defer zeroBytes(altKey)
+						// create cipher
+						altCipher, cerr := createAEADCipher(algorithm, altKey)
+						if cerr == nil {
+							altGCM := altCipher.(cipher.AEAD)
+							if pt, err3 := altGCM.Open(nil, iv, ciphertext, aad); err3 == nil {
+								plaintext = pt
+								openErr = nil
+							} else if pt2, err4 := altGCM.Open(nil, iv, ciphertext, nil); err4 == nil {
+								plaintext = pt2
+								openErr = nil
+							}
 						}
 					}
 				}

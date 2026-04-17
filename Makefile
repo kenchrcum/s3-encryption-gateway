@@ -1,4 +1,4 @@
-.PHONY: build test test-comprehensive lint clean run docker-build docker-push help
+.PHONY: build build-fips test test-fips test-comprehensive lint clean run docker-build docker-push help
 
 # Variables
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo "dev")
@@ -13,10 +13,22 @@ build:
 	@CGO_ENABLED=0 go build -ldflags="-w -s -X main.version=$(VERSION) -X main.commit=$(COMMIT)" \
 		-o bin/$(BINARY_NAME)-$(VERSION) ./cmd/server
 
+# Build FIPS-compliant binary
+build-fips:
+	@echo "Building FIPS-compliant $(BINARY_NAME)..."
+	@GOFIPS140=v1.0.0 CGO_ENABLED=0 go build -tags=fips \
+		-ldflags="-w -s -X main.version=$(VERSION) -X main.commit=$(COMMIT)" \
+		-o bin/$(BINARY_NAME)-fips-$(VERSION) ./cmd/server
+
 # Run tests
 test:
 	@echo "Running tests..."
 	@go test -v -race -coverprofile=coverage.out ./...
+
+# Run tests with FIPS build tag
+test-fips:
+	@echo "Running tests with FIPS build tag..."
+	@GOFIPS140=v1.0.0 go test -v -race -tags=fips ./...
 
 # Run integration tests (requires Docker)
 test-integration:
@@ -163,7 +175,9 @@ coverage:
 help:
 	@echo "Available targets:"
 	@echo "  build              - Build the binary"
+	@echo "  build-fips         - Build FIPS-compliant binary"
 	@echo "  test               - Run unit tests"
+	@echo "  test-fips          - Run tests with FIPS build tag"
 	@echo "  test-fuzz          - Run fuzz tests (regression mode)"
 	@echo "  test-integration   - Run integration tests (requires Docker)"
 	@echo "  test-load          - Run all load tests (range + multipart)"
