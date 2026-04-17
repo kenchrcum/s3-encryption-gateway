@@ -11,6 +11,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/aws/smithy-go"
 	"github.com/gorilla/mux"
@@ -226,6 +227,41 @@ func (m *mockS3Client) CopyObject(ctx context.Context, dstBucket, dstKey string,
 		}
 	}
 	return "\"copied-etag\"", resultMeta, nil
+}
+
+func (m *mockS3Client) UploadPartCopy(ctx context.Context, dstBucket, dstKey, uploadID string, partNumber int32, srcBucket, srcKey string, srcVersionID *string, srcRange *s3.CopyPartRange) (*s3.CopyPartResult, error) {
+	// Get source range or full object
+	srcReader, _, err := m.GetObject(ctx, srcBucket, srcKey, srcVersionID, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer srcReader.Close()
+	data, _ := io.ReadAll(srcReader)
+
+	// Apply range if provided
+	var partData []byte
+	if srcRange != nil {
+		if srcRange.First >= int64(len(data)) {
+			return nil, fmt.Errorf("range start is beyond object size")
+		}
+		end := srcRange.Last + 1
+		if end > int64(len(data)) {
+			end = int64(len(data))
+		}
+		partData = data[srcRange.First:end]
+	} else {
+		partData = data
+	}
+
+	// Upload part
+	key := fmt.Sprintf("%s/%s/%s/%d", dstBucket, dstKey, uploadID, partNumber)
+	m.objects[key] = partData
+	m.metadata[key] = make(map[string]string)
+
+	return &s3.CopyPartResult{
+		ETag:         "\"part-etag\"",
+		LastModified: time.Now(),
+	}, nil
 }
 
 func (m *mockS3Client) DeleteObjects(ctx context.Context, bucket string, keys []s3.ObjectIdentifier) ([]s3.DeletedObject, []s3.ErrorObject, error) {

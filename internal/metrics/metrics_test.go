@@ -60,10 +60,48 @@ func TestMetrics_RecordS3Error(t *testing.T) {
 	// Metrics are registered with prometheus, verify they don't panic
 }
 
+// TestMetrics_RecordUploadPartCopy verifies the UploadPartCopy metric surface
+// (added in V0.6-S3-1): gateway_upload_part_copy_total / bytes_total /
+// duration_seconds / legacy_fallback_total. Exercises every label combo.
+func TestMetrics_RecordUploadPartCopy(t *testing.T) {
+	reg := prometheus.NewRegistry()
+	m := newMetricsWithRegistry(reg, Config{EnableBucketLabel: true})
+
+	// One success in each source_mode.
+	m.RecordUploadPartCopy("plaintext", "ok", 1024, 10*time.Millisecond)
+	m.RecordUploadPartCopy("chunked", "ok", 2048, 20*time.Millisecond)
+	m.RecordUploadPartCopy("legacy", "ok", 4096, 100*time.Millisecond)
+	// And one error per mode.
+	m.RecordUploadPartCopy("plaintext", "error", 0, 5*time.Millisecond)
+	m.RecordUploadPartCopy("chunked", "error", 0, 5*time.Millisecond)
+	m.RecordUploadPartCopy("legacy", "error", 0, 5*time.Millisecond)
+
+	// Render and assert via Gather to avoid coupling to internal metric shape.
+	mfs, err := reg.Gather()
+	if err != nil {
+		t.Fatalf("Gather: %v", err)
+	}
+	names := map[string]bool{}
+	for _, mf := range mfs {
+		names[mf.GetName()] = true
+	}
+	wants := []string{
+		"gateway_upload_part_copy_total",
+		"gateway_upload_part_copy_bytes_total",
+		"gateway_upload_part_copy_duration_seconds",
+		"gateway_upload_part_copy_legacy_fallback_total",
+	}
+	for _, name := range wants {
+		if !names[name] {
+			t.Errorf("expected metric %q to be registered and non-empty after recording", name)
+		}
+	}
+}
+
 func TestMetrics_Handler(t *testing.T) {
 	reg := prometheus.NewRegistry()
 	m := newMetricsWithRegistry(reg, Config{EnableBucketLabel: true})
-	
+
 	// Record some metrics first so they appear in output
 	m.RecordHTTPRequest(context.Background(), "GET", "/test", http.StatusOK, 100*time.Millisecond, 1024)
 	m.RecordS3Operation(context.Background(), "PutObject", "test-bucket", 50*time.Millisecond)

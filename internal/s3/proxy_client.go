@@ -2,11 +2,13 @@ package s3
 
 import (
 	"context"
+	"encoding/xml"
 	"fmt"
 	"io"
 	"net/http"
 	"net/url"
 	"strings"
+	"time"
 
 	"github.com/kenneth/s3-encryption-gateway/internal/config"
 )
@@ -141,9 +143,150 @@ func (p *ProxyClient) ListParts(ctx context.Context, bucket, key, uploadID strin
 	return nil, fmt.Errorf("ProxyClient.ListParts not implemented")
 }
 
-// CopyObject is not implemented
+// CopyObject forwards a PUT request with x-amz-copy-source to the backend for a copy operation.
 func (p *ProxyClient) CopyObject(ctx context.Context, dstBucket, dstKey string, srcBucket, srcKey string, srcVersionID *string, metadata map[string]string) (string, map[string]string, error) {
-	return "", nil, fmt.Errorf("ProxyClient.CopyObject not implemented")
+	// Build copy source header
+	copySource := fmt.Sprintf("%s/%s", srcBucket, srcKey)
+	if srcVersionID != nil && *srcVersionID != "" {
+		copySource = fmt.Sprintf("%s/%s?versionId=%s", srcBucket, srcKey, *srcVersionID)
+	}
+
+	// Build backend URL for destination
+	backendPath := fmt.Sprintf("/%s/%s", dstBucket, dstKey)
+	backendURL := &url.URL{
+		Scheme: p.backendURL.Scheme,
+		Host:   p.backendURL.Host,
+		Path:   backendPath,
+	}
+
+	// Create PUT request with x-amz-copy-source header
+	req, err := http.NewRequestWithContext(ctx, "PUT", backendURL.String(), nil)
+	if err != nil {
+		return "", nil, fmt.Errorf("failed to create backend request: %w", err)
+	}
+
+	req.Header.Set("x-amz-copy-source", copySource)
+
+	// Add metadata headers if provided
+	for k, v := range metadata {
+		if strings.HasPrefix(strings.ToLower(k), "x-amz-meta-") {
+			req.Header.Set(k, v)
+		}
+	}
+
+	// Make request
+	resp, err := p.httpClient.Do(req)
+	if err != nil {
+		return "", nil, fmt.Errorf("failed to forward copy request to backend: %w", err)
+	}
+	defer resp.Body.Close()
+
+	// Check for errors
+	if resp.StatusCode >= 400 {
+		// Let the caller handle the error response
+		body, _ := io.ReadAll(resp.Body)
+		return "", nil, fmt.Errorf("backend returned %d: %s", resp.StatusCode, string(body))
+	}
+
+	// Parse CopyObjectResult XML
+	type CopyObjectResultXML struct {
+		XMLName      xml.Name `xml:"CopyObjectResult"`
+		ETag         string   `xml:"ETag"`
+		LastModified string   `xml:"LastModified"`
+	}
+
+	var result CopyObjectResultXML
+	if err := xml.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return "", nil, fmt.Errorf("failed to parse copy object result: %w", err)
+	}
+
+	// Clean ETag by removing quotes
+	etag := strings.Trim(result.ETag, "\"")
+
+	// Build response metadata
+	respMetadata := make(map[string]string)
+	respMetadata["ETag"] = etag
+	if result.LastModified != "" {
+		respMetadata["Last-Modified"] = result.LastModified
+	}
+
+	return etag, respMetadata, nil
+}
+
+// UploadPartCopy forwards a PUT request with x-amz-copy-source for a multipart copy operation.
+func (p *ProxyClient) UploadPartCopy(ctx context.Context, dstBucket, dstKey, uploadID string, partNumber int32, srcBucket, srcKey string, srcVersionID *string, srcRange *CopyPartRange) (*CopyPartResult, error) {
+	// Build copy source header
+	copySource := fmt.Sprintf("%s/%s", srcBucket, srcKey)
+	if srcVersionID != nil && *srcVersionID != "" {
+		copySource = fmt.Sprintf("%s/%s?versionId=%s", srcBucket, srcKey, *srcVersionID)
+	}
+
+	// Build backend URL for destination with multipart query params
+	backendPath := fmt.Sprintf("/%s/%s", dstBucket, dstKey)
+	backendQuery := fmt.Sprintf("partNumber=%d&uploadId=%s", partNumber, uploadID)
+	backendURL := &url.URL{
+		Scheme:   p.backendURL.Scheme,
+		Host:     p.backendURL.Host,
+		Path:     backendPath,
+		RawQuery: backendQuery,
+	}
+
+	// Create PUT request with x-amz-copy-source header
+	req, err := http.NewRequestWithContext(ctx, "PUT", backendURL.String(), nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create backend request: %w", err)
+	}
+
+	req.Header.Set("x-amz-copy-source", copySource)
+
+	// Add copy source range if provided
+	if srcRange != nil {
+		rangeHeader := fmt.Sprintf("bytes=%d-%d", srcRange.First, srcRange.Last)
+		req.Header.Set("x-amz-copy-source-range", rangeHeader)
+	}
+
+	// Make request
+	resp, err := p.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("failed to forward upload part copy request to backend: %w", err)
+	}
+	defer resp.Body.Close()
+
+	// Check for errors
+	if resp.StatusCode >= 400 {
+		// Let the caller handle the error response
+		body, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("backend returned %d: %s", resp.StatusCode, string(body))
+	}
+
+	// Parse CopyPartResult XML
+	type CopyPartResultXML struct {
+		XMLName      xml.Name `xml:"CopyPartResult"`
+		ETag         string   `xml:"ETag"`
+		LastModified string   `xml:"LastModified"`
+	}
+
+	var result CopyPartResultXML
+	if err := xml.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return nil, fmt.Errorf("failed to parse upload part copy result: %w", err)
+	}
+
+	// Clean ETag by removing quotes
+	etag := strings.Trim(result.ETag, "\"")
+
+	// Parse LastModified timestamp
+	lastModified := time.Now() // Default to now
+	if result.LastModified != "" {
+		// Try to parse the timestamp from backend response
+		if parsed, err := time.Parse(time.RFC3339Nano, result.LastModified); err == nil {
+			lastModified = parsed
+		}
+	}
+
+	return &CopyPartResult{
+		ETag:         etag,
+		LastModified: lastModified,
+	}, nil
 }
 
 // DeleteObjects is not implemented

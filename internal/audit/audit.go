@@ -25,38 +25,43 @@ const (
 
 // AuditEvent represents a single audit log event.
 type AuditEvent struct {
-	Timestamp   time.Time              `json:"timestamp"`
-	EventType   EventType              `json:"event_type"`
-	Operation   string                 `json:"operation"`
-	Bucket      string                 `json:"bucket,omitempty"`
-	Key         string                 `json:"key,omitempty"`
-	ClientIP    string                 `json:"client_ip,omitempty"`
-	UserAgent   string                 `json:"user_agent,omitempty"`
-	RequestID   string                 `json:"request_id,omitempty"`
-	Algorithm   string                 `json:"algorithm,omitempty"`
-	KeyVersion  int                    `json:"key_version,omitempty"`
-	Success     bool                   `json:"success"`
-	Error       string                 `json:"error,omitempty"`
-	Duration    time.Duration          `json:"duration_ms"`
-	Metadata    map[string]interface{} `json:"metadata,omitempty"`
+	Timestamp  time.Time              `json:"timestamp"`
+	EventType  EventType              `json:"event_type"`
+	Operation  string                 `json:"operation"`
+	Bucket     string                 `json:"bucket,omitempty"`
+	Key        string                 `json:"key,omitempty"`
+	ClientIP   string                 `json:"client_ip,omitempty"`
+	UserAgent  string                 `json:"user_agent,omitempty"`
+	RequestID  string                 `json:"request_id,omitempty"`
+	Algorithm  string                 `json:"algorithm,omitempty"`
+	KeyVersion int                    `json:"key_version,omitempty"`
+	Success    bool                   `json:"success"`
+	Error      string                 `json:"error,omitempty"`
+	Duration   time.Duration          `json:"duration_ms"`
+	Metadata   map[string]interface{} `json:"metadata,omitempty"`
 }
 
 // Logger is the interface for audit logging.
 type Logger interface {
 	// Log logs an audit event.
 	Log(event *AuditEvent) error
-	
+
 	// LogEncrypt logs an encryption operation.
 	LogEncrypt(bucket, key, algorithm string, keyVersion int, success bool, err error, duration time.Duration, metadata map[string]interface{})
-	
+
 	// LogDecrypt logs a decryption operation.
 	LogDecrypt(bucket, key, algorithm string, keyVersion int, success bool, err error, duration time.Duration, metadata map[string]interface{})
-	
+
 	// LogKeyRotation logs a key rotation operation.
 	LogKeyRotation(keyVersion int, success bool, err error)
-	
+
 	// LogAccess logs a general access operation.
 	LogAccess(eventType, bucket, key, clientIP, userAgent, requestID string, success bool, err error, duration time.Duration)
+
+	// LogAccessWithMetadata logs a general access operation including a
+	// structured metadata map (e.g. source bucket/key/mode for copy
+	// operations). The metadata is subject to the logger's redaction list.
+	LogAccessWithMetadata(eventType, bucket, key, clientIP, userAgent, requestID string, success bool, err error, duration time.Duration, metadata map[string]interface{})
 
 	// GetEvents returns all audit events (for testing/querying).
 	GetEvents() []*AuditEvent
@@ -89,7 +94,7 @@ func NewLoggerWithRedaction(maxEvents int, writer EventWriter, redactKeys []stri
 	if writer == nil {
 		writer = &defaultWriter{}
 	}
-	
+
 	return &auditLogger{
 		events:     make([]*AuditEvent, 0, maxEvents),
 		maxEvents:  maxEvents,
@@ -101,7 +106,7 @@ func NewLoggerWithRedaction(maxEvents int, writer EventWriter, redactKeys []stri
 // NewLoggerFromConfig creates a new audit logger from configuration.
 func NewLoggerFromConfig(cfg config.AuditConfig) (Logger, error) {
 	var writer EventWriter
-	
+
 	if !cfg.Enabled {
 		// If disabled, we still return a logger but maybe with a dummy writer or handle it upstream.
 		// For now, create default writer if enabled is false but this function is called?
@@ -118,13 +123,13 @@ func NewLoggerFromConfig(cfg config.AuditConfig) (Logger, error) {
 	default:
 		return nil, fmt.Errorf("unknown sink type: %s", cfg.Sink.Type)
 	}
-	
+
 	// Wrap with batch sink if configured
 	if cfg.Sink.BatchSize > 0 || cfg.Sink.FlushInterval > 0 {
 		// Default values handled in NewBatchSink if 0
 		writer = NewBatchSink(writer, cfg.Sink.BatchSize, cfg.Sink.FlushInterval, cfg.Sink.RetryCount, cfg.Sink.RetryBackoff)
 	}
-	
+
 	return NewLoggerWithRedaction(cfg.MaxEvents, writer, cfg.RedactMetadataKeys), nil
 }
 
@@ -132,7 +137,7 @@ func NewLoggerFromConfig(cfg config.AuditConfig) (Logger, error) {
 func (l *auditLogger) Log(event *AuditEvent) error {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	
+
 	// Write to external writer if available
 	if l.writer != nil {
 		if err := l.writer.WriteEvent(event); err != nil {
@@ -140,15 +145,15 @@ func (l *auditLogger) Log(event *AuditEvent) error {
 			// In production, you might want to handle this differently
 		}
 	}
-	
+
 	// Store in memory buffer
 	l.events = append(l.events, event)
-	
+
 	// Maintain max events limit
 	if len(l.events) > l.maxEvents {
 		l.events = l.events[len(l.events)-l.maxEvents:]
 	}
-	
+
 	return nil
 }
 
@@ -165,7 +170,7 @@ func (l *auditLogger) redactMetadata(metadata map[string]interface{}) map[string
 	if len(l.redactKeys) == 0 || len(metadata) == 0 {
 		return metadata
 	}
-	
+
 	// Check if any key needs redaction
 	needsRedaction := false
 	for _, k := range l.redactKeys {
@@ -174,7 +179,7 @@ func (l *auditLogger) redactMetadata(metadata map[string]interface{}) map[string
 			break
 		}
 	}
-	
+
 	if !needsRedaction {
 		return metadata
 	}
@@ -184,7 +189,7 @@ func (l *auditLogger) redactMetadata(metadata map[string]interface{}) map[string
 	for k, v := range metadata {
 		clone[k] = v
 	}
-	
+
 	for _, key := range l.redactKeys {
 		if _, ok := clone[key]; ok {
 			clone[key] = "[REDACTED]"
@@ -207,11 +212,11 @@ func (l *auditLogger) LogEncrypt(bucket, key, algorithm string, keyVersion int, 
 		Duration:   duration,
 		Metadata:   l.redactMetadata(metadata),
 	}
-	
+
 	if err != nil {
 		event.Error = err.Error()
 	}
-	
+
 	l.Log(event)
 }
 
@@ -229,33 +234,38 @@ func (l *auditLogger) LogDecrypt(bucket, key, algorithm string, keyVersion int, 
 		Duration:   duration,
 		Metadata:   l.redactMetadata(metadata),
 	}
-	
+
 	if err != nil {
 		event.Error = err.Error()
 	}
-	
+
 	l.Log(event)
 }
 
 // LogKeyRotation logs a key rotation operation.
 func (l *auditLogger) LogKeyRotation(keyVersion int, success bool, err error) {
 	event := &AuditEvent{
-		Timestamp: time.Now(),
-		EventType: EventTypeKeyRotation,
-		Operation: "key_rotation",
+		Timestamp:  time.Now(),
+		EventType:  EventTypeKeyRotation,
+		Operation:  "key_rotation",
 		KeyVersion: keyVersion,
-		Success:   success,
+		Success:    success,
 	}
-	
+
 	if err != nil {
 		event.Error = err.Error()
 	}
-	
+
 	l.Log(event)
 }
 
 // LogAccess logs a general access operation.
 func (l *auditLogger) LogAccess(eventType, bucket, key, clientIP, userAgent, requestID string, success bool, err error, duration time.Duration) {
+	l.LogAccessWithMetadata(eventType, bucket, key, clientIP, userAgent, requestID, success, err, duration, nil)
+}
+
+// LogAccessWithMetadata logs a general access operation with structured metadata.
+func (l *auditLogger) LogAccessWithMetadata(eventType, bucket, key, clientIP, userAgent, requestID string, success bool, err error, duration time.Duration, metadata map[string]interface{}) {
 	event := &AuditEvent{
 		Timestamp: time.Now(),
 		EventType: EventType(eventType),
@@ -267,12 +277,13 @@ func (l *auditLogger) LogAccess(eventType, bucket, key, clientIP, userAgent, req
 		RequestID: requestID,
 		Success:   success,
 		Duration:  duration,
+		Metadata:  l.redactMetadata(metadata),
 	}
-	
+
 	if err != nil {
 		event.Error = err.Error()
 	}
-	
+
 	l.Log(event)
 }
 
@@ -280,7 +291,7 @@ func (l *auditLogger) LogAccess(eventType, bucket, key, clientIP, userAgent, req
 func (l *auditLogger) GetEvents() []*AuditEvent {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	
+
 	// Return a copy to prevent external modifications
 	events := make([]*AuditEvent, len(l.events))
 	copy(events, l.events)
@@ -295,7 +306,7 @@ func (w *defaultWriter) WriteEvent(event *AuditEvent) error {
 	if err != nil {
 		return fmt.Errorf("failed to marshal event: %w", err)
 	}
-	
+
 	// In production, you would write to a file, database, or external service
 	// For now, we'll just format it (actual writing would be done by logging middleware)
 	fmt.Printf("%s\n", string(data))

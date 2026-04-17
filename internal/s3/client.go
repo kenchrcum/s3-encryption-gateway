@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/url"
 	"strings"
+	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
@@ -38,6 +39,7 @@ type Client interface {
 
 	// Copy and batch operations
 	CopyObject(ctx context.Context, dstBucket, dstKey string, srcBucket, srcKey string, srcVersionID *string, metadata map[string]string) (string, map[string]string, error)
+	UploadPartCopy(ctx context.Context, dstBucket, dstKey, uploadID string, partNumber int32, srcBucket, srcKey string, srcVersionID *string, srcRange *CopyPartRange) (*CopyPartResult, error)
 	DeleteObjects(ctx context.Context, bucket string, keys []ObjectIdentifier) ([]DeletedObject, []ErrorObject, error)
 }
 
@@ -50,10 +52,10 @@ type ListOptions struct {
 
 // ListResult holds the result of a list operation.
 type ListResult struct {
-	Objects           []ObjectInfo
-	CommonPrefixes    []string
+	Objects               []ObjectInfo
+	CommonPrefixes        []string
 	NextContinuationToken string
-	IsTruncated       bool
+	IsTruncated           bool
 }
 
 // ObjectInfo holds information about an S3 object.
@@ -99,11 +101,23 @@ type ErrorObject struct {
 	Message string
 }
 
+// CopyPartRange specifies a byte range for a copy operation.
+type CopyPartRange struct {
+	First int64
+	Last  int64
+}
+
+// CopyPartResult holds the result of an UploadPartCopy operation.
+type CopyPartResult struct {
+	ETag         string
+	LastModified time.Time
+}
+
 // s3Client implements the Client interface using AWS SDK v2.
 type s3Client struct {
-	client  *s3.Client
-	config  *config.BackendConfig
-	tracer  trace.Tracer
+	client *s3.Client
+	config *config.BackendConfig
+	tracer trace.Tracer
 }
 
 // ClientFactory creates S3 clients, optionally with per-request credentials.
@@ -245,11 +259,11 @@ func (c *s3Client) PutObject(ctx context.Context, bucket, key string, reader io.
 	if debug.Enabled() && len(convertedMeta) > 0 {
 		// Try full keys first, then compacted keys
 		keyMappings := map[string][]string{
-			"salt": {"encryption-key-salt", "s"},
-			"iv":   {"encryption-iv", "i"},
-			"algo": {"encryption-algorithm", "a"},
+			"salt":    {"encryption-key-salt", "s"},
+			"iv":      {"encryption-iv", "i"},
+			"algo":    {"encryption-algorithm", "a"},
 			"wrapped": {"encryption-wrapped-key", "wk"},
-			"kms-id": {"encryption-kms-id", "kid"},
+			"kms-id":  {"encryption-kms-id", "kid"},
 		}
 		for name, keys := range keyMappings {
 			for _, ck := range keys {
@@ -318,16 +332,16 @@ func (c *s3Client) GetObject(ctx context.Context, bucket, key string, versionID 
 	}
 
 	metadata := extractMetadata(result.Metadata)
-	
+
 	// Debug: log critical encryption metadata values for troubleshooting
 	// Check both full keys and compacted keys (after expansion)
 	if debug.Enabled() && len(metadata) > 0 {
 		keyMappings := map[string][]string{
-			"salt": {"x-amz-meta-encryption-key-salt", "x-amz-meta-s"},
-			"iv":   {"x-amz-meta-encryption-iv", "x-amz-meta-i"},
-			"algo": {"x-amz-meta-encryption-algorithm", "x-amz-meta-a"},
+			"salt":    {"x-amz-meta-encryption-key-salt", "x-amz-meta-s"},
+			"iv":      {"x-amz-meta-encryption-iv", "x-amz-meta-i"},
+			"algo":    {"x-amz-meta-encryption-algorithm", "x-amz-meta-a"},
 			"wrapped": {"x-amz-meta-encryption-wrapped-key", "x-amz-meta-wk"},
-			"kms-id": {"x-amz-meta-encryption-kms-id", "x-amz-meta-kid"},
+			"kms-id":  {"x-amz-meta-encryption-kms-id", "x-amz-meta-kid"},
 		}
 		for name, keys := range keyMappings {
 			for _, ck := range keys {
@@ -342,7 +356,7 @@ func (c *s3Client) GetObject(ctx context.Context, bucket, key string, versionID 
 			}
 		}
 	}
-	
+
 	if result.VersionId != nil {
 		metadata["x-amz-version-id"] = *result.VersionId
 	}
@@ -474,10 +488,10 @@ func (c *s3Client) ListObjects(ctx context.Context, bucket, prefix string, opts 
 	}
 
 	listResult := ListResult{
-		Objects:              objects,
-		CommonPrefixes:       commonPrefixes,
+		Objects:               objects,
+		CommonPrefixes:        commonPrefixes,
 		NextContinuationToken: aws.ToString(result.NextContinuationToken),
-		IsTruncated:          aws.ToBool(result.IsTruncated),
+		IsTruncated:           aws.ToBool(result.IsTruncated),
 	}
 
 	return listResult, nil
@@ -692,6 +706,51 @@ func (c *s3Client) CopyObject(ctx context.Context, dstBucket, dstKey string, src
 	}
 
 	return etag, resultMetadata, nil
+}
+
+// UploadPartCopy copies a byte range from a source object to a part in a multipart upload.
+func (c *s3Client) UploadPartCopy(ctx context.Context, dstBucket, dstKey, uploadID string, partNumber int32, srcBucket, srcKey string, srcVersionID *string, srcRange *CopyPartRange) (*CopyPartResult, error) {
+	copySource := fmt.Sprintf("%s/%s", srcBucket, srcKey)
+	if srcVersionID != nil && *srcVersionID != "" {
+		copySource = fmt.Sprintf("%s/%s?versionId=%s", srcBucket, srcKey, *srcVersionID)
+	}
+
+	input := &s3.UploadPartCopyInput{
+		Bucket:     aws.String(dstBucket),
+		Key:        aws.String(dstKey),
+		CopySource: aws.String(copySource),
+		PartNumber: aws.Int32(partNumber),
+		UploadId:   aws.String(uploadID),
+	}
+
+	// Set copy range if provided
+	if srcRange != nil {
+		rangeStr := fmt.Sprintf("bytes=%d-%d", srcRange.First, srcRange.Last)
+		input.CopySourceRange = aws.String(rangeStr)
+	}
+
+	result, err := c.client.UploadPartCopy(ctx, input)
+	if err != nil {
+		return nil, fmt.Errorf("failed to copy object part from %s/%s to %s/%s: %w", srcBucket, srcKey, dstBucket, dstKey, err)
+	}
+
+	if result.CopyPartResult == nil {
+		return nil, fmt.Errorf("unexpected nil CopyPartResult from S3")
+	}
+
+	etag := ""
+	lastModified := time.Now() // Default to now; backend should provide this
+	if result.CopyPartResult.ETag != nil {
+		etag = strings.Trim(*result.CopyPartResult.ETag, "\"")
+	}
+	if result.CopyPartResult.LastModified != nil {
+		lastModified = *result.CopyPartResult.LastModified
+	}
+
+	return &CopyPartResult{
+		ETag:         etag,
+		LastModified: lastModified,
+	}, nil
 }
 
 // DeleteObjects deletes multiple objects in a single request.

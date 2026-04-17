@@ -26,26 +26,30 @@ type Config struct {
 
 // Metrics holds all application metrics.
 type Metrics struct {
-	config                      Config
-	httpRequestsTotal           *prometheus.CounterVec
-	httpRequestDuration         *prometheus.HistogramVec
-	httpRequestBytes            *prometheus.CounterVec
-	s3OperationsTotal           *prometheus.CounterVec
-	s3OperationDuration         *prometheus.HistogramVec
-	s3OperationErrors           *prometheus.CounterVec
-	encryptionOperations        *prometheus.CounterVec
-	encryptionDuration          *prometheus.HistogramVec
-	encryptionErrors            *prometheus.CounterVec
-	encryptionBytes             *prometheus.CounterVec
-	rotatedReads                *prometheus.CounterVec
-	bufferPoolHits              *prometheus.CounterVec
-	bufferPoolMisses            *prometheus.CounterVec
-	activeConnections           prometheus.Gauge
-	goroutines                  prometheus.Gauge
-	memoryAllocBytes            prometheus.Gauge
-	memorySysBytes              prometheus.Gauge
-	hardwareAccelerationEnabled *prometheus.GaugeVec
-	fipsMode                    prometheus.Gauge
+	config                            Config
+	httpRequestsTotal                 *prometheus.CounterVec
+	httpRequestDuration               *prometheus.HistogramVec
+	httpRequestBytes                  *prometheus.CounterVec
+	s3OperationsTotal                 *prometheus.CounterVec
+	s3OperationDuration               *prometheus.HistogramVec
+	s3OperationErrors                 *prometheus.CounterVec
+	encryptionOperations              *prometheus.CounterVec
+	encryptionDuration                *prometheus.HistogramVec
+	encryptionErrors                  *prometheus.CounterVec
+	encryptionBytes                   *prometheus.CounterVec
+	rotatedReads                      *prometheus.CounterVec
+	bufferPoolHits                    *prometheus.CounterVec
+	bufferPoolMisses                  *prometheus.CounterVec
+	activeConnections                 prometheus.Gauge
+	goroutines                        prometheus.Gauge
+	memoryAllocBytes                  prometheus.Gauge
+	memorySysBytes                    prometheus.Gauge
+	hardwareAccelerationEnabled       *prometheus.GaugeVec
+	fipsMode                          prometheus.Gauge
+	uploadPartCopyTotal               *prometheus.CounterVec
+	uploadPartCopyBytes               *prometheus.CounterVec
+	uploadPartCopyDuration            *prometheus.HistogramVec
+	uploadPartCopyLegacyFallbackTotal prometheus.Counter
 }
 
 // NewMetrics creates a new metrics instance with default configuration.
@@ -198,6 +202,34 @@ func newMetricsWithRegistry(reg prometheus.Registerer, cfg Config) *Metrics {
 			prometheus.GaugeOpts{
 				Name: "gateway_fips_mode",
 				Help: "FIPS 140-3 mode status (1=enabled, 0=disabled)",
+			},
+		),
+		uploadPartCopyTotal: factory.NewCounterVec(
+			prometheus.CounterOpts{
+				Name: "gateway_upload_part_copy_total",
+				Help: "Total number of UploadPartCopy operations, labelled by source encryption mode and result",
+			},
+			[]string{"source_mode", "result"}, // source_mode ∈ {chunked,legacy,plaintext}; result ∈ {ok,error}
+		),
+		uploadPartCopyBytes: factory.NewCounterVec(
+			prometheus.CounterOpts{
+				Name: "gateway_upload_part_copy_bytes_total",
+				Help: "Total plaintext bytes copied via UploadPartCopy, labelled by source encryption mode",
+			},
+			[]string{"source_mode"},
+		),
+		uploadPartCopyDuration: factory.NewHistogramVec(
+			prometheus.HistogramOpts{
+				Name:    "gateway_upload_part_copy_duration_seconds",
+				Help:    "UploadPartCopy operation duration in seconds, labelled by source encryption mode",
+				Buckets: prometheus.DefBuckets,
+			},
+			[]string{"source_mode"},
+		),
+		uploadPartCopyLegacyFallbackTotal: factory.NewCounter(
+			prometheus.CounterOpts{
+				Name: "gateway_upload_part_copy_legacy_fallback_total",
+				Help: "Total number of UploadPartCopy operations that used the legacy (full-object-buffer) fallback path",
 			},
 		),
 	}
@@ -399,6 +431,23 @@ func (m *Metrics) IncrementActiveConnections() {
 // DecrementActiveConnections decrements the active connections counter.
 func (m *Metrics) DecrementActiveConnections() {
 	m.activeConnections.Dec()
+}
+
+// RecordUploadPartCopy records an UploadPartCopy operation.
+// sourceMode MUST be one of "chunked", "legacy", "plaintext" (to keep label
+// cardinality bounded). result MUST be "ok" or "error". bytesCopied is the
+// number of plaintext bytes transferred into the destination part (0 on
+// error). A single call emits to the total, bytes, and duration metrics; if
+// sourceMode == "legacy" the legacy_fallback counter is also incremented.
+func (m *Metrics) RecordUploadPartCopy(sourceMode, result string, bytesCopied int64, duration time.Duration) {
+	m.uploadPartCopyTotal.WithLabelValues(sourceMode, result).Inc()
+	m.uploadPartCopyDuration.WithLabelValues(sourceMode).Observe(duration.Seconds())
+	if bytesCopied > 0 {
+		m.uploadPartCopyBytes.WithLabelValues(sourceMode).Add(float64(bytesCopied))
+	}
+	if sourceMode == "legacy" {
+		m.uploadPartCopyLegacyFallbackTotal.Inc()
+	}
 }
 
 // StartSystemMetricsCollector starts a goroutine that periodically updates system metrics.

@@ -50,7 +50,48 @@ The S3 Encryption Gateway must maintain full compatibility with the Amazon S3 AP
   - ETag format validation with proper quoting requirements
   - Duplicate part number detection and rejection
   - Fuzz-tested XML parser for edge case handling
-  - Provider interoperability testing framework
+   - Provider interoperability testing framework
+
+#### PUT Object (Multipart Copy / UploadPartCopy)
+- **Endpoint**: `PUT /{bucket}/{key}?partNumber=X&uploadId=Y&x-amz-copy-source=...`
+- **Description**: Copies a byte range from a source object as a part in a multipart upload
+- **Encryption**: Conditional based on source encryption status
+- **Implementation**:
+  - **Routing**: Requests with `x-amz-copy-source` header are dispatched to dedicated `handleUploadPartCopy`
+  - **Source Classification Matrix**:
+    | Source Type | Metadata Flag | Strategy |
+    |---|---|---|
+    | Plaintext | None | Fast path: backend-native `UploadPartCopy` (zero bytes through gateway) |
+    | Chunked-encrypted | `x-amz-meta-encryption-chunked=true` | Mediated: translate plaintext range → encrypted range via `CalculateEncryptedRangeForPlaintextRange`, GET encrypted range, `DecryptRange`, stream to `UploadPart` |
+    | Legacy single-AEAD | `x-amz-meta-encrypted=true` (without chunked flag) | Mediated (slow): GET full object, decrypt, slice plaintext by range, stream to `UploadPart` |
+  - **Range Handling**: `x-amz-copy-source-range: bytes=first-last` is parsed and respected
+    - For chunked sources: efficiently decrypts only the required chunks
+    - For legacy sources: full object decryption with warning logged
+    - Omitted range: copies entire source object (up to 5 GiB limit)
+  - **MPU Part-Size Enforcement**:
+    - Non-final parts: `5 MiB ≤ size ≤ 5 GiB`
+    - Any single copy source range: `≤ 5 GiB`
+    - Source object > 5 GiB without range: returns `400 InvalidRequest`
+- **Response Contract**:
+  ```xml
+  <CopyPartResult>
+    <ETag>"..."</ETag>
+    <LastModified>2026-04-17T10:00:00.000Z</LastModified>
+  </CopyPartResult>
+  ```
+  - ETag is the backend's raw UploadPart or UploadPartCopy ETag (not re-encrypted)
+  - LastModified reflects part write time
+- **Error Codes**:
+  - `400 InvalidArgument`: Malformed x-amz-copy-source or x-amz-copy-source-range
+  - `400 InvalidRequest`: Source object > 5 GiB with no range; or multipart uploads disabled
+  - `404 NoSuchKey` / `404 NoSuchBucket`: Source not found
+  - `416 InvalidRange`: Range start ≥ object size
+  - `501 NotImplemented`: Proxy mode without mediation support
+- **Security Considerations**:
+  - Destination parts remain plaintext (per ADR 0002)
+  - Source-bucket read authorization is explicitly checked independent of destination write authorization
+  - Cross-key-space (different source/destination buckets) is supported and tested
+  - Config mismatch (plaintext source to encrypted-destination bucket) triggers hard refusal with audit event
 
 #### PUT Object Copy
 - **Endpoint**: `PUT /{bucket}/{key}?x-amz-copy-source=...`

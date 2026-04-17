@@ -167,7 +167,21 @@ type ServerConfig struct {
 	MaxHeaderBytes    int           `yaml:"max_header_bytes" env:"SERVER_MAX_HEADER_BYTES"`
 	// DisableMultipartUploads disables multipart upload operations to ensure all data is encrypted
 	DisableMultipartUploads bool `yaml:"disable_multipart_uploads" env:"SERVER_DISABLE_MULTIPART_UPLOADS"`
+	// MaxLegacyCopySourceBytes caps the object size the legacy (non-chunked)
+	// UploadPartCopy fallback path is willing to buffer in memory. Legacy
+	// single-AEAD objects cannot be range-decrypted, so copying from one
+	// requires reading the entire source into memory. The default is a
+	// conservative 256 MiB (opt-out safety posture): operators who need a
+	// higher limit MUST explicitly raise this and size pod memory for
+	// max_concurrent_copies × cap. Exceeded requests return 400
+	// InvalidRequest with a message pointing operators at the chunked
+	// encryption migration path. A value ≤ 0 is treated as the default.
+	MaxLegacyCopySourceBytes int64 `yaml:"max_legacy_copy_source_bytes" env:"SERVER_MAX_LEGACY_COPY_SOURCE_BYTES"`
 }
+
+// DefaultMaxLegacyCopySourceBytes is the default cap for the legacy
+// UploadPartCopy fallback path (256 MiB). See ServerConfig.MaxLegacyCopySourceBytes.
+const DefaultMaxLegacyCopySourceBytes int64 = 256 * 1024 * 1024
 
 // RateLimitConfig holds rate limiting configuration.
 type RateLimitConfig struct {
@@ -258,12 +272,13 @@ func LoadConfig(path string) (*Config, error) {
 			Level:     6,
 		},
 		Server: ServerConfig{
-			ReadTimeout:             15 * time.Second,
-			WriteTimeout:            15 * time.Second,
-			IdleTimeout:             60 * time.Second,
-			ReadHeaderTimeout:       10 * time.Second,
-			MaxHeaderBytes:          1 << 20, // 1MB
-			DisableMultipartUploads: false,   // Allow multipart uploads by default for compatibility
+			ReadTimeout:              15 * time.Second,
+			WriteTimeout:             15 * time.Second,
+			IdleTimeout:              60 * time.Second,
+			ReadHeaderTimeout:        10 * time.Second,
+			MaxHeaderBytes:           1 << 20, // 1MB
+			DisableMultipartUploads:  false,   // Allow multipart uploads by default for compatibility
+			MaxLegacyCopySourceBytes: DefaultMaxLegacyCopySourceBytes,
 		},
 		RateLimit: RateLimitConfig{
 			Enabled: false,

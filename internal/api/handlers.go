@@ -2130,6 +2130,12 @@ func (h *Handler) handleUploadPart(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Route UploadPartCopy to its own handler
+	if r.Header.Get("x-amz-copy-source") != "" {
+		h.handleUploadPartCopy(w, r)
+		return
+	}
+
 	// Check if multipart uploads are disabled
 	if h.config != nil && h.config.Server.DisableMultipartUploads {
 		s3Err := &S3Error{
@@ -2536,8 +2542,8 @@ func (h *Handler) handleListParts(w http.ResponseWriter, r *http.Request) {
 // handleCopyObject handles PUT Object Copy requests.
 func (h *Handler) handleCopyObject(w http.ResponseWriter, r *http.Request, dstBucket, dstKey, copySource string, start time.Time, s3Client s3.Client) {
 	// Parse copy source: format is "bucket/key" or "bucket/key?versionId=xxx"
-	parts := strings.SplitN(copySource, "/", 2)
-	if len(parts) != 2 {
+	srcBucket, srcKey, srcVersionID, err := parseCopySource(copySource)
+	if err != nil {
 		s3Err := &S3Error{
 			Code:       "InvalidArgument",
 			Message:    "Invalid x-amz-copy-source header",
@@ -2548,20 +2554,6 @@ func (h *Handler) handleCopyObject(w http.ResponseWriter, r *http.Request, dstBu
 		h.metrics.RecordHTTPRequest(r.Context(), "PUT", r.URL.Path, s3Err.HTTPStatus, time.Since(start), 0)
 		return
 	}
-
-	srcBucket := parts[0]
-	srcKeyAndVersion := parts[1]
-
-	// Parse version ID if present
-	var srcVersionID *string
-	if strings.Contains(srcKeyAndVersion, "?versionId=") {
-		keyParts := strings.SplitN(srcKeyAndVersion, "?versionId=", 2)
-		srcKeyAndVersion = keyParts[0]
-		if len(keyParts) > 1 {
-			srcVersionID = &keyParts[1]
-		}
-	}
-	srcKey := strings.TrimPrefix(srcKeyAndVersion, "/")
 
 	ctx := r.Context()
 
@@ -2882,4 +2874,37 @@ func (h *Handler) handleDeleteObjects(w http.ResponseWriter, r *http.Request) {
 
 	h.metrics.RecordS3Operation(r.Context(), "DeleteObjects", bucket, time.Since(start))
 	h.metrics.RecordHTTPRequest(r.Context(), "POST", r.URL.Path, http.StatusOK, time.Since(start), 0)
+}
+
+// parseCopySource extracts bucket, key, and version ID from an x-amz-copy-source header.
+// Format: "bucket/key" or "bucket/key?versionId=xxx" or "/bucket/key" or "/bucket/key?versionId=xxx"
+// Returns error if the format is invalid.
+func parseCopySource(copySource string) (bucket, key string, versionID *string, err error) {
+	// Remove leading slash if present
+	if strings.HasPrefix(copySource, "/") {
+		copySource = copySource[1:]
+	}
+
+	// Split on first "/" to separate bucket from key
+	parts := strings.SplitN(copySource, "/", 2)
+	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
+		return "", "", nil, fmt.Errorf("invalid copy source format")
+	}
+
+	bucket = parts[0]
+	keyWithVersion := parts[1]
+
+	// Parse version ID if present
+	if strings.Contains(keyWithVersion, "?versionId=") {
+		keyParts := strings.SplitN(keyWithVersion, "?versionId=", 2)
+		keyWithVersion = keyParts[0]
+		if len(keyParts) > 1 && keyParts[1] != "" {
+			versionID = &keyParts[1]
+		}
+	}
+
+	// Remove leading slash from key if present
+	key = strings.TrimPrefix(keyWithVersion, "/")
+
+	return bucket, key, versionID, nil
 }

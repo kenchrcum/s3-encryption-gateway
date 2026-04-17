@@ -320,9 +320,10 @@ func translateError(err error, resource string) *S3Error {
 - Connection pooling for multipart operations
 
 ### Advanced Features
-- Multipart copy operations
+- **Multipart copy operations** – See ADR 0006 for UploadPartCopy implementation and source-format dispatch strategies (V0.6-S3-1)
 - Progress tracking and resumability
 - Client-side encryption for multipart uploads
+- **Encrypted multipart destinations** – Future proposal would introduce chunked-MPU with finalization manifest; documented in ADR 0006 §Future Considerations
 
 ## References
 

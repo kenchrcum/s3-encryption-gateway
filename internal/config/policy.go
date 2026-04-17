@@ -17,6 +17,12 @@ type PolicyConfig struct {
 	Encryption  *EncryptionConfig  `yaml:"encryption,omitempty"`
 	Compression *CompressionConfig `yaml:"compression,omitempty"`
 	RateLimit   *RateLimitConfig   `yaml:"rate_limit,omitempty"`
+	// RequireEncryption, when true, mandates that every object stored in
+	// matching buckets must be encrypted. It enables hard-refusal semantics
+	// at policy-relevant points (e.g. UploadPartCopy from a plaintext source
+	// into a bucket with this flag set). Default is false, preserving
+	// backward compatibility; set explicitly per-bucket to enforce.
+	RequireEncryption bool `yaml:"require_encryption,omitempty"`
 }
 
 // PolicyManager manages loading and matching policies
@@ -86,6 +92,20 @@ func (pm *PolicyManager) GetPolicyForBucket(bucket string) *PolicyConfig {
 	return nil
 }
 
+// BucketRequiresEncryption reports whether the bucket's matching policy sets
+// RequireEncryption. Returns false when no policy matches (backward compat —
+// callers must opt in explicitly per-bucket).
+func (pm *PolicyManager) BucketRequiresEncryption(bucket string) bool {
+	if pm == nil {
+		return false
+	}
+	policy := pm.GetPolicyForBucket(bucket)
+	if policy == nil {
+		return false
+	}
+	return policy.RequireEncryption
+}
+
 // ApplyToConfig applies policy overrides to a copy of the base configuration
 func (p *PolicyConfig) ApplyToConfig(base *Config) *Config {
 	// Create a shallow copy of the base config
@@ -101,7 +121,7 @@ func (p *PolicyConfig) ApplyToConfig(base *Config) *Config {
 		// Note: partial override is tricky with simple struct replacement.
 		// For this implementation, we assume the policy provides a complete encryption config
 		// OR we manually merge specific fields.
-		
+
 		// Let's do a manual merge for common fields to be safe and useful
 		if p.Encryption.Password != "" {
 			enc.Password = p.Encryption.Password
@@ -113,7 +133,7 @@ func (p *PolicyConfig) ApplyToConfig(base *Config) *Config {
 		if p.Encryption.KeyManager.Enabled || p.Encryption.KeyManager.Provider != "" {
 			enc.KeyManager = p.Encryption.KeyManager
 		}
-		
+
 		newConfig.Encryption = enc
 	}
 
@@ -127,4 +147,3 @@ func (p *PolicyConfig) ApplyToConfig(base *Config) *Config {
 
 	return &newConfig
 }
-

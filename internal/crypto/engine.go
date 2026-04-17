@@ -62,6 +62,11 @@ type EncryptionEngine interface {
 	// and returns a decrypted reader along with updated metadata.
 	Decrypt(reader io.Reader, metadata map[string]string) (io.Reader, map[string]string, error)
 
+	// DecryptRange decrypts a specific byte range from the reader, returning plaintext
+	// bounded by the requested plaintext range [plaintextStart, plaintextEnd].
+	// Efficiently handles chunked sources by seeking within the encrypted stream.
+	DecryptRange(reader io.Reader, metadata map[string]string, plaintextStart, plaintextEnd int64) (io.Reader, map[string]string, error)
+
 	// IsEncrypted checks if the metadata indicates the object is encrypted.
 	IsEncrypted(metadata map[string]string) bool
 }
