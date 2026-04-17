@@ -36,16 +36,19 @@ The S3 Encryption Gateway is a transparent HTTP proxy that sits between your app
 
 ## Who Needs This?
 
-| Application | What it stores on S3 | Encrypts itself? |
-|---|---|---|
-| Database operators (CNPG, Zalando Postgres, etc.) | Full database dumps, WAL archives | No |
-| Backup tools (Velero, Restic, etc.) | Cluster and application backups | Varies |
-| Log aggregators (Loki, Fluentd, etc.) | Log data, potentially containing PII | No |
-| Metrics systems (Thanos, Cortex, etc.) | Long-term metrics data | No |
-| Container registries (Harbor, etc.) | Container image layers | No |
-| CI/CD systems (GitLab, Jenkins, etc.) | Build artifacts, test results | Varies |
-| Custom applications | User uploads, documents, exports | Your responsibility |
-| ML pipelines | Training data, model artifacts | Rarely |
+| Category | Examples | What they store | Encrypts itself? |
+|---|---|---|---|
+| **Databases** | CNPG, Zalando Postgres, MySQL Operator | Backups, WAL archives | ❌ |
+| **Backup tools** | Velero, Restic, Longhorn, Kasten | Cluster/app backups, snapshots | ⚠️ Varies |
+| **Log & metrics** | Loki, Thanos, Mimir, Tempo, Cortex | Logs, metrics, traces | ❌ |
+| **File sharing** | Nextcloud, Seafile, ownCloud | User files, documents, photos | ⚠️ Partial/complex |
+| **Data platforms** | Spark, Trino, Iceberg, Delta Lake | Analytics data, query results | ❌ |
+| **ML platforms** | MLflow, Kubeflow, DVC, JupyterHub | Models, training data, experiments | ❌ |
+| **CI/CD & Git** | GitLab, Gitea, Forgejo, Jenkins | Artifacts, LFS, packages | ⚠️ Varies |
+| **Chat & social** | Mattermost, Mastodon | Uploads, media, attachments | ❌ |
+| **IaC state** | Terraform, OpenTofu, Pulumi | State files (often containing secrets!) | ⚠️ Often forgotten |
+| **Container registries** | Harbor, GitLab Registry | Image layers, blobs | ❌ |
+| **Custom apps** | Any S3 client | Whatever you store | ⚠️ Your responsibility |
 
 If your compliance team, CISO, or data protection officer asks *"Are our S3 objects encrypted client-side?"* — and the honest answer is *"not all of them"* — this gateway fixes that in one place, for all applications at once.
 
