@@ -18,6 +18,28 @@ func TestInMemoryKeyManager_Conformance(t *testing.T) {
 	})
 }
 
+// TestInMemoryKeyManager_RotationConformance runs the shared rotation
+// contract tests against the in-memory adapter. The addVersion callback
+// stages a fresh 32-byte key at the requested version via AddVersion.
+func TestInMemoryKeyManager_RotationConformance(t *testing.T) {
+	ConformanceSuite_Rotation(t,
+		func(t *testing.T) KeyManager {
+			t.Helper()
+			km, err := NewInMemoryKeyManager(nil)
+			require.NoError(t, err)
+			return km
+		},
+		func(t *testing.T, km KeyManager, version int) error {
+			t.Helper()
+			material := make([]byte, 32)
+			for i := range material {
+				material[i] = byte(version*37 + i + 1) // deterministic non-zero material
+			}
+			return AddVersionForTest(km, version, material)
+		},
+	)
+}
+
 func TestInMemoryKeyManager_SpecificKey(t *testing.T) {
 	key := make([]byte, 32)
 	for i := range key {

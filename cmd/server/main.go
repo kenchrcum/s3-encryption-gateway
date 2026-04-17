@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/gorilla/mux"
+	"github.com/kenneth/s3-encryption-gateway/internal/admin"
 	"github.com/kenneth/s3-encryption-gateway/internal/api"
 	"github.com/kenneth/s3-encryption-gateway/internal/audit"
 	"github.com/kenneth/s3-encryption-gateway/internal/cache"
@@ -626,12 +627,41 @@ func main() {
 		}
 	}()
 
+	// Start admin server if enabled
+	var adminServer *admin.Server
+	if cfg.Admin.Enabled {
+		adminServer = admin.NewServer(cfg.Admin, logger)
+
+		// Register rotation handler on admin mux
+		rotationHandler := api.NewAdminRotationHandler(encryptionEngine, logger, m, auditLogger)
+		rotationHandler.RegisterRoutes(adminServer.Mux())
+
+		// Set admin API enabled metric
+		m.SetAdminAPIEnabled(true)
+
+		go func() {
+			if err := adminServer.Start(context.Background()); err != nil {
+				logger.WithError(err).Error("Admin server failed")
+			}
+		}()
+	}
+
 	// Wait for interrupt signal
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, os.Interrupt, syscall.SIGTERM)
 	<-quit
 
 	logger.Info("Shutting down server...")
+
+	// Stop admin server if running
+	if adminServer != nil {
+		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		if err := adminServer.Shutdown(shutdownCtx); err != nil {
+			logger.WithError(err).Error("Admin server forced to shutdown")
+		}
+		shutdownCancel()
+		logger.Info("Admin server stopped")
+	}
 
 	// Stop config reloader if enabled
 	if configReloader != nil {

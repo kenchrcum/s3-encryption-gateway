@@ -83,3 +83,47 @@ type KeyEnvelope struct {
 const (
 	MetaKeyVersion = "x-amz-meta-encryption-key-version"
 )
+
+// RotatableKeyManager is an optional extension implemented by adapters that
+// support runtime rotation. Adapters that cannot rotate (e.g. current HSM
+// stub) intentionally do not implement it; callers type-assert and return
+// ErrRotationNotSupported otherwise.
+type RotatableKeyManager interface {
+	KeyManager
+
+	// PrepareRotation returns the adapter's view of the rotation target.
+	// If target is non-nil, the adapter validates and uses the specified
+	// version. If nil, the adapter picks the next eligible version.
+	// Returns ErrRotationAmbiguous if the adapter can't choose without
+	// operator input (target must then be supplied).
+	PrepareRotation(ctx context.Context, target *int) (RotationPlan, error)
+
+	// PromoteActiveVersion atomically advances the adapter's active wrapping
+	// key to the previously-prepared target. Must be safe to call concurrently
+	// with WrapKey/UnwrapKey: callers that started before Promote observe old
+	// version; callers that started after observe new. No ciphertext is
+	// rewritten.
+	PromoteActiveVersion(ctx context.Context, plan RotationPlan) error
+}
+
+// RotationPlan describes a pending key rotation.
+type RotationPlan struct {
+	CurrentVersion int
+	TargetVersion  int
+	ProviderData   map[string]string // opaque adapter-specific hints
+}
+
+// Sentinel errors for rotation.
+var (
+	// ErrRotationNotSupported is returned when the configured KeyManager does
+	// not implement RotatableKeyManager.
+	ErrRotationNotSupported = errors.New("keymanager: key rotation not supported by adapter")
+
+	// ErrRotationAmbiguous is returned by PrepareRotation when the adapter
+	// cannot automatically determine the target version.
+	ErrRotationAmbiguous = errors.New("keymanager: target_version required for this adapter")
+
+	// ErrRotationConflict is returned when a rotation is already in progress
+	// or the state machine is in an invalid state for the requested operation.
+	ErrRotationConflict = errors.New("keymanager: rotation already in progress or invalid state")
+)

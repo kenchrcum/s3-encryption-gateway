@@ -339,3 +339,106 @@ func aesKeyUnwrap(kek, ciphertext []byte) ([]byte, error) {
 	}
 	return out, nil
 }
+
+// ---------------------------------------------------------------------------
+// RotatableKeyManager implementation for in-memory adapter
+// ---------------------------------------------------------------------------
+
+// Compile-time assertion that *inMemoryKeyManager implements RotatableKeyManager.
+var _ RotatableKeyManager = (*inMemoryKeyManager)(nil)
+
+// AddVersion stages a new master key version. The version number must not
+// collide with an existing version, and material must be exactly 32 bytes
+// (AES-256). This method is separate from PromoteActiveVersion so operators
+// can stage material before the rotation window.
+func (m *inMemoryKeyManager) AddVersion(_ context.Context, version int, material []byte) error {
+	if len(material) != 32 {
+		return fmt.Errorf("keymanager/memory: master key must be 32 bytes for AES-256, got %d", len(material))
+	}
+	// Reject zero-valued key material
+	allZero := true
+	for _, b := range material {
+		if b != 0 {
+			allZero = false
+			break
+		}
+	}
+	if allZero {
+		return fmt.Errorf("keymanager/memory: master key material must not be all zeros")
+	}
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.closed {
+		return ErrProviderUnavailable
+	}
+	if _, exists := m.keys[version]; exists {
+		return fmt.Errorf("keymanager/memory: version %d already exists", version)
+	}
+
+	keyCopy := make([]byte, len(material))
+	copy(keyCopy, material)
+	m.keys[version] = keyCopy
+	return nil
+}
+
+// PrepareRotation implements [RotatableKeyManager].
+func (m *inMemoryKeyManager) PrepareRotation(_ context.Context, target *int) (RotationPlan, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	if m.closed {
+		return RotationPlan{}, ErrProviderUnavailable
+	}
+
+	current := m.activeVersion
+
+	if target != nil {
+		// Validate the requested target exists
+		if _, ok := m.keys[*target]; !ok {
+			return RotationPlan{}, fmt.Errorf("%w: version %d not found", ErrKeyNotFound, *target)
+		}
+		if *target == current {
+			return RotationPlan{}, fmt.Errorf("keymanager/memory: target version %d is already active", *target)
+		}
+		return RotationPlan{
+			CurrentVersion: current,
+			TargetVersion:  *target,
+		}, nil
+	}
+
+	// Auto-select: find the highest version that isn't active
+	best := -1
+	for ver := range m.keys {
+		if ver != current && ver > best {
+			best = ver
+		}
+	}
+	if best < 0 {
+		return RotationPlan{}, fmt.Errorf("%w: no version available to promote (only version %d exists)", ErrRotationAmbiguous, current)
+	}
+
+	return RotationPlan{
+		CurrentVersion: current,
+		TargetVersion:  best,
+	}, nil
+}
+
+// PromoteActiveVersion implements [RotatableKeyManager].
+func (m *inMemoryKeyManager) PromoteActiveVersion(_ context.Context, plan RotationPlan) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.closed {
+		return ErrProviderUnavailable
+	}
+
+	// Validate the plan is still consistent
+	if m.activeVersion != plan.CurrentVersion {
+		return fmt.Errorf("%w: expected current version %d but active is %d", ErrRotationConflict, plan.CurrentVersion, m.activeVersion)
+	}
+	if _, ok := m.keys[plan.TargetVersion]; !ok {
+		return fmt.Errorf("%w: target version %d not found", ErrKeyNotFound, plan.TargetVersion)
+	}
+
+	m.activeVersion = plan.TargetVersion
+	return nil
+}

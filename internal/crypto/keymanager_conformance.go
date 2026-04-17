@@ -302,3 +302,148 @@ func dekSizeName(sz int) string {
 		return "unknown"
 	}
 }
+
+// ConformanceSuite_Rotation runs optional rotation contract tests against any
+// [KeyManager]. Tests are skipped if the adapter does not implement
+// [RotatableKeyManager].
+func ConformanceSuite_Rotation(t *testing.T, newFactory func(t *testing.T) KeyManager, addVersion func(t *testing.T, km KeyManager, version int) error, optFns ...ConformanceOptions) {
+	t.Helper()
+
+	opts := ConformanceOptions{}
+	if len(optFns) > 0 {
+		opts = optFns[0]
+	}
+	opts.defaults()
+
+	t.Run("Rotation_RoundTrip", func(t *testing.T) {
+		km := newFactory(t)
+		t.Cleanup(func() { _ = km.Close(context.Background()) })
+
+		rkm, ok := km.(RotatableKeyManager)
+		if !ok {
+			t.Skip("adapter does not implement RotatableKeyManager")
+		}
+
+		// Stage a second version
+		if err := addVersion(t, km, 2); err != nil {
+			t.Fatalf("AddVersion: %v", err)
+		}
+
+		// Wrap a DEK with the original version
+		plaintext := make([]byte, 32)
+		if _, err := rand.Read(plaintext); err != nil {
+			t.Fatal(err)
+		}
+		ctx := context.Background()
+		env1, err := km.WrapKey(ctx, plaintext, nil)
+		if err != nil {
+			t.Fatalf("WrapKey (pre-rotation): %v", err)
+		}
+		originalVersion := env1.KeyVersion
+
+		// Prepare and promote
+		plan, err := rkm.PrepareRotation(ctx, nil)
+		if err != nil {
+			t.Fatalf("PrepareRotation: %v", err)
+		}
+		if plan.TargetVersion == plan.CurrentVersion {
+			t.Fatal("PrepareRotation returned same version as current")
+		}
+
+		if err := rkm.PromoteActiveVersion(ctx, plan); err != nil {
+			t.Fatalf("PromoteActiveVersion: %v", err)
+		}
+
+		// Active version should have changed
+		newVer, err := km.ActiveKeyVersion(ctx)
+		if err != nil {
+			t.Fatalf("ActiveKeyVersion: %v", err)
+		}
+		if newVer == originalVersion {
+			t.Fatal("ActiveKeyVersion unchanged after promotion")
+		}
+
+		// New wraps should use the new version
+		env2, err := km.WrapKey(ctx, plaintext, nil)
+		if err != nil {
+			t.Fatalf("WrapKey (post-rotation): %v", err)
+		}
+		if env2.KeyVersion == originalVersion {
+			t.Fatal("post-rotation WrapKey still using original version")
+		}
+
+		// Old DEK must still unwrap
+		unwrapped, err := km.UnwrapKey(ctx, env1, nil)
+		if err != nil {
+			t.Fatalf("UnwrapKey (old DEK post-rotation): %v", err)
+		}
+		if string(unwrapped) != string(plaintext) {
+			t.Fatal("old DEK round-trip failed post-rotation")
+		}
+
+		// New DEK should also unwrap
+		unwrapped2, err := km.UnwrapKey(ctx, env2, nil)
+		if err != nil {
+			t.Fatalf("UnwrapKey (new DEK post-rotation): %v", err)
+		}
+		if string(unwrapped2) != string(plaintext) {
+			t.Fatal("new DEK round-trip failed post-rotation")
+		}
+	})
+
+	t.Run("Rotation_ConcurrentWrapDuringPromote", func(t *testing.T) {
+		km := newFactory(t)
+		t.Cleanup(func() { _ = km.Close(context.Background()) })
+
+		rkm, ok := km.(RotatableKeyManager)
+		if !ok {
+			t.Skip("adapter does not implement RotatableKeyManager")
+		}
+
+		if err := addVersion(t, km, 2); err != nil {
+			t.Fatalf("AddVersion: %v", err)
+		}
+
+		ctx := context.Background()
+		plan, err := rkm.PrepareRotation(ctx, nil)
+		if err != nil {
+			t.Fatalf("PrepareRotation: %v", err)
+		}
+
+		// Launch concurrent wraps
+		n := 16
+		errs := make(chan error, n)
+		for i := 0; i < n; i++ {
+			go func() {
+				plaintext := make([]byte, 32)
+				rand.Read(plaintext)
+				env, err := km.WrapKey(ctx, plaintext, nil)
+				if err != nil {
+					errs <- err
+					return
+				}
+				got, err := km.UnwrapKey(ctx, env, nil)
+				if err != nil {
+					errs <- err
+					return
+				}
+				if string(got) != string(plaintext) {
+					errs <- errors.New("round-trip mismatch during concurrent rotation")
+					return
+				}
+				errs <- nil
+			}()
+		}
+
+		// Promote during concurrent wraps
+		if err := rkm.PromoteActiveVersion(ctx, plan); err != nil {
+			t.Fatalf("PromoteActiveVersion: %v", err)
+		}
+
+		for i := 0; i < n; i++ {
+			if err := <-errs; err != nil {
+				t.Errorf("concurrent goroutine %d: %v", i, err)
+			}
+		}
+	})
+}

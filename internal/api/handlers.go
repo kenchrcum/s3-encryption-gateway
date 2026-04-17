@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/gorilla/mux"
+	"github.com/kenneth/s3-encryption-gateway/internal/admin"
 	"github.com/kenneth/s3-encryption-gateway/internal/audit"
 	"github.com/kenneth/s3-encryption-gateway/internal/cache"
 	"github.com/kenneth/s3-encryption-gateway/internal/config"
@@ -84,6 +85,13 @@ func (h *Handler) currentKeyVersion(ctx context.Context) int {
 		return 0
 	}
 	return version
+}
+
+// IsAdmin returns true if the request arrived on the admin listener.
+// This is the shared reusable predicate consumed by V0.6-S3-2 for
+// object-lock passthrough admin-authz hooks.
+func (h *Handler) IsAdmin(r *http.Request) bool {
+	return admin.IsAdminRequest(r)
 }
 
 // RegisterRoutes registers all API routes.

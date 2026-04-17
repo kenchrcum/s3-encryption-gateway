@@ -331,3 +331,117 @@ func endpointHasScheme(endpoint string) bool {
 	}
 	return false
 }
+
+// ---------------------------------------------------------------------------
+// RotatableKeyManager implementation for Cosmian KMIP adapter
+// ---------------------------------------------------------------------------
+
+// Compile-time assertion that *cosmianKMIPManager implements RotatableKeyManager.
+var _ RotatableKeyManager = (*cosmianKMIPManager)(nil)
+
+// PrepareRotation implements [RotatableKeyManager]. For the Cosmian adapter,
+// rotation means promoting a different configured KMIPKeyReference to index 0.
+// If target is nil, it picks the next-higher version number not currently active.
+func (m *cosmianKMIPManager) PrepareRotation(_ context.Context, target *int) (RotationPlan, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	if m.client == nil {
+		return RotationPlan{}, ErrProviderUnavailable
+	}
+
+	keys := m.state.opts.Keys
+	if len(keys) < 2 {
+		return RotationPlan{}, fmt.Errorf("%w: at least two key references are required for rotation", ErrRotationAmbiguous)
+	}
+
+	currentVersion := keys[0].Version
+
+	if target != nil {
+		// Find the referenced version
+		for _, ref := range keys {
+			if ref.Version == *target {
+				if ref.Version == currentVersion {
+					return RotationPlan{}, fmt.Errorf("keymanager/cosmian: target version %d is already active", *target)
+				}
+				return RotationPlan{
+					CurrentVersion: currentVersion,
+					TargetVersion:  ref.Version,
+					ProviderData:   map[string]string{"key_id": ref.ID},
+				}, nil
+			}
+		}
+		return RotationPlan{}, fmt.Errorf("%w: version %d not found in configured keys", ErrKeyNotFound, *target)
+	}
+
+	// Auto-select: pick the highest version that isn't active
+	best := -1
+	var bestID string
+	for _, ref := range keys {
+		if ref.Version != currentVersion && ref.Version > best {
+			best = ref.Version
+			bestID = ref.ID
+		}
+	}
+	if best < 0 {
+		return RotationPlan{}, fmt.Errorf("%w: no version available to promote", ErrRotationAmbiguous)
+	}
+
+	return RotationPlan{
+		CurrentVersion: currentVersion,
+		TargetVersion:  best,
+		ProviderData:   map[string]string{"key_id": bestID},
+	}, nil
+}
+
+// PromoteActiveVersion implements [RotatableKeyManager]. Reorders opts.Keys
+// so the target version becomes index 0 (the active key).
+func (m *cosmianKMIPManager) PromoteActiveVersion(_ context.Context, plan RotationPlan) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.client == nil {
+		return ErrProviderUnavailable
+	}
+
+	keys := m.state.opts.Keys
+	if len(keys) == 0 {
+		return fmt.Errorf("keymanager/cosmian: no keys configured")
+	}
+
+	// Validate current version matches
+	if keys[0].Version != plan.CurrentVersion {
+		return fmt.Errorf("%w: expected current version %d but active is %d", ErrRotationConflict, plan.CurrentVersion, keys[0].Version)
+	}
+
+	// Find and promote target
+	targetIdx := -1
+	for i, ref := range keys {
+		if ref.Version == plan.TargetVersion {
+			targetIdx = i
+			break
+		}
+	}
+	if targetIdx < 0 {
+		return fmt.Errorf("%w: target version %d not found", ErrKeyNotFound, plan.TargetVersion)
+	}
+
+	// Move target to index 0
+	targetRef := keys[targetIdx]
+	newKeys := make([]KMIPKeyReference, 0, len(keys))
+	newKeys = append(newKeys, targetRef)
+	for i, ref := range keys {
+		if i != targetIdx {
+			newKeys = append(newKeys, ref)
+		}
+	}
+	m.state.opts.Keys = newKeys
+
+	// Rebuild lookups
+	m.state.keyLookup = make(map[string]KMIPKeyReference, len(newKeys))
+	m.state.versionLookup = make(map[int]KMIPKeyReference, len(newKeys))
+	for _, ref := range newKeys {
+		m.state.keyLookup[ref.ID] = ref
+		m.state.versionLookup[ref.Version] = ref
+	}
+
+	return nil
+}

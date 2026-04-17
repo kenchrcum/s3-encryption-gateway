@@ -91,6 +91,8 @@ type engine struct {
 	tracer trace.Tracer
 	// External key manager (optional)
 	kmsManager KeyManager
+	// Rotation state machine for drain-and-cutover tracking
+	rotationState *RotationState
 }
 
 // NewEngine creates a new encryption engine with the given password.
@@ -216,6 +218,27 @@ func SetKeyManager(enc EncryptionEngine, manager KeyManager) {
 	if e, ok := enc.(*engine); ok {
 		e.kmsManager = manager
 	}
+}
+
+// GetKeyManager returns the engine's configured KeyManager, or nil if no
+// external KMS is configured. Used by the admin rotation handler.
+func GetKeyManager(enc EncryptionEngine) KeyManager {
+	if e, ok := enc.(*engine); ok {
+		return e.kmsManager
+	}
+	return nil
+}
+
+// GetRotationState returns the engine's rotation state machine. If no state
+// has been set, it initialises an idle one.
+func GetRotationState(enc EncryptionEngine) *RotationState {
+	if e, ok := enc.(*engine); ok {
+		if e.rotationState == nil {
+			e.rotationState = NewRotationState()
+		}
+		return e.rotationState
+	}
+	return NewRotationState()
 }
 
 // deriveKey derives an AES-256 key from the password using PBKDF2.
@@ -376,7 +399,13 @@ func (e *engine) Encrypt(reader io.Reader, metadata map[string]string) (io.Reade
 		if err != nil {
 			return nil, nil, fmt.Errorf("failed to generate data key: %w", err)
 		}
+		if e.rotationState != nil {
+			e.rotationState.BeginWrap()
+		}
 		envelope, err = e.kmsManager.WrapKey(ctx, key, metadata)
+		if e.rotationState != nil {
+			e.rotationState.EndWrap()
+		}
 		if err != nil {
 			zeroBytes(key)
 			return nil, nil, fmt.Errorf("failed to wrap data key: %w", err)
@@ -826,7 +855,13 @@ func (e *engine) encryptChunked(ctx context.Context, reader io.Reader, metadata 
 		if err != nil {
 			return nil, nil, fmt.Errorf("failed to generate data key: %w", err)
 		}
+		if e.rotationState != nil {
+			e.rotationState.BeginWrap()
+		}
 		envelope, err = e.kmsManager.WrapKey(ctx, key, metadata)
+		if e.rotationState != nil {
+			e.rotationState.EndWrap()
+		}
 		if err != nil {
 			zeroBytes(key)
 			return nil, nil, fmt.Errorf("failed to wrap data key: %w", err)
@@ -952,7 +987,13 @@ func (e *engine) encryptChunkedWithMetadataFallback(ctx context.Context, plainte
 		if err != nil {
 			return nil, nil, fmt.Errorf("failed to generate data key: %w", err)
 		}
+		if e.rotationState != nil {
+			e.rotationState.BeginWrap()
+		}
 		envelope, err = e.kmsManager.WrapKey(ctx, key, fullMetadata)
+		if e.rotationState != nil {
+			e.rotationState.EndWrap()
+		}
 		if err != nil {
 			zeroBytes(key)
 			return nil, nil, fmt.Errorf("failed to wrap data key: %w", err)

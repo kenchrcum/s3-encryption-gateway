@@ -50,6 +50,12 @@ type Metrics struct {
 	uploadPartCopyBytes               *prometheus.CounterVec
 	uploadPartCopyDuration            *prometheus.HistogramVec
 	uploadPartCopyLegacyFallbackTotal prometheus.Counter
+	// Admin and rotation metrics
+	kmsActiveKeyVersion     *prometheus.GaugeVec
+	kmsRotationOpsTotal     *prometheus.CounterVec
+	kmsRotationDuration     *prometheus.HistogramVec
+	kmsRotationInFlightWraps prometheus.Gauge
+	gatewayAdminAPIEnabled  prometheus.Gauge
 }
 
 // NewMetrics creates a new metrics instance with default configuration.
@@ -232,6 +238,40 @@ func newMetricsWithRegistry(reg prometheus.Registerer, cfg Config) *Metrics {
 				Help: "Total number of UploadPartCopy operations that used the legacy (full-object-buffer) fallback path",
 			},
 		),
+		kmsActiveKeyVersion: factory.NewGaugeVec(
+			prometheus.GaugeOpts{
+				Name: "kms_active_key_version",
+				Help: "Currently active KMS key version per provider",
+			},
+			[]string{"provider"},
+		),
+		kmsRotationOpsTotal: factory.NewCounterVec(
+			prometheus.CounterOpts{
+				Name: "kms_rotation_operations_total",
+				Help: "Total number of key rotation operations by step and result",
+			},
+			[]string{"step", "result"},
+		),
+		kmsRotationDuration: factory.NewHistogramVec(
+			prometheus.HistogramOpts{
+				Name:    "kms_rotation_duration_seconds",
+				Help:    "Duration of key rotation operations by step",
+				Buckets: []float64{0.001, 0.01, 0.05, 0.1, 0.5, 1, 5, 10, 30},
+			},
+			[]string{"step"},
+		),
+		kmsRotationInFlightWraps: factory.NewGauge(
+			prometheus.GaugeOpts{
+				Name: "kms_rotation_in_flight_wraps",
+				Help: "Number of in-flight WrapKey operations during rotation drain",
+			},
+		),
+		gatewayAdminAPIEnabled: factory.NewGauge(
+			prometheus.GaugeOpts{
+				Name: "gateway_admin_api_enabled",
+				Help: "Whether the admin API listener is enabled (1=enabled, 0=disabled)",
+			},
+		),
 	}
 }
 
@@ -256,6 +296,31 @@ func (m *Metrics) SetFIPSMode(enabled bool) {
 // GetHardwareAccelerationEnabledMetric returns the hardware acceleration enabled metric (for testing).
 func (m *Metrics) GetHardwareAccelerationEnabledMetric() *prometheus.GaugeVec {
 	return m.hardwareAccelerationEnabled
+}
+
+// SetActiveKeyVersion sets the active KMS key version gauge.
+func (m *Metrics) SetActiveKeyVersion(provider string, version int) {
+	m.kmsActiveKeyVersion.WithLabelValues(provider).Set(float64(version))
+}
+
+// RecordRotationOperation records a rotation operation counter and duration.
+func (m *Metrics) RecordRotationOperation(step, result string, duration time.Duration) {
+	m.kmsRotationOpsTotal.WithLabelValues(step, result).Inc()
+	m.kmsRotationDuration.WithLabelValues(step).Observe(duration.Seconds())
+}
+
+// SetRotationInFlightWraps sets the in-flight wraps gauge.
+func (m *Metrics) SetRotationInFlightWraps(count int64) {
+	m.kmsRotationInFlightWraps.Set(float64(count))
+}
+
+// SetAdminAPIEnabled sets the admin API enabled gauge.
+func (m *Metrics) SetAdminAPIEnabled(enabled bool) {
+	val := 0.0
+	if enabled {
+		val = 1.0
+	}
+	m.gatewayAdminAPIEnabled.Set(val)
 }
 
 // GetRotatedReadsMetric returns the rotated reads metric (for testing).

@@ -1,7 +1,10 @@
 package config
 
 import (
+	"encoding/base64"
+	"encoding/hex"
 	"fmt"
+	"net"
 	"os"
 	"os/signal"
 	"strconv"
@@ -31,6 +34,7 @@ type Config struct {
 	Tracing       TracingConfig     `yaml:"tracing"`
 	Metrics       MetricsConfig     `yaml:"metrics"`
 	Logging       LoggingConfig     `yaml:"logging"`
+	Admin         AdminConfig       `yaml:"admin"`
 	PolicyFiles   []string          `yaml:"policies" env:"POLICIES"`
 }
 
@@ -241,6 +245,38 @@ type LoggingConfig struct {
 	RedactHeaders   []string `yaml:"redact_headers" env:"LOGGING_REDACT_HEADERS"`       // Headers to redact in access logs (comma-separated)
 }
 
+// AdminConfig holds admin API configuration.
+//
+// The admin endpoint runs on a separate listener from the S3 data-plane,
+// gated by bearer-token authentication with constant-time comparison.
+// When enabled on a non-loopback address, TLS must be enabled.
+type AdminConfig struct {
+	Enabled   bool           `yaml:"enabled" env:"ADMIN_ENABLED"`
+	Address   string         `yaml:"address" env:"ADMIN_ADDRESS"`
+	TLS       AdminTLSConfig `yaml:"tls"`
+	Auth      AdminAuthConfig `yaml:"auth"`
+	RateLimit AdminRateLimitConfig `yaml:"rate_limit"`
+}
+
+// AdminTLSConfig holds TLS settings for the admin listener.
+type AdminTLSConfig struct {
+	Enabled  bool   `yaml:"enabled" env:"ADMIN_TLS_ENABLED"`
+	CertFile string `yaml:"cert_file" env:"ADMIN_TLS_CERT_FILE"`
+	KeyFile  string `yaml:"key_file" env:"ADMIN_TLS_KEY_FILE"`
+}
+
+// AdminAuthConfig holds authentication settings for the admin API.
+type AdminAuthConfig struct {
+	Type      string `yaml:"type" env:"ADMIN_AUTH_TYPE"`           // Only "bearer" in v0.6
+	TokenFile string `yaml:"token_file" env:"ADMIN_AUTH_TOKEN_FILE"` // File path; 0600, never inline
+	Token     string `yaml:"token" env:"ADMIN_AUTH_TOKEN"`          // Inline only with ADMIN_ALLOW_INLINE_TOKEN=1
+}
+
+// AdminRateLimitConfig holds rate-limiting settings for the admin API.
+type AdminRateLimitConfig struct {
+	RequestsPerMinute int `yaml:"requests_per_minute" env:"ADMIN_RATE_LIMIT_RPM"`
+}
+
 // LoadConfig loads configuration from a file and environment variables.
 func LoadConfig(path string) (*Config, error) {
 	config := &Config{
@@ -309,6 +345,16 @@ func LoadConfig(path string) (*Config, error) {
 		Logging: LoggingConfig{
 			AccessLogFormat: "default",
 			RedactHeaders:   []string{"authorization", "x-amz-security-token", "x-amz-signature", "x-encryption-key", "x-encryption-password"},
+		},
+		Admin: AdminConfig{
+			Enabled: false,
+			Address: "127.0.0.1:8081",
+			Auth: AdminAuthConfig{
+				Type: "bearer",
+			},
+			RateLimit: AdminRateLimitConfig{
+				RequestsPerMinute: 30,
+			},
 		},
 	}
 
@@ -616,6 +662,36 @@ func loadFromEnv(config *Config) {
 			config.PolicyFiles[i] = strings.TrimSpace(config.PolicyFiles[i])
 		}
 	}
+	// Admin configuration
+	if v := os.Getenv("ADMIN_ENABLED"); v != "" {
+		config.Admin.Enabled = v == "true" || v == "1"
+	}
+	if v := os.Getenv("ADMIN_ADDRESS"); v != "" {
+		config.Admin.Address = v
+	}
+	if v := os.Getenv("ADMIN_TLS_ENABLED"); v != "" {
+		config.Admin.TLS.Enabled = v == "true" || v == "1"
+	}
+	if v := os.Getenv("ADMIN_TLS_CERT_FILE"); v != "" {
+		config.Admin.TLS.CertFile = v
+	}
+	if v := os.Getenv("ADMIN_TLS_KEY_FILE"); v != "" {
+		config.Admin.TLS.KeyFile = v
+	}
+	if v := os.Getenv("ADMIN_AUTH_TYPE"); v != "" {
+		config.Admin.Auth.Type = v
+	}
+	if v := os.Getenv("ADMIN_AUTH_TOKEN_FILE"); v != "" {
+		config.Admin.Auth.TokenFile = v
+	}
+	if v := os.Getenv("ADMIN_AUTH_TOKEN"); v != "" {
+		config.Admin.Auth.Token = v
+	}
+	if v := os.Getenv("ADMIN_RATE_LIMIT_RPM"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			config.Admin.RateLimit.RequestsPerMinute = n
+		}
+	}
 }
 
 func parseCosmianKeyRefs(value string) []CosmianKeyReference {
@@ -782,6 +858,124 @@ func (c *Config) Validate() error {
 		}
 	}
 
+	// Validate admin configuration
+	if c.Admin.Enabled {
+		if c.Admin.Address == "" {
+			return fmt.Errorf("admin.address is required when admin is enabled")
+		}
+
+		// Ensure admin address differs from data-plane address
+		if c.Admin.Address == c.ListenAddr {
+			return fmt.Errorf("admin.address must differ from listen_addr")
+		}
+
+		// Non-loopback address requires TLS
+		if !isLoopbackAddress(c.Admin.Address) && !c.Admin.TLS.Enabled {
+			return fmt.Errorf("admin.tls.enabled must be true when admin.address is not loopback (got %s)", c.Admin.Address)
+		}
+
+		// TLS cert/key validation
+		if c.Admin.TLS.Enabled {
+			if c.Admin.TLS.CertFile == "" {
+				return fmt.Errorf("admin.tls.cert_file is required when admin TLS is enabled")
+			}
+			if c.Admin.TLS.KeyFile == "" {
+				return fmt.Errorf("admin.tls.key_file is required when admin TLS is enabled")
+			}
+		}
+
+		// Auth type must be "bearer"
+		if c.Admin.Auth.Type != "" && c.Admin.Auth.Type != "bearer" {
+			return fmt.Errorf("admin.auth.type must be \"bearer\" (got %q)", c.Admin.Auth.Type)
+		}
+
+		// Exactly one of token_file / token must be set
+		hasTokenFile := c.Admin.Auth.TokenFile != ""
+		hasInlineToken := c.Admin.Auth.Token != ""
+		if !hasTokenFile && !hasInlineToken {
+			return fmt.Errorf("one of admin.auth.token_file or admin.auth.token is required when admin is enabled")
+		}
+		if hasTokenFile && hasInlineToken {
+			return fmt.Errorf("only one of admin.auth.token_file or admin.auth.token may be set, not both")
+		}
+
+		// Inline token requires ADMIN_ALLOW_INLINE_TOKEN=1
+		if hasInlineToken && os.Getenv("ADMIN_ALLOW_INLINE_TOKEN") != "1" {
+			return fmt.Errorf("admin.auth.token (inline) requires ADMIN_ALLOW_INLINE_TOKEN=1 environment variable")
+		}
+
+		// Validate token minimum length (32 bytes decoded)
+		if hasTokenFile {
+			// Check file permissions
+			info, err := os.Stat(c.Admin.Auth.TokenFile)
+			if err != nil {
+				return fmt.Errorf("admin.auth.token_file: %w", err)
+			}
+			mode := info.Mode().Perm()
+			if mode&0077 != 0 {
+				return fmt.Errorf("admin.auth.token_file %s is too permissive (mode %04o); must be 0600 or stricter", c.Admin.Auth.TokenFile, mode)
+			}
+			// Read and validate token length
+			tokenBytes, err := os.ReadFile(c.Admin.Auth.TokenFile)
+			if err != nil {
+				return fmt.Errorf("admin.auth.token_file: failed to read: %w", err)
+			}
+			if err := validateAdminTokenLength(strings.TrimSpace(string(tokenBytes))); err != nil {
+				return fmt.Errorf("admin.auth.token_file: %w", err)
+			}
+		}
+		if hasInlineToken {
+			if err := validateAdminTokenLength(c.Admin.Auth.Token); err != nil {
+				return fmt.Errorf("admin.auth.token: %w", err)
+			}
+		}
+
+		// Validate rate limit
+		if c.Admin.RateLimit.RequestsPerMinute <= 0 {
+			return fmt.Errorf("admin.rate_limit.requests_per_minute must be positive")
+		}
+	}
+
+	return nil
+}
+
+// isLoopbackAddress checks if the given address string refers to a loopback interface.
+func isLoopbackAddress(addr string) bool {
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		host = addr
+	}
+	if host == "localhost" {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
+}
+
+// validateAdminTokenLength validates that the token is at least 32 bytes when
+// decoded from hex or base64, or 32 characters if it is a raw string.
+func validateAdminTokenLength(token string) error {
+	if token == "" {
+		return fmt.Errorf("token is empty")
+	}
+	// Try hex decode
+	if decoded, err := hex.DecodeString(token); err == nil {
+		if len(decoded) < 32 {
+			return fmt.Errorf("token too short: decoded hex is %d bytes, minimum 32", len(decoded))
+		}
+		return nil
+	}
+	// Try base64 decode
+	if decoded, err := base64.StdEncoding.DecodeString(token); err == nil {
+		if len(decoded) < 32 {
+			return fmt.Errorf("token too short: decoded base64 is %d bytes, minimum 32", len(decoded))
+		}
+		return nil
+	}
+	// Raw string: require at least 32 characters
+	if len(token) < 32 {
+		return fmt.Errorf("token too short: %d characters, minimum 32", len(token))
+	}
 	return nil
 }
 
@@ -964,6 +1158,23 @@ func (r *ConfigReloader) validateReloadSafety(old, new *Config) error {
 	// Backend settings that affect encryption/decryption compatibility
 	if old.Backend.Provider != new.Backend.Provider {
 		return fmt.Errorf("backend.provider cannot be changed during hot reload")
+	}
+
+	// Admin settings — listener is only started/stopped at process start
+	if old.Admin.Enabled != new.Admin.Enabled {
+		return fmt.Errorf("admin.enabled cannot be changed during hot reload")
+	}
+	if old.Admin.Address != new.Admin.Address {
+		return fmt.Errorf("admin.address cannot be changed during hot reload")
+	}
+	if old.Admin.TLS.Enabled != new.Admin.TLS.Enabled {
+		return fmt.Errorf("admin.tls.enabled cannot be changed during hot reload")
+	}
+	if old.Admin.TLS.CertFile != new.Admin.TLS.CertFile {
+		return fmt.Errorf("admin.tls.cert_file cannot be changed during hot reload")
+	}
+	if old.Admin.TLS.KeyFile != new.Admin.TLS.KeyFile {
+		return fmt.Errorf("admin.tls.key_file cannot be changed during hot reload")
 	}
 
 	return nil
