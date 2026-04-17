@@ -4,13 +4,44 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
 
-	"github.com/sirupsen/logrus"
 	"github.com/kenneth/s3-encryption-gateway/internal/config"
+	"github.com/sirupsen/logrus"
 )
+
+// sensitiveQueryParams lists query-string keys that must never appear in logs.
+// Keys are matched case-insensitively after URL decoding.
+var sensitiveQueryParams = []string{
+	"awssecretaccesskey",
+	"x-amz-security-token",
+	"x-amz-signature",
+}
+
+// redactQueryString parses rawQuery, replaces the value of every sensitive
+// parameter with "[REDACTED]", and returns the rebuilt query string.
+func redactQueryString(rawQuery string) string {
+	if rawQuery == "" {
+		return ""
+	}
+	values, err := url.ParseQuery(rawQuery)
+	if err != nil {
+		// Unparseable query — drop it entirely rather than risk leaking secrets.
+		return "[REDACTED]"
+	}
+	for key := range values {
+		for _, sensitive := range sensitiveQueryParams {
+			if strings.ToLower(key) == sensitive {
+				values[key] = []string{"[REDACTED]"}
+				break
+			}
+		}
+	}
+	return values.Encode()
+}
 
 // LoggingMiddleware wraps handlers with request logging.
 func LoggingMiddleware(logger *logrus.Logger, cfg *config.LoggingConfig) func(http.Handler) http.Handler {
@@ -80,16 +111,16 @@ func (rw *responseWriter) Write(b []byte) (int, error) {
 
 // LogEntry represents a structured log entry.
 type LogEntry struct {
-	Timestamp   string            `json:"timestamp"`
-	Method      string            `json:"method"`
-	Path        string            `json:"path"`
-	Query       string            `json:"query,omitempty"`
-	RemoteAddr  string            `json:"remote_addr"`
-	UserAgent   string            `json:"user_agent,omitempty"`
-	Status      int               `json:"status"`
-	DurationMs  int64             `json:"duration_ms"`
-	Bytes       int64             `json:"bytes"`
-	Headers     map[string]string `json:"headers,omitempty"`
+	Timestamp  string            `json:"timestamp"`
+	Method     string            `json:"method"`
+	Path       string            `json:"path"`
+	Query      string            `json:"query,omitempty"`
+	RemoteAddr string            `json:"remote_addr"`
+	UserAgent  string            `json:"user_agent,omitempty"`
+	Status     int               `json:"status"`
+	DurationMs int64             `json:"duration_ms"`
+	Bytes      int64             `json:"bytes"`
+	Headers    map[string]string `json:"headers,omitempty"`
 }
 
 // createLogEntry creates a log entry with header redaction.
@@ -98,7 +129,7 @@ func createLogEntry(r *http.Request, rw *responseWriter, duration time.Duration,
 		Timestamp:  time.Now().Format(time.RFC3339),
 		Method:     r.Method,
 		Path:       r.URL.Path,
-		Query:      r.URL.RawQuery,
+		Query:      redactQueryString(r.URL.RawQuery),
 		RemoteAddr: r.RemoteAddr,
 		UserAgent:  r.UserAgent(),
 		Status:     rw.statusCode,
