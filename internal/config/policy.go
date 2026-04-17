@@ -23,6 +23,7 @@ type PolicyConfig struct {
 	// into a bucket with this flag set). Default is false, preserving
 	// backward compatibility; set explicitly per-bucket to enforce.
 	RequireEncryption bool `yaml:"require_encryption,omitempty"`
+	DisallowLockBypass bool `yaml:"disallow_lock_bypass,omitempty"`
 }
 
 // PolicyManager manages loading and matching policies
@@ -146,4 +147,20 @@ func (p *PolicyConfig) ApplyToConfig(base *Config) *Config {
 	}
 
 	return &newConfig
+}
+
+// BucketDisallowsLockBypass returns true if the bucket policy disallows lock bypass.
+func (pm *PolicyManager) BucketDisallowsLockBypass(bucket string) bool {
+	pm.mu.RLock()
+	defer pm.mu.RUnlock()
+
+	for _, policy := range pm.policies {
+		for _, b := range policy.Buckets {
+			if glob.Glob(b, bucket) && policy.DisallowLockBypass {
+				return true
+			}
+		}
+	}
+
+	return false
 }

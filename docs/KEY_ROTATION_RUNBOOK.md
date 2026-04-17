@@ -344,6 +344,40 @@ If rotation causes issues:
    - Configuration changes
    - Issues and resolutions
 
+## Object Lock Interaction (V0.6-S3-2)
+
+Objects written through the gateway with an S3 Object Lock
+configuration (`x-amz-object-lock-mode=COMPLIANCE` in particular) cannot
+be rewritten until the retention period expires. Because the gateway
+rotates keys by re-encrypting and rewriting the ciphertext, locked
+objects are **skipped** by the rotation worker:
+
+- The worker classifies backend `AccessDenied` with a retention code
+  as a non-retryable skip, emits a structured log entry, and
+  increments the `gateway_rotation_skipped_locked_total` Prometheus
+  counter.
+- Governance-mode objects are also skipped until V0.6-CFG-1 lands the
+  admin-gated `x-amz-bypass-governance-retention` path. The gateway
+  refuses the bypass header in v0.6 (see ADR 0008).
+
+**Operator implications:**
+
+- Monitor `gateway_rotation_skipped_locked_total`. A non-zero value
+  means one or more KEK versions cannot be retired until the
+  referenced locked objects expire.
+- **Align KMS/KEK retention with the maximum Object Lock retention
+  window in use.** Retiring a KEK while a locked object still
+  references it leaves the ciphertext on disk with no key to unwrap
+  it. The backend's retention guarantees byte persistence; it does
+  not guarantee readable-data persistence.
+- When a rotation campaign finishes with skips, record the KEK
+  versions that could not be retired and their earliest retirement
+  date (max retain-until across all skipped objects that reference
+  that version). Do not retire those KEK versions before that date.
+
+See `docs/adr/0008-object-lock-ciphertext-semantics.md` for the
+full ciphertext-locking model and provider-support matrix.
+
 ## Related Documentation
 
 - [KMS Compatibility Guide](KMS_COMPATIBILITY.md) - Detailed KMS integration guide

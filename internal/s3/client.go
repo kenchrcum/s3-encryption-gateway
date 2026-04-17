@@ -2,6 +2,7 @@ package s3
 
 import (
 	"context"
+	"encoding/xml"
 	"fmt"
 	"io"
 	"net/url"
@@ -24,7 +25,7 @@ import (
 
 // Client is the S3 backend client interface.
 type Client interface {
-	PutObject(ctx context.Context, bucket, key string, reader io.Reader, metadata map[string]string, contentLength *int64, tags string) error
+	PutObject(ctx context.Context, bucket, key string, reader io.Reader, metadata map[string]string, contentLength *int64, tags string, lock *ObjectLockInput) error
 	GetObject(ctx context.Context, bucket, key string, versionID *string, rangeHeader *string) (io.ReadCloser, map[string]string, error)
 	DeleteObject(ctx context.Context, bucket, key string, versionID *string) error
 	HeadObject(ctx context.Context, bucket, key string, versionID *string) (map[string]string, error)
@@ -33,14 +34,58 @@ type Client interface {
 	// Multipart upload operations
 	CreateMultipartUpload(ctx context.Context, bucket, key string, metadata map[string]string) (string, error)
 	UploadPart(ctx context.Context, bucket, key, uploadID string, partNumber int32, reader io.Reader, contentLength *int64) (string, error)
-	CompleteMultipartUpload(ctx context.Context, bucket, key, uploadID string, parts []CompletedPart) (string, error)
+	CompleteMultipartUpload(ctx context.Context, bucket, key, uploadID string, parts []CompletedPart, lock *ObjectLockInput) (string, error)
 	AbortMultipartUpload(ctx context.Context, bucket, key, uploadID string) error
 	ListParts(ctx context.Context, bucket, key, uploadID string) ([]PartInfo, error)
 
 	// Copy and batch operations
-	CopyObject(ctx context.Context, dstBucket, dstKey string, srcBucket, srcKey string, srcVersionID *string, metadata map[string]string) (string, map[string]string, error)
+	CopyObject(ctx context.Context, dstBucket, dstKey string, srcBucket, srcKey string, srcVersionID *string, metadata map[string]string, lock *ObjectLockInput) (string, map[string]string, error)
 	UploadPartCopy(ctx context.Context, dstBucket, dstKey, uploadID string, partNumber int32, srcBucket, srcKey string, srcVersionID *string, srcRange *CopyPartRange) (*CopyPartResult, error)
 	DeleteObjects(ctx context.Context, bucket string, keys []ObjectIdentifier) ([]DeletedObject, []ErrorObject, error)
+
+	// Object Lock operations
+	PutObjectRetention(ctx context.Context, bucket, key string, versionID *string, retention *RetentionConfig) error
+	GetObjectRetention(ctx context.Context, bucket, key string, versionID *string) (*RetentionConfig, error)
+	PutObjectLegalHold(ctx context.Context, bucket, key string, versionID *string, status string) error
+	GetObjectLegalHold(ctx context.Context, bucket, key string, versionID *string) (string, error)
+	PutObjectLockConfiguration(ctx context.Context, bucket string, config *ObjectLockConfiguration) error
+	GetObjectLockConfiguration(ctx context.Context, bucket string) (*ObjectLockConfiguration, error)
+}
+
+// ObjectLockInput contains object lock parameters for put/copy operations.
+type ObjectLockInput struct {
+	Mode            string // "GOVERNANCE" | "COMPLIANCE" | ""
+	RetainUntilDate *time.Time
+	LegalHoldStatus string // "ON" | "OFF" | ""
+}
+
+// RetentionConfig represents the retention configuration for an object.
+// XML tags follow the AWS S3 Retention schema so the struct can be
+// Unmarshalled from PutObjectRetention request bodies and Marshalled
+// into GetObjectRetention response bodies.
+type RetentionConfig struct {
+	XMLName         xml.Name  `xml:"Retention"`
+	Mode            string    `xml:"Mode"`
+	RetainUntilDate time.Time `xml:"RetainUntilDate"`
+}
+
+// ObjectLockConfiguration represents the object lock configuration for a bucket.
+type ObjectLockConfiguration struct {
+	XMLName           xml.Name  `xml:"ObjectLockConfiguration"`
+	ObjectLockEnabled string    `xml:"ObjectLockEnabled,omitempty"`
+	Rule              *LockRule `xml:"Rule,omitempty"`
+}
+
+// LockRule represents the default retention rule for a bucket.
+type LockRule struct {
+	DefaultRetention *DefaultRetention `xml:"DefaultRetention,omitempty"`
+}
+
+// DefaultRetention represents the default retention parameters for a bucket.
+type DefaultRetention struct {
+	Mode  string `xml:"Mode,omitempty"`
+	Days  *int32 `xml:"Days,omitempty"`
+	Years *int32 `xml:"Years,omitempty"` // exactly one of Days/Years
 }
 
 // ListOptions holds options for listing objects.
@@ -241,7 +286,7 @@ func validateEndpoint(endpoint string) error {
 }
 
 // PutObject uploads an object to S3.
-func (c *s3Client) PutObject(ctx context.Context, bucket, key string, reader io.Reader, metadata map[string]string, contentLength *int64, tags string) error {
+func (c *s3Client) PutObject(ctx context.Context, bucket, key string, reader io.Reader, metadata map[string]string, contentLength *int64, tags string, lock *ObjectLockInput) error {
 	ctx, span := c.tracer.Start(ctx, "S3.PutObject",
 		trace.WithAttributes(
 			attribute.String("s3.bucket", bucket),
@@ -381,6 +426,16 @@ func (c *s3Client) GetObject(ctx context.Context, bucket, key string, versionID 
 		metadata["Content-Encoding"] = *result.ContentEncoding
 	}
 
+	if result.ObjectLockMode != "" {
+		metadata["x-amz-object-lock-mode"] = string(result.ObjectLockMode)
+	}
+	if result.ObjectLockRetainUntilDate != nil {
+		metadata["x-amz-object-lock-retain-until-date"] = result.ObjectLockRetainUntilDate.UTC().Format(time.RFC3339)
+	}
+	if result.ObjectLockLegalHoldStatus != "" {
+		metadata["x-amz-object-lock-legal-hold"] = string(result.ObjectLockLegalHoldStatus)
+	}
+
 	span.SetStatus(codes.Ok, "")
 	return result.Body, metadata, nil
 }
@@ -445,6 +500,16 @@ func (c *s3Client) HeadObject(ctx context.Context, bucket, key string, versionID
 	}
 	if result.LastModified != nil {
 		metadata["Last-Modified"] = result.LastModified.Format("Mon, 02 Jan 2006 15:04:05 GMT")
+	}
+
+	if result.ObjectLockMode != "" {
+		metadata["x-amz-object-lock-mode"] = string(result.ObjectLockMode)
+	}
+	if result.ObjectLockRetainUntilDate != nil {
+		metadata["x-amz-object-lock-retain-until-date"] = result.ObjectLockRetainUntilDate.UTC().Format(time.RFC3339)
+	}
+	if result.ObjectLockLegalHoldStatus != "" {
+		metadata["x-amz-object-lock-legal-hold"] = string(result.ObjectLockLegalHoldStatus)
 	}
 
 	return metadata, nil
@@ -596,7 +661,7 @@ func (c *s3Client) UploadPart(ctx context.Context, bucket, key, uploadID string,
 }
 
 // CompleteMultipartUpload completes a multipart upload.
-func (c *s3Client) CompleteMultipartUpload(ctx context.Context, bucket, key, uploadID string, parts []CompletedPart) (string, error) {
+func (c *s3Client) CompleteMultipartUpload(ctx context.Context, bucket, key, uploadID string, parts []CompletedPart, lock *ObjectLockInput) (string, error) {
 	completedParts := make([]types.CompletedPart, len(parts))
 	for i, p := range parts {
 		completedParts[i] = types.CompletedPart{
@@ -617,6 +682,24 @@ func (c *s3Client) CompleteMultipartUpload(ctx context.Context, bucket, key, upl
 	result, err := c.client.CompleteMultipartUpload(ctx, input)
 	if err != nil {
 		return "", fmt.Errorf("failed to complete multipart upload %s/%s: %w", bucket, key, err)
+	}
+
+	if lock != nil {
+		if lock.Mode != "" && lock.RetainUntilDate != nil {
+			err = c.PutObjectRetention(ctx, bucket, key, nil, &RetentionConfig{
+				Mode:            lock.Mode,
+				RetainUntilDate: *lock.RetainUntilDate,
+			})
+			if err != nil {
+				return "", err
+			}
+		}
+		if lock.LegalHoldStatus != "" {
+			err = c.PutObjectLegalHold(ctx, bucket, key, nil, lock.LegalHoldStatus)
+			if err != nil {
+				return "", err
+			}
+		}
 	}
 
 	if result.ETag == nil {
@@ -672,7 +755,7 @@ func (c *s3Client) ListParts(ctx context.Context, bucket, key, uploadID string) 
 }
 
 // CopyObject copies an object from source to destination.
-func (c *s3Client) CopyObject(ctx context.Context, dstBucket, dstKey string, srcBucket, srcKey string, srcVersionID *string, metadata map[string]string) (string, map[string]string, error) {
+func (c *s3Client) CopyObject(ctx context.Context, dstBucket, dstKey string, srcBucket, srcKey string, srcVersionID *string, metadata map[string]string, lock *ObjectLockInput) (string, map[string]string, error) {
 	copySource := fmt.Sprintf("%s/%s", srcBucket, srcKey)
 	if srcVersionID != nil && *srcVersionID != "" {
 		copySource = fmt.Sprintf("%s/%s?versionId=%s", srcBucket, srcKey, *srcVersionID)
@@ -683,6 +766,17 @@ func (c *s3Client) CopyObject(ctx context.Context, dstBucket, dstKey string, src
 		Key:        aws.String(dstKey),
 		CopySource: aws.String(copySource),
 		Metadata:   convertMetadata(metadata),
+	}
+	if lock != nil {
+		if lock.Mode != "" {
+			input.ObjectLockMode = types.ObjectLockMode(lock.Mode)
+		}
+		if lock.RetainUntilDate != nil {
+			input.ObjectLockRetainUntilDate = lock.RetainUntilDate
+		}
+		if lock.LegalHoldStatus != "" {
+			input.ObjectLockLegalHoldStatus = types.ObjectLockLegalHoldStatus(lock.LegalHoldStatus)
+		}
 	}
 
 	result, err := c.client.CopyObject(ctx, input)
@@ -808,4 +902,148 @@ func (c *s3Client) DeleteObjects(ctx context.Context, bucket string, keys []Obje
 	}
 
 	return deleted, errors, nil
+}
+
+// PutObjectRetention sets the retention configuration for an object.
+func (c *s3Client) PutObjectRetention(ctx context.Context, bucket, key string, versionID *string, retention *RetentionConfig) error {
+	input := &s3.PutObjectRetentionInput{
+		Bucket: aws.String(bucket),
+		Key:    aws.String(key),
+	}
+	if versionID != nil && *versionID != "" {
+		input.VersionId = versionID
+	}
+	if retention != nil {
+		input.Retention = &types.ObjectLockRetention{
+			Mode:            types.ObjectLockRetentionMode(retention.Mode),
+			RetainUntilDate: &retention.RetainUntilDate,
+		}
+	}
+	_, err := c.client.PutObjectRetention(ctx, input)
+	if err != nil {
+		return fmt.Errorf("failed to put object retention %s/%s: %w", bucket, key, err)
+	}
+	return nil
+}
+
+// GetObjectRetention gets the retention configuration for an object.
+func (c *s3Client) GetObjectRetention(ctx context.Context, bucket, key string, versionID *string) (*RetentionConfig, error) {
+	input := &s3.GetObjectRetentionInput{
+		Bucket: aws.String(bucket),
+		Key:    aws.String(key),
+	}
+	if versionID != nil && *versionID != "" {
+		input.VersionId = versionID
+	}
+	result, err := c.client.GetObjectRetention(ctx, input)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get object retention %s/%s: %w", bucket, key, err)
+	}
+	if result.Retention == nil {
+		return nil, nil
+	}
+	return &RetentionConfig{
+		Mode:            string(result.Retention.Mode),
+		RetainUntilDate: *result.Retention.RetainUntilDate,
+	}, nil
+}
+
+// PutObjectLegalHold sets the legal hold status for an object.
+func (c *s3Client) PutObjectLegalHold(ctx context.Context, bucket, key string, versionID *string, status string) error {
+	input := &s3.PutObjectLegalHoldInput{
+		Bucket: aws.String(bucket),
+		Key:    aws.String(key),
+	}
+	if versionID != nil && *versionID != "" {
+		input.VersionId = versionID
+	}
+	input.LegalHold = &types.ObjectLockLegalHold{
+		Status: types.ObjectLockLegalHoldStatus(status),
+	}
+	_, err := c.client.PutObjectLegalHold(ctx, input)
+	if err != nil {
+		return fmt.Errorf("failed to put object legal hold %s/%s: %w", bucket, key, err)
+	}
+	return nil
+}
+
+// GetObjectLegalHold gets the legal hold status for an object.
+func (c *s3Client) GetObjectLegalHold(ctx context.Context, bucket, key string, versionID *string) (string, error) {
+	input := &s3.GetObjectLegalHoldInput{
+		Bucket: aws.String(bucket),
+		Key:    aws.String(key),
+	}
+	if versionID != nil && *versionID != "" {
+		input.VersionId = versionID
+	}
+	result, err := c.client.GetObjectLegalHold(ctx, input)
+	if err != nil {
+		return "", fmt.Errorf("failed to get object legal hold %s/%s: %w", bucket, key, err)
+	}
+	if result.LegalHold == nil {
+		return "", nil
+	}
+	return string(result.LegalHold.Status), nil
+}
+
+// PutObjectLockConfiguration sets the object lock configuration for a bucket.
+func (c *s3Client) PutObjectLockConfiguration(ctx context.Context, bucket string, config *ObjectLockConfiguration) error {
+	input := &s3.PutObjectLockConfigurationInput{
+		Bucket: aws.String(bucket),
+	}
+	if config != nil {
+		cfg := &types.ObjectLockConfiguration{
+			ObjectLockEnabled: types.ObjectLockEnabled(config.ObjectLockEnabled),
+		}
+		if config.Rule != nil && config.Rule.DefaultRetention != nil {
+			cfg.Rule = &types.ObjectLockRule{
+				DefaultRetention: &types.DefaultRetention{
+					Mode: types.ObjectLockRetentionMode(config.Rule.DefaultRetention.Mode),
+				},
+			}
+			if config.Rule.DefaultRetention.Days != nil {
+				cfg.Rule.DefaultRetention.Days = config.Rule.DefaultRetention.Days
+			}
+			if config.Rule.DefaultRetention.Years != nil {
+				cfg.Rule.DefaultRetention.Years = config.Rule.DefaultRetention.Years
+			}
+		}
+		input.ObjectLockConfiguration = cfg
+	}
+	_, err := c.client.PutObjectLockConfiguration(ctx, input)
+	if err != nil {
+		return fmt.Errorf("failed to put object lock configuration for bucket %s: %w", bucket, err)
+	}
+	return nil
+}
+
+// GetObjectLockConfiguration gets the object lock configuration for a bucket.
+func (c *s3Client) GetObjectLockConfiguration(ctx context.Context, bucket string) (*ObjectLockConfiguration, error) {
+	input := &s3.GetObjectLockConfigurationInput{
+		Bucket: aws.String(bucket),
+	}
+	result, err := c.client.GetObjectLockConfiguration(ctx, input)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get object lock configuration for bucket %s: %w", bucket, err)
+	}
+	if result.ObjectLockConfiguration == nil {
+		return nil, nil
+	}
+	cfg := &ObjectLockConfiguration{
+		ObjectLockEnabled: string(result.ObjectLockConfiguration.ObjectLockEnabled),
+	}
+	if result.ObjectLockConfiguration.Rule != nil && result.ObjectLockConfiguration.Rule.DefaultRetention != nil {
+		cfg.Rule = &LockRule{
+			DefaultRetention: &DefaultRetention{
+				Mode: string(result.ObjectLockConfiguration.Rule.DefaultRetention.Mode),
+			},
+		}
+		if result.ObjectLockConfiguration.Rule.DefaultRetention.Days != nil {
+			cfg.Rule.DefaultRetention.Days = result.ObjectLockConfiguration.Rule.DefaultRetention.Days
+		}
+		if result.ObjectLockConfiguration.Rule.DefaultRetention.Years != nil {
+			cfg.Rule.DefaultRetention.Years = result.ObjectLockConfiguration.Rule.DefaultRetention.Years
+		}
+	}
+	return cfg, nil
 }

@@ -51,11 +51,15 @@ type Metrics struct {
 	uploadPartCopyDuration            *prometheus.HistogramVec
 	uploadPartCopyLegacyFallbackTotal prometheus.Counter
 	// Admin and rotation metrics
-	kmsActiveKeyVersion     *prometheus.GaugeVec
-	kmsRotationOpsTotal     *prometheus.CounterVec
-	kmsRotationDuration     *prometheus.HistogramVec
+	kmsActiveKeyVersion      *prometheus.GaugeVec
+	kmsRotationOpsTotal      *prometheus.CounterVec
+	kmsRotationDuration      *prometheus.HistogramVec
 	kmsRotationInFlightWraps prometheus.Gauge
-	gatewayAdminAPIEnabled  prometheus.Gauge
+	gatewayAdminAPIEnabled   prometheus.Gauge
+
+	// V0.6-S3-2 — objects skipped by the key-rotation worker because
+	// they are Object-Lock-protected at the backend. See ADR 0008.
+	gatewayRotationSkippedLocked *prometheus.CounterVec
 }
 
 // NewMetrics creates a new metrics instance with default configuration.
@@ -272,6 +276,13 @@ func newMetricsWithRegistry(reg prometheus.Registerer, cfg Config) *Metrics {
 				Help: "Whether the admin API listener is enabled (1=enabled, 0=disabled)",
 			},
 		),
+		gatewayRotationSkippedLocked: factory.NewCounterVec(
+			prometheus.CounterOpts{
+				Name: "gateway_rotation_skipped_locked_total",
+				Help: "Objects skipped during key rotation because they are Object-Lock-protected at the backend (labelled by mode: COMPLIANCE, GOVERNANCE, LEGAL_HOLD).",
+			},
+			[]string{"mode"},
+		),
 	}
 }
 
@@ -321,6 +332,17 @@ func (m *Metrics) SetAdminAPIEnabled(enabled bool) {
 		val = 1.0
 	}
 	m.gatewayAdminAPIEnabled.Set(val)
+}
+
+// RecordRotationSkippedLocked records that a key-rotation attempt
+// skipped an object because it is Object-Lock-protected at the backend.
+// mode should be one of "COMPLIANCE", "GOVERNANCE", or "LEGAL_HOLD".
+// V0.6-S3-2 — see ADR 0008.
+func (m *Metrics) RecordRotationSkippedLocked(mode string) {
+	if m == nil || m.gatewayRotationSkippedLocked == nil {
+		return
+	}
+	m.gatewayRotationSkippedLocked.WithLabelValues(mode).Inc()
 }
 
 // GetRotatedReadsMetric returns the rotated reads metric (for testing).

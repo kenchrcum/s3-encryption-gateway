@@ -129,7 +129,7 @@ func TestProvider_Compatibility(t *testing.T) {
 
 	// Put object
 	ctx := context.Background()
-	err = client.PutObject(ctx, bucket, key, bytes.NewReader(testData), nil, nil, "")
+	err = client.PutObject(ctx, bucket, key, bytes.NewReader(testData), nil, nil, "", nil)
 	if err != nil {
 		t.Fatalf("PutObject failed with MinIO provider: %v", err)
 	}

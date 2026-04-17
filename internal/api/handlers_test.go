@@ -49,23 +49,39 @@ type mockS3Client struct {
 	objects  map[string][]byte
 	metadata map[string]map[string]string
 	errors   map[string]error
+
+	// Object-Lock recording (V0.6-S3-2). Readers MUST hold mu; writers
+	// hold mu for write.
+	locksMu          sync.Mutex
+	lastPutLock      *s3.ObjectLockInput
+	lastCopyLock     *s3.ObjectLockInput
+	lastCompleteLock *s3.ObjectLockInput
+	retentions       map[string]*s3.RetentionConfig
+	legalHolds       map[string]string
+	lockConfigs      map[string]*s3.ObjectLockConfiguration
 }
 
 func newMockS3Client() *mockS3Client {
 	return &mockS3Client{
-		objects:  make(map[string][]byte),
-		metadata: make(map[string]map[string]string),
-		errors:   make(map[string]error),
+		objects:     make(map[string][]byte),
+		metadata:    make(map[string]map[string]string),
+		errors:      make(map[string]error),
+		retentions:  make(map[string]*s3.RetentionConfig),
+		legalHolds:  make(map[string]string),
+		lockConfigs: make(map[string]*s3.ObjectLockConfiguration),
 	}
 }
 
-func (m *mockS3Client) PutObject(ctx context.Context, bucket, key string, reader io.Reader, metadata map[string]string, contentLength *int64, tags string) error {
+func (m *mockS3Client) PutObject(ctx context.Context, bucket, key string, reader io.Reader, metadata map[string]string, contentLength *int64, tags string, lock *s3.ObjectLockInput) error {
 	if err := m.errors[bucket+"/"+key+"/put"]; err != nil {
 		return err
 	}
 	data, _ := io.ReadAll(reader)
 	m.objects[bucket+"/"+key] = data
 	m.metadata[bucket+"/"+key] = metadata
+	m.locksMu.Lock()
+	m.lastPutLock = lock
+	m.locksMu.Unlock()
 	return nil
 }
 
@@ -194,7 +210,10 @@ func (m *mockS3Client) UploadPart(ctx context.Context, bucket, key, uploadID str
 	return "\"etag-123\"", nil
 }
 
-func (m *mockS3Client) CompleteMultipartUpload(ctx context.Context, bucket, key, uploadID string, parts []s3.CompletedPart) (string, error) {
+func (m *mockS3Client) CompleteMultipartUpload(ctx context.Context, bucket, key, uploadID string, parts []s3.CompletedPart, lock *s3.ObjectLockInput) (string, error) {
+	m.locksMu.Lock()
+	m.lastCompleteLock = lock
+	m.locksMu.Unlock()
 	return "\"final-etag\"", nil
 }
 
@@ -206,7 +225,11 @@ func (m *mockS3Client) ListParts(ctx context.Context, bucket, key, uploadID stri
 	return []s3.PartInfo{}, nil
 }
 
-func (m *mockS3Client) CopyObject(ctx context.Context, dstBucket, dstKey string, srcBucket, srcKey string, srcVersionID *string, metadata map[string]string) (string, map[string]string, error) {
+func (m *mockS3Client) CopyObject(ctx context.Context, dstBucket, dstKey string, srcBucket, srcKey string, srcVersionID *string, metadata map[string]string, lock *s3.ObjectLockInput) (string, map[string]string, error) {
+	m.locksMu.Lock()
+	m.lastCopyLock = lock
+	m.locksMu.Unlock()
+
 	// Get source
 	srcReader, srcMeta, err := m.GetObject(ctx, srcBucket, srcKey, srcVersionID, nil)
 	if err != nil {
@@ -215,8 +238,10 @@ func (m *mockS3Client) CopyObject(ctx context.Context, dstBucket, dstKey string,
 	defer srcReader.Close()
 	data, _ := io.ReadAll(srcReader)
 
-	// Put as destination
-	if err := m.PutObject(ctx, dstBucket, dstKey, bytes.NewReader(data), metadata, nil, ""); err != nil {
+	// Put as destination. Pass the received lock through so the
+	// destination PutObject records it as lastPutLock as well (mirrors
+	// real-world behaviour).
+	if err := m.PutObject(ctx, dstBucket, dstKey, bytes.NewReader(data), metadata, nil, "", lock); err != nil {
 		return "", nil, err
 	}
 
@@ -397,7 +422,7 @@ func TestHandler_HandleGetObject(t *testing.T) {
 	handler := NewHandler(mockClient, mockEngine, logger, getTestMetrics())
 
 	// Pre-populate with test data
-	mockClient.PutObject(context.Background(), "test-bucket", "test-key", bytes.NewReader([]byte("test data")), nil, nil, "")
+	mockClient.PutObject(context.Background(), "test-bucket", "test-key", bytes.NewReader([]byte("test data")), nil, nil, "", nil)
 
 	router := mux.NewRouter()
 	handler.RegisterRoutes(router)
@@ -424,7 +449,7 @@ func TestHandler_HandleDeleteObject(t *testing.T) {
 	handler := NewHandler(mockClient, mockEngine, logger, getTestMetrics())
 
 	// Pre-populate with test data
-	mockClient.PutObject(context.Background(), "test-bucket", "test-key", bytes.NewReader([]byte("test data")), nil, nil, "")
+	mockClient.PutObject(context.Background(), "test-bucket", "test-key", bytes.NewReader([]byte("test data")), nil, nil, "", nil)
 
 	router := mux.NewRouter()
 	handler.RegisterRoutes(router)
@@ -453,7 +478,7 @@ func TestHandler_HandleHeadObject(t *testing.T) {
 	handler := NewHandler(mockClient, mockEngine, logger, getTestMetrics())
 
 	metadata := map[string]string{"content-type": "text/plain"}
-	mockClient.PutObject(context.Background(), "test-bucket", "test-key", bytes.NewReader([]byte("test")), metadata, nil, "")
+	mockClient.PutObject(context.Background(), "test-bucket", "test-key", bytes.NewReader([]byte("test")), metadata, nil, "", nil)
 
 	router := mux.NewRouter()
 	handler.RegisterRoutes(router)
@@ -537,8 +562,8 @@ func TestHandler_HandleListObjects(t *testing.T) {
 	handler := NewHandler(mockClient, mockEngine, logger, getTestMetrics())
 
 	// Pre-populate with test data
-	mockClient.PutObject(context.Background(), "test-bucket", "key1", bytes.NewReader([]byte("data1")), nil, nil, "")
-	mockClient.PutObject(context.Background(), "test-bucket", "key2", bytes.NewReader([]byte("data2")), nil, nil, "")
+	mockClient.PutObject(context.Background(), "test-bucket", "key1", bytes.NewReader([]byte("data1")), nil, nil, "", nil)
+	mockClient.PutObject(context.Background(), "test-bucket", "key2", bytes.NewReader([]byte("data2")), nil, nil, "", nil)
 
 	router := mux.NewRouter()
 	handler.RegisterRoutes(router)
@@ -576,7 +601,7 @@ func TestHandler_HandleListObjects_Delimiter(t *testing.T) {
 	}
 
 	for _, obj := range testObjects {
-		mockClient.PutObject(context.Background(), "test-bucket", obj.key, strings.NewReader(obj.data), nil, nil, "")
+		mockClient.PutObject(context.Background(), "test-bucket", obj.key, strings.NewReader(obj.data), nil, nil, "", nil)
 	}
 
 	router := mux.NewRouter()
@@ -662,7 +687,7 @@ func TestHandler_HandleListObjects_ContinuationToken(t *testing.T) {
 	for i := 0; i < 10; i++ {
 		key := fmt.Sprintf("object%03d.txt", i)
 		data := fmt.Sprintf("data%d", i)
-		mockClient.PutObject(context.Background(), "test-bucket", key, strings.NewReader(data), nil, nil, "")
+		mockClient.PutObject(context.Background(), "test-bucket", key, strings.NewReader(data), nil, nil, "", nil)
 	}
 
 	router := mux.NewRouter()
@@ -705,7 +730,7 @@ func TestHandler_HandleListObjects_Prefix(t *testing.T) {
 	}
 
 	for _, key := range testObjects {
-		mockClient.PutObject(context.Background(), "test-bucket", key, strings.NewReader("test data"), nil, nil, "")
+		mockClient.PutObject(context.Background(), "test-bucket", key, strings.NewReader("test data"), nil, nil, "", nil)
 	}
 
 	router := mux.NewRouter()
@@ -778,7 +803,7 @@ func TestHandler_HandleListObjects_MaxKeys(t *testing.T) {
 	for i := 0; i < 5; i++ {
 		key := fmt.Sprintf("object%d.txt", i)
 		data := fmt.Sprintf("data%d", i)
-		mockClient.PutObject(context.Background(), "test-bucket", key, strings.NewReader(data), nil, nil, "")
+		mockClient.PutObject(context.Background(), "test-bucket", key, strings.NewReader(data), nil, nil, "", nil)
 	}
 
 	router := mux.NewRouter()
@@ -848,7 +873,7 @@ func TestContentRangeMapping(t *testing.T) {
 
 	// Create mock S3 client and populate it
 	mockClient := newMockS3Client()
-	mockClient.PutObject(context.Background(), "test-bucket", "range-test", bytes.NewReader(encryptedData), metadata, nil, "")
+	mockClient.PutObject(context.Background(), "test-bucket", "range-test", bytes.NewReader(encryptedData), metadata, nil, "", nil)
 
 	// Create handler
 	logger := logrus.New()
@@ -1295,4 +1320,81 @@ func TestHandler_HandleCreateBucket(t *testing.T) {
 			}
 		})
 	}
+}
+
+// Object Lock mock methods (V0.6-S3-2). These record and recall state
+// so unit tests can assert round-trips.
+func (m *mockS3Client) PutObjectRetention(ctx context.Context, bucket, key string, versionID *string, retention *s3.RetentionConfig) error {
+	if err := m.errors[bucket+"/"+key+"/put_retention"]; err != nil {
+		return err
+	}
+	m.locksMu.Lock()
+	defer m.locksMu.Unlock()
+	if retention != nil {
+		cp := *retention
+		m.retentions[bucket+"/"+key] = &cp
+	} else {
+		delete(m.retentions, bucket+"/"+key)
+	}
+	return nil
+}
+
+func (m *mockS3Client) GetObjectRetention(ctx context.Context, bucket, key string, versionID *string) (*s3.RetentionConfig, error) {
+	if err := m.errors[bucket+"/"+key+"/get_retention"]; err != nil {
+		return nil, err
+	}
+	m.locksMu.Lock()
+	defer m.locksMu.Unlock()
+	if r, ok := m.retentions[bucket+"/"+key]; ok {
+		cp := *r
+		return &cp, nil
+	}
+	return nil, nil
+}
+
+func (m *mockS3Client) PutObjectLegalHold(ctx context.Context, bucket, key string, versionID *string, status string) error {
+	if err := m.errors[bucket+"/"+key+"/put_legal_hold"]; err != nil {
+		return err
+	}
+	m.locksMu.Lock()
+	defer m.locksMu.Unlock()
+	m.legalHolds[bucket+"/"+key] = status
+	return nil
+}
+
+func (m *mockS3Client) GetObjectLegalHold(ctx context.Context, bucket, key string, versionID *string) (string, error) {
+	if err := m.errors[bucket+"/"+key+"/get_legal_hold"]; err != nil {
+		return "", err
+	}
+	m.locksMu.Lock()
+	defer m.locksMu.Unlock()
+	return m.legalHolds[bucket+"/"+key], nil
+}
+
+func (m *mockS3Client) PutObjectLockConfiguration(ctx context.Context, bucket string, config *s3.ObjectLockConfiguration) error {
+	if err := m.errors[bucket+"/put_lock_config"]; err != nil {
+		return err
+	}
+	m.locksMu.Lock()
+	defer m.locksMu.Unlock()
+	if config != nil {
+		cp := *config
+		m.lockConfigs[bucket] = &cp
+	} else {
+		delete(m.lockConfigs, bucket)
+	}
+	return nil
+}
+
+func (m *mockS3Client) GetObjectLockConfiguration(ctx context.Context, bucket string) (*s3.ObjectLockConfiguration, error) {
+	if err := m.errors[bucket+"/get_lock_config"]; err != nil {
+		return nil, err
+	}
+	m.locksMu.Lock()
+	defer m.locksMu.Unlock()
+	if c, ok := m.lockConfigs[bucket]; ok {
+		cp := *c
+		return &cp, nil
+	}
+	return nil, nil
 }

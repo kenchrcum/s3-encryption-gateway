@@ -94,7 +94,7 @@ func (p *ProxyClient) ForwardRequest(ctx context.Context, originalReq *http.Requ
 }
 
 // PutObject forwards a PUT request to the backend.
-func (p *ProxyClient) PutObject(ctx context.Context, bucket, key string, reader io.Reader, metadata map[string]string, contentLength *int64, tags string) error {
+func (p *ProxyClient) PutObject(ctx context.Context, bucket, key string, reader io.Reader, metadata map[string]string, contentLength *int64, tags string, lock *ObjectLockInput) error {
 	return fmt.Errorf("ProxyClient.PutObject not implemented - use ForwardRequest in handler")
 }
 
@@ -129,7 +129,7 @@ func (p *ProxyClient) UploadPart(ctx context.Context, bucket, key, uploadID stri
 }
 
 // CompleteMultipartUpload is not implemented
-func (p *ProxyClient) CompleteMultipartUpload(ctx context.Context, bucket, key, uploadID string, parts []CompletedPart) (string, error) {
+func (p *ProxyClient) CompleteMultipartUpload(ctx context.Context, bucket, key, uploadID string, parts []CompletedPart, lock *ObjectLockInput) (string, error) {
 	return "", fmt.Errorf("ProxyClient.CompleteMultipartUpload not implemented")
 }
 
@@ -144,7 +144,7 @@ func (p *ProxyClient) ListParts(ctx context.Context, bucket, key, uploadID strin
 }
 
 // CopyObject forwards a PUT request with x-amz-copy-source to the backend for a copy operation.
-func (p *ProxyClient) CopyObject(ctx context.Context, dstBucket, dstKey string, srcBucket, srcKey string, srcVersionID *string, metadata map[string]string) (string, map[string]string, error) {
+func (p *ProxyClient) CopyObject(ctx context.Context, dstBucket, dstKey string, srcBucket, srcKey string, srcVersionID *string, metadata map[string]string, lock *ObjectLockInput) (string, map[string]string, error) {
 	// Build copy source header
 	copySource := fmt.Sprintf("%s/%s", srcBucket, srcKey)
 	if srcVersionID != nil && *srcVersionID != "" {
@@ -292,4 +292,34 @@ func (p *ProxyClient) UploadPartCopy(ctx context.Context, dstBucket, dstKey, upl
 // DeleteObjects is not implemented
 func (p *ProxyClient) DeleteObjects(ctx context.Context, bucket string, keys []ObjectIdentifier) ([]DeletedObject, []ErrorObject, error) {
 	return nil, nil, fmt.Errorf("ProxyClient.DeleteObjects not implemented")
+}
+
+// PutObjectRetention is not implemented
+func (p *ProxyClient) PutObjectRetention(ctx context.Context, bucket, key string, versionID *string, retention *RetentionConfig) error {
+	return fmt.Errorf("ProxyClient.PutObjectRetention not implemented - use ForwardRequest in handler")
+}
+
+// GetObjectRetention is not implemented
+func (p *ProxyClient) GetObjectRetention(ctx context.Context, bucket, key string, versionID *string) (*RetentionConfig, error) {
+	return nil, fmt.Errorf("ProxyClient.GetObjectRetention not implemented - use ForwardRequest in handler")
+}
+
+// PutObjectLegalHold is not implemented
+func (p *ProxyClient) PutObjectLegalHold(ctx context.Context, bucket, key string, versionID *string, status string) error {
+	return fmt.Errorf("ProxyClient.PutObjectLegalHold not implemented - use ForwardRequest in handler")
+}
+
+// GetObjectLegalHold is not implemented
+func (p *ProxyClient) GetObjectLegalHold(ctx context.Context, bucket, key string, versionID *string) (string, error) {
+	return "", fmt.Errorf("ProxyClient.GetObjectLegalHold not implemented - use ForwardRequest in handler")
+}
+
+// PutObjectLockConfiguration is not implemented
+func (p *ProxyClient) PutObjectLockConfiguration(ctx context.Context, bucket string, config *ObjectLockConfiguration) error {
+	return fmt.Errorf("ProxyClient.PutObjectLockConfiguration not implemented - use ForwardRequest in handler")
+}
+
+// GetObjectLockConfiguration is not implemented
+func (p *ProxyClient) GetObjectLockConfiguration(ctx context.Context, bucket string) (*ObjectLockConfiguration, error) {
+	return nil, fmt.Errorf("ProxyClient.GetObjectLockConfiguration not implemented - use ForwardRequest in handler")
 }

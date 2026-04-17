@@ -332,10 +332,52 @@ func (e *EncryptionEngine) DecryptStream(reader io.Reader) io.Reader {
 - **Version metadata**: Store encryption info per version
 - **Delete markers**: Handle appropriately
 
-### Object Locking
-- **Legal hold**: Pass through to backend
-- **Retention**: Pass through to backend
-- **Encryption compatibility**: Ensure no conflicts
+### Object Locking (V0.6-S3-2)
+
+Implemented as of v0.6. See `docs/adr/0008-object-lock-ciphertext-semantics.md`
+for the full rationale. High-level contract:
+
+- **Subresource endpoints routed and forwarded to backend**:
+  - `PUT  /{bucket}/{key}?retention` — PutObjectRetention
+  - `GET  /{bucket}/{key}?retention` — GetObjectRetention
+  - `PUT  /{bucket}/{key}?legal-hold` — PutObjectLegalHold
+  - `GET  /{bucket}/{key}?legal-hold` — GetObjectLegalHold
+  - `PUT  /{bucket}?object-lock` — PutObjectLockConfiguration
+  - `GET  /{bucket}?object-lock` — GetObjectLockConfiguration
+- **Request headers forwarded end-to-end** on `PutObject`,
+  `CopyObject`, and `CompleteMultipartUpload`:
+  `x-amz-object-lock-mode`, `x-amz-object-lock-retain-until-date`,
+  `x-amz-object-lock-legal-hold`. Invalid values produce `400
+  InvalidArgument` at the gateway; zero silent drops.
+- **Response headers surfaced** on `GET` and `HEAD` from
+  `HeadObjectOutput` / `GetObjectOutput`.
+- **`x-amz-bypass-governance-retention` is refused** with `403
+  AccessDenied` on PutObjectRetention, DeleteObject, and
+  DeleteObjects — pending V0.6-CFG-1's admin authorization.
+  Operators needing to reduce a governance-mode retention must
+  target the backend directly in v0.6.
+- **Ciphertext-locking.** Retention/LegalHold apply to the
+  ciphertext blob the backend stores. Key-rotation workers skip
+  locked objects and emit `gateway_rotation_skipped_locked_total`.
+  Operators must align KMS/KEK retention with the maximum Object
+  Lock retention window in use.
+
+#### Provider support matrix
+
+| Provider | Retention | Legal Hold | Bucket Config | Notes |
+|---|---|---|---|---|
+| AWS S3 | yes | yes | yes | Reference implementation. |
+| MinIO >= RELEASE.2021-01-30 | yes | yes | yes | Bucket must be created with `--with-lock`. |
+| Ceph RGW >= Pacific | yes | yes | yes | Feature-flagged; operator must enable. |
+| Wasabi (Immutable Storage) | yes | yes | yes | Underlying primitive is Wasabi Immutable Storage. |
+| Backblaze B2 S3-compat | partial | partial | partial | 501 on the unsupported subset. |
+| Hetzner Object Storage | partial | partial | partial | 501 on the unsupported subset. |
+| DigitalOcean Spaces | no | no | no | Returns 501 NotImplemented. |
+| Cloudflare R2 | no | no | no | Returns 501 NotImplemented. |
+| Garage | no | no | no | Returns 501 NotImplemented. |
+
+Unsupported providers return `501 NotImplemented`; the response
+references this matrix.
 
 ### Compression
 - **Client compression**: Encrypt after compression

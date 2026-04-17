@@ -112,6 +112,19 @@ func (h *Handler) RegisterRoutes(r *mux.Router) {
 	// Multipart-specific PUT route
 	s3Router.HandleFunc("/{bucket:[^/]+}/{key:.+}", h.handleUploadPart).Methods("PUT").Queries("partNumber", "{partNumber:[0-9]+}", "uploadId", "{uploadId}")
 
+	// Object Lock subresources (object-level) — must be registered BEFORE the
+	// generic GET/PUT/{bucket}/{key:.+} routes so gorilla/mux matches the
+	// query-parameter-scoped handlers first. V0.6-S3-2.
+	s3Router.HandleFunc("/{bucket:[^/]+}/{key:.+}", h.handleGetObjectRetention).Methods("GET").Queries("retention", "")
+	s3Router.HandleFunc("/{bucket:[^/]+}/{key:.+}", h.handlePutObjectRetention).Methods("PUT").Queries("retention", "")
+	s3Router.HandleFunc("/{bucket:[^/]+}/{key:.+}", h.handleGetObjectLegalHold).Methods("GET").Queries("legal-hold", "")
+	s3Router.HandleFunc("/{bucket:[^/]+}/{key:.+}", h.handlePutObjectLegalHold).Methods("PUT").Queries("legal-hold", "")
+
+	// Object Lock configuration (bucket-level) — must be registered BEFORE
+	// the generic /{bucket} GET/PUT routes.
+	s3Router.HandleFunc("/{bucket}", h.handleGetObjectLockConfiguration).Methods("GET").Queries("object-lock", "")
+	s3Router.HandleFunc("/{bucket}", h.handlePutObjectLockConfiguration).Methods("PUT").Queries("object-lock", "")
+
 	// Generic S3 routes
 	s3Router.HandleFunc("/{bucket}", h.handleListObjects).Methods("GET")
 	s3Router.HandleFunc("/{bucket}", h.handleHeadBucket).Methods("HEAD")
@@ -1296,8 +1309,15 @@ func (h *Handler) handlePutObject(w http.ResponseWriter, r *http.Request) {
 		contentLengthPtr = &encLen
 	}
 
+	// Extract lock headers
+	lockInput, s3Err := extractObjectLockInput(r)
+	if s3Err != nil {
+		s3Err.WriteXML(w)
+		return
+	}
+
 	// Upload encrypted object with filtered metadata (streaming)
-	err = s3Client.PutObject(ctx, bucket, key, encryptedReader, s3Metadata, contentLengthPtr, tagging)
+	err = s3Client.PutObject(ctx, bucket, key, encryptedReader, s3Metadata, contentLengthPtr, tagging, lockInput)
 	if err != nil {
 		s3Err := TranslateError(err, bucket, key)
 		s3Err.WriteXML(w)
@@ -1344,6 +1364,14 @@ func (h *Handler) handleDeleteObject(w http.ResponseWriter, r *http.Request) {
 		s3Err.Resource = r.URL.Path
 		s3Err.WriteXML(w)
 		h.metrics.RecordHTTPRequest(r.Context(), "DELETE", r.URL.Path, s3Err.HTTPStatus, time.Since(start), 0)
+		return
+	}
+
+	// V0.6-S3-2: refuse x-amz-bypass-governance-retention unconditionally
+	// pending V0.6-CFG-1 admin authorization. Consistent with the
+	// PutObjectRetention path so clients see the same refusal regardless
+	// of entry point.
+	if refuseBypassGovernanceRetention(w, r, h, bucket, key, start) {
 		return
 	}
 
@@ -2356,7 +2384,13 @@ func (h *Handler) handleCompleteMultipartUpload(w http.ResponseWriter, r *http.R
 		}
 	}
 
-	etag, err := s3Client.CompleteMultipartUpload(ctx, bucket, key, uploadID, parts)
+	lockInput, s3Err := extractObjectLockInput(r)
+	if s3Err != nil {
+		s3Err.WriteXML(w)
+		return
+	}
+
+	etag, err := s3Client.CompleteMultipartUpload(ctx, bucket, key, uploadID, parts, lockInput)
 	if err != nil {
 		s3Err := TranslateError(err, bucket, key)
 		s3Err.WriteXML(w)
@@ -2701,9 +2735,15 @@ func (h *Handler) handleCopyObject(w http.ResponseWriter, r *http.Request, dstBu
 	}
 	s3Metadata := filterS3Metadata(encMetadata, filterKeys)
 
+	lockInput, s3Err := extractObjectLockInput(r)
+	if s3Err != nil {
+		s3Err.WriteXML(w)
+		return
+	}
+
 	// Upload encrypted copy with filtered metadata and known content length
 	encLen := int64(len(encryptedData))
-	err = s3Client.PutObject(ctx, dstBucket, dstKey, bytes.NewReader(encryptedData), s3Metadata, &encLen, tagging)
+	err = s3Client.PutObject(ctx, dstBucket, dstKey, bytes.NewReader(encryptedData), s3Metadata, &encLen, tagging, lockInput)
 	if err != nil {
 		s3Err := TranslateError(err, dstBucket, dstKey)
 		s3Err.WriteXML(w)
@@ -2753,6 +2793,12 @@ func (h *Handler) handleDeleteObjects(w http.ResponseWriter, r *http.Request) {
 		s3Err.Resource = r.URL.Path
 		s3Err.WriteXML(w)
 		h.metrics.RecordHTTPRequest(r.Context(), "POST", r.URL.Path, s3Err.HTTPStatus, time.Since(start), 0)
+		return
+	}
+
+	// V0.6-S3-2: refuse x-amz-bypass-governance-retention unconditionally
+	// on the batch-delete path as well. Pending V0.6-CFG-1.
+	if refuseBypassGovernanceRetention(w, r, h, bucket, "", start) {
 		return
 	}
 

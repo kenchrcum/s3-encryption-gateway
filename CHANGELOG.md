@@ -8,6 +8,35 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **Object Lock / Retention / Legal Hold pass-through** (V0.6-S3-2):
+  the six Object-Lock subresource endpoints are now routed
+  (`PUT/GET /{bucket}/{key}?retention`, `?legal-hold`, and
+  `PUT/GET /{bucket}?object-lock`) with strict XML validation, and
+  the three `x-amz-object-lock-*` request headers are now forwarded
+  end-to-end on `PutObject`, `CopyObject`, and
+  `CompleteMultipartUpload`. `GetObject` / `HeadObject` responses
+  surface the backend's `x-amz-object-lock-mode`,
+  `x-amz-object-lock-retain-until-date`, and
+  `x-amz-object-lock-legal-hold` headers. New ADR 0008 documents
+  ciphertext-locking semantics and the interaction with key rotation.
+
+### Changed
+
+- **`x-amz-bypass-governance-retention` is now refused rather than
+  silently dropped** (V0.6-S3-2). Any request carrying a truthy value
+  for this header on `PutObjectRetention`, `DeleteObject`, or
+  `DeleteObjects` now returns `403 AccessDenied` with an audit event
+  (`reason=admin_authorization_not_implemented`). The previous
+  behaviour (silent drop plus no retention effect) produced a false
+  sense of compliance. Admin-gated forwarding lands with V0.6-CFG-1.
+
+- **`Client` interface signatures** for `PutObject`, `CopyObject`,
+  and `CompleteMultipartUpload` now take an optional
+  `*ObjectLockInput`. Passing `nil` preserves the pre-change
+  behaviour.
+
+### Added
+
 - **Admin API for Key Rotation** (V0.6-CFG-1): Separate admin listener with
   bearer-token authentication providing a safe drain-and-cutover key rotation
   workflow. Endpoints: `start`, `status`, `commit`, `abort`. Includes

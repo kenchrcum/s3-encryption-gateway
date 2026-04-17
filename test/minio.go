@@ -563,7 +563,7 @@ func (m *MinIOTestServer) createBucketViaSDK() error {
 
 	// Try multiple times in case MinIO needs a moment to be ready
 	for attempts := 0; attempts < 5; attempts++ {
-		err = client.PutObject(ctx, m.Bucket, testKey, emptyReader, nil, nil, "")
+		err = client.PutObject(ctx, m.Bucket, testKey, emptyReader, nil, nil, "", nil)
 		if err == nil {
 			fmt.Printf("Successfully created bucket %s via SDK\n", m.Bucket)
 			return nil
