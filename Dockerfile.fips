@@ -1,5 +1,5 @@
 # Build stage for FIPS 140-3 compliant binary
-FROM golang:1.25-bookworm AS builder
+FROM golang:1.26-bookworm AS builder
 
 # Install build dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \
