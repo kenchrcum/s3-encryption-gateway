@@ -32,8 +32,10 @@ func NewMPUPartEncryptReader(
 		chunkSize = DefaultChunkSize
 	}
 
-	// Read the entire part body. Parts are ≥ 5 MiB (AWS minimum), so this
-	// buffers at most one part at a time which is acceptable.
+	// Read the entire part body into memory.
+	// TODO(V0.6-PERF-1): Replace io.ReadAll with a streaming implementation.
+	// Currently accepted per Phase D deferral since parts are typically 5 MiB
+	// and buffering one part at a time is acceptable in the short term.
 	plaintext, err := io.ReadAll(body)
 	if err != nil {
 		return nil, 0, fmt.Errorf("mpu_encrypter: read body: %w", err)

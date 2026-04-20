@@ -29,8 +29,10 @@ The S3 Encryption Gateway is a transparent HTTP proxy that sits between your app
 - **Transparent**: Point your S3 endpoint URL at the gateway — that's it
 - **AES-256-GCM or ChaCha20-Poly1305**: Authenticated encryption with per-object keys
 - **Full S3 API compatibility**: PUT, GET, HEAD, DELETE, List, multipart uploads, range requests
+- **Encrypted multipart uploads** (v0.6+, opt-in): Per-upload DEK + HKDF-SHA256 per-chunk IVs + AEAD manifest; ranged `GET` across part boundaries; end-to-end tamper detection ([ADR 0009](docs/adr/0009-encrypted-multipart-uploads.md))
 - **Multi-provider**: Works with AWS S3, MinIO, Wasabi, Hetzner, Ceph, Cloudflare R2, and more
 - **Production features**: Prometheus metrics, health checks, TLS, rate limiting, compression
+- **FIPS-compliant build profile** (`-tags=fips`): AES-256-GCM + HKDF-SHA256 + PBKDF2-HMAC-SHA256 only
 - **KMS integration**: Envelope encryption with Cosmian KMIP (AWS KMS and Vault Transit planned)
 - **Streaming**: Chunked encryption for large files with optimized range request handling
 
@@ -627,27 +629,40 @@ rate_limit:
 
 ### Multipart Upload Encryption
 
-**v0.6+**: Encrypted multipart uploads are opt-in per bucket (ADR 0009). When enabled,
-each multipart upload is encrypted with a dedicated per-upload Data Encryption Key (DEK),
-and every part is AEAD-encrypted with deterministically derived per-chunk IVs using
-HKDF-SHA256. The finalization manifest is stored as a companion object and the final
-object carries a metadata pointer.
+**v0.6+**: Encrypted multipart uploads are opt-in per bucket and fully
+functional. See [ADR 0009](docs/adr/0009-encrypted-multipart-uploads.md) for
+the full design rationale.
+
+| Property | Value |
+|---|---|
+| Per-upload key | Fresh 32-byte AES-256-GCM DEK at `CreateMultipartUpload` |
+| DEK wrapping | Via configured `KeyManager` (Cosmian KMIP, HSM, or built-in `PasswordKeyManager` that uses PBKDF2-HMAC-SHA256 + AES-256-GCM against the gateway encryption password) |
+| Per-chunk IV | `HKDF-Expand(SHA-256, dek, salt=sha256(uploadId), info=ivPrefix‖BE32(part)‖BE32(chunk))` — deterministic, collision-free |
+| State store | Valkey (or any Redis-protocol-compatible store); 7-day TTL; one hash per active upload |
+| Manifest | AEAD-encrypted companion object at `<key>.mpu-manifest`; main object metadata carries a pointer |
+| Ranged GET | Precise byte-range fetch via `EncRangeForPlaintextRange`; only the chunks covering the requested plaintext range are fetched and decrypted |
+| Tamper detection | AES-GCM tag failure on any chunk returns 500 and emits an `mpu.tamper_detected` audit event; first-chunk tamper returns 500 before any body is written |
+| FIPS | AES-256-GCM + HKDF-SHA256 — both FIPS-140 approved (works under `-tags=fips`) |
 
 #### Enabling encrypted multipart uploads
 
-Encrypted multipart uploads require a **Valkey** (Redis-compatible) instance for
-in-flight state storage. Configure it in your gateway config and opt-in per bucket
-policy:
+Encrypted multipart uploads require a **Valkey** (or Redis-protocol-compatible)
+instance for in-flight state storage. Enable per bucket via policy and configure
+the state store in the gateway config:
 
 ```yaml
+# config.yaml
 multipart_state:
   valkey:
     addr: "valkey.internal:6379"
-    password_env: "VALKEY_PASSWORD"
+    password_env: "VALKEY_PASSWORD"  # env var name (not the literal password)
     tls:
       enabled: true
       ca_file: "/etc/gateway/valkey-ca.pem"
-    ttl_seconds: 604800  # 7 days
+      cert_file: "/etc/gateway/valkey-client.pem"
+      key_file:  "/etc/gateway/valkey-client-key.pem"
+    ttl_seconds: 604800  # 7 days — refreshed on every UploadPart
+    pool_size: 16
 ```
 
 ```yaml
@@ -658,31 +673,103 @@ buckets:
 encrypt_multipart_uploads: true
 ```
 
-Default is `false` for backward compatibility. v0.7 will flip the default to `true`
-after a production soak period.
+All Valkey settings are also available as environment variables
+(`VALKEY_ADDR`, `VALKEY_TLS_ENABLED`, `VALKEY_TLS_CA_FILE`,
+`VALKEY_TTL_SECONDS`, etc.) so Kubernetes deployments can wire the subchart
+service name via the Helm chart without mounting a config file.
 
-#### Security properties
+The default is `false` for backward compatibility. v0.7 will flip the default
+to `true` after a production soak period.
 
-- **Per-upload DEK**: A fresh 32-byte AES-256-GCM key is generated for each
-  `CreateMultipartUpload`. The DEK is wrapped by the configured KeyManager and
-  stored in Valkey (never in plaintext).
-- **Deterministic IVs**: Per-chunk IVs are derived via
-  `HKDF-Expand(SHA-256, dek, salt=sha256(uploadId), info=ivPrefix||BE32(part)||BE32(chunk))`.
-  Retrying a failed part yields byte-identical ciphertext.
-- **At-rest verification**: Run `GET` on the raw backend bytes to confirm ciphertext.
-- **Tamper detection**: AES-GCM authentication tags are verified on every chunk
-  during `GET`. A modified part causes 500 with an audit event.
+#### Fail-closed guarantees
 
-#### Disabling multipart uploads (fail-closed)
+The gateway refuses to silently degrade security under any of these conditions:
 
-Deployments that cannot run Valkey can disable multipart uploads entirely:
+| Situation | Behaviour |
+|---|---|
+| `encrypt_multipart_uploads: true` on any policy + Valkey address not configured at startup | Process exits with a `Fatal` log — **no silent fallback to plaintext** |
+| Valkey reachable at startup but transient failure mid-upload (e.g. `LOADING`, `READONLY`, timeout) | 503 ServiceUnavailable on the affected request; client retries are safe because the IV schedule is deterministic |
+| `UploadPart` succeeds on backend but `AppendPart` to Valkey fails | 503 ServiceUnavailable; client retries overwrite the same part idempotently |
+| Policy is flipped mid-upload | In-flight uploads use the `PolicySnapshot` captured at `CreateMultipartUpload`; the flip only affects new uploads |
+| No `KeyManager` and an encrypted-MPU request arrives | 503 ServiceUnavailable with reason `"KeyManager not configured"` |
+| Plaintext Valkey + production config (`insecure_allow_plaintext: false`) | Startup refuses; emits a `gateway_mpu_valkey_insecure=1` gauge if overridden |
+
+The dedicated escape hatch for deployments that cannot run Valkey at all:
 
 ```yaml
 server:
-  disable_multipart_uploads: true  # Set via SERVER_DISABLE_MULTIPART_UPLOADS env var
+  disable_multipart_uploads: true  # env: SERVER_DISABLE_MULTIPART_UPLOADS
 ```
 
-This enforces a 5 GiB single-PUT ceiling but guarantees all data is encrypted.
+This enforces a 5 GiB single-PUT ceiling but guarantees all data is encrypted
+and requires no state infrastructure.
+
+#### Deploying Valkey with the Helm chart
+
+The Helm chart bundles an optional Valkey subchart
+(https://valkey.io/valkey-helm/) which is off by default:
+
+```yaml
+# values.yaml
+valkey:
+  enabled: true
+  architecture: standalone  # or "cluster" for HA
+  auth:
+    enabled: false           # enable + mount a secret for production
+```
+
+When `valkey.enabled=true`, the deployment template auto-wires `VALKEY_ADDR`
+to the subchart's `<release>-valkey:6379` service. Operators can also point
+at an external Valkey cluster via the `config.multipartState.valkey` values
+stanza — the two paths are mutually exclusive.
+
+> **Cost note for Wasabi / Glacier / S3 IA users:** The Valkey state store
+> exists precisely to avoid writing state objects to S3 — which on backends
+> with minimum-storage-duration policies (Wasabi: 90 days on Pay-Go; Glacier /
+> Standard-IA / One Zone-IA: 30–180 days) would incur significant phantom-
+> storage charges. Your *data* objects still land on whichever backend you
+> choose; only the ephemeral per-upload state lives in Valkey.
+
+#### Observability
+
+Seven Prometheus metrics track the multipart-encryption hot path:
+
+| Metric | Type | Labels | Emitted on |
+|---|---|---|---|
+| `gateway_mpu_encrypted_total` | counter | `result` | Every `CompleteMultipartUpload` on encrypted buckets |
+| `gateway_mpu_parts_total` | counter | `result` | Every `UploadPart` on encrypted buckets |
+| `gateway_mpu_state_store_ops_total` | counter | `op`, `result` | Every Valkey op (Get/Create/AppendPart/Delete) |
+| `gateway_mpu_state_store_latency_seconds` | histogram | `op` | Every Valkey op |
+| `gateway_mpu_valkey_up` | gauge | — | Ready-check HealthCheck |
+| `gateway_mpu_valkey_insecure` | gauge | — | Startup, if TLS is disabled |
+| `gateway_mpu_manifest_bytes` | histogram | — | Every `CompleteMultipartUpload` |
+
+Audit events emitted under the `mpu.*` event type: `mpu.create`, `mpu.part`,
+`mpu.complete`, `mpu.abort`, `mpu.tamper_detected`, `mpu.valkey_unavailable`.
+
+The `/readyz` endpoint (and its `/ready` alias) reports per-dependency status:
+
+```json
+{
+  "status": "ready",
+  "checks": {
+    "kms":    "ok",
+    "valkey": "ok"
+  }
+}
+```
+
+— and returns HTTP 503 with `status: "not_ready"` if any configured dependency
+fails its health check.
+
+#### Admin endpoints
+
+The admin API (bearer-auth, separate port) exposes two MPU operations:
+
+| Endpoint | Purpose |
+|---|---|
+| `POST /admin/mpu/abort/{uploadId}` | Force-abort an in-flight upload: calls backend `AbortMultipartUpload` (best-effort) and deletes the Valkey state key |
+| `GET /admin/mpu/list` | List active uploads via `SCAN mpu:*` with bucket, key, creation time — useful for diagnosing stuck uploads |
 
 ### Large File Handling
 
@@ -694,11 +781,15 @@ For files larger than S3 object size limits (AWS S3: 5TB, other providers vary):
 
 ### Encryption Details
 
-- **Algorithm**: AES-256-GCM (default) or ChaCha20-Poly1305
-- **Key Derivation**: PBKDF2 with 100,000+ iterations
-- **Encryption Mode**: Chunked encryption with per-chunk IVs for streaming support
-- **Range Requests**: Highly optimized - fetches only needed encrypted chunks (99.9%+ reduction in transfer/decryption)
-- **Multipart**: Encrypted per-part with HKDF-derived IVs (opt-in per bucket, requires Valkey — v0.6+)
+- **Algorithm**: AES-256-GCM (default) or ChaCha20-Poly1305 (non-FIPS only)
+- **Key Derivation**: PBKDF2-HMAC-SHA256 with 100,000+ iterations
+- **Encryption Mode**: Chunked AEAD with per-chunk IVs for streaming support
+- **Range Requests**: Highly optimized — fetches only needed encrypted chunks (99.9%+ reduction in transfer/decryption), including across multipart part boundaries
+- **Multipart**: Encrypted per-part with HKDF-SHA256-derived IVs; opt-in per
+  bucket; requires Valkey for in-flight state. Full round-trip including
+  ranged `GET` and end-to-end tamper detection (v0.6+, ADR 0009)
+- **FIPS**: AES-256-GCM + HKDF-SHA256 + PBKDF2-HMAC-SHA256 are all FIPS-140
+  approved; build with `-tags=fips`
 
 ## Compatible Backends
 
@@ -724,7 +815,18 @@ Using a backend not listed here? The gateway works with any service that impleme
 - **AWS KMS adapter** — native envelope encryption with AWS-managed keys
 - **HashiCorp Vault Transit** — key management via Vault's Transit secrets engine
 - **Structured audit logging** — compliance-ready audit trails with configurable sinks
-- **Multipart encryption** — encrypted multipart uploads with per-upload DEK and Valkey state (shipped in v0.6, ADR 0009)
+
+### Shipped in v0.6
+
+- **Multipart encryption** — encrypted multipart uploads with per-upload DEK,
+  HKDF-derived per-chunk IVs, AEAD manifest companion, ranged GET across part
+  boundaries, end-to-end tamper detection, Valkey state store, Helm subchart
+  wiring (ADR 0009)
+- **Pluggable KeyManager interface** (ADR 0004)
+- **FIPS-compliant crypto profile** (ADR 0005, `-tags=fips`)
+- **Multipart copy** (ADR 0006)
+- **Admin API with key-rotation state machine** (ADR 0007)
+- **Object Lock / Retention / Legal Hold pass-through** (ADR 0008)
 
 ### Future
 
@@ -743,7 +845,8 @@ We welcome contributions! Please see [`docs/DEVELOPMENT_GUIDE.md`](docs/DEVELOPM
 
 - **Additional KMS adapters** — AWS KMS, Vault Transit, Azure Key Vault, GCP Cloud KMS
 - **Backend testing** — testing with more S3-compatible storage providers
-- **Multipart encryption** — research and implementation of encrypted multipart uploads
+- **Interop matrix for encrypted multipart uploads** — verify AWS CLI, boto3, `aws-sdk-go-v2`, `minio-go` all round-trip correctly at 1 MiB / 8 MiB / 100 MiB / 500 MiB payload sizes against real backends
+- **Zero-copy streaming encrypt/decrypt** — currently `UploadPart` buffers one part at a time via `io.ReadAll` (V0.6-PERF-1 follow-up)
 - **Documentation** — guides, tutorials, and integration examples
 - **Performance benchmarks** — throughput and latency measurements across providers
 

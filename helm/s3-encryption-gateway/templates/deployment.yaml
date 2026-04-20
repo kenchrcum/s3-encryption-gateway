@@ -173,6 +173,43 @@ spec:
         {{- include "s3-encryption-gateway.envVar" (dict "name" "AUDIT_SINK_RETRY_COUNT" "value" .Values.config.audit.sink.retryCount.value "valueFrom" .Values.config.audit.sink.retryCount.valueFrom) | nindent 8 }}
         {{- include "s3-encryption-gateway.envVar" (dict "name" "AUDIT_SINK_RETRY_BACKOFF" "value" .Values.config.audit.sink.retryBackoff.value "valueFrom" .Values.config.audit.sink.retryBackoff.valueFrom) | nindent 8 }}
         {{- end }}
+        {{- /* Valkey / MPU state store env vars (V0.6-SEC-3). Auto-wires the Valkey
+               subchart address when enabled; operators can also set these from the
+               parent .Values.config.multipartState.valkey.* stanza directly. */ -}}
+        {{- if .Values.valkey.enabled }}
+        - name: VALKEY_ADDR
+          value: "{{ .Release.Name }}-valkey:6379"
+        {{- else if .Values.config.multipartState.valkey.addr.value }}
+        - name: VALKEY_ADDR
+          value: {{ .Values.config.multipartState.valkey.addr.value | quote }}
+        {{- else if .Values.config.multipartState.valkey.addr.valueFrom }}
+        - name: VALKEY_ADDR
+          valueFrom: {{ toYaml .Values.config.multipartState.valkey.addr.valueFrom | nindent 12 }}
+        {{- end }}
+        {{- if .Values.config.multipartState.valkey.tls.enabled.value }}
+        - name: VALKEY_TLS_ENABLED
+          value: {{ .Values.config.multipartState.valkey.tls.enabled.value | quote }}
+        {{- end }}
+        {{- if .Values.config.multipartState.valkey.tls.caFile.value }}
+        - name: VALKEY_TLS_CA_FILE
+          value: {{ .Values.config.multipartState.valkey.tls.caFile.value | quote }}
+        {{- end }}
+        {{- if .Values.config.multipartState.valkey.tls.certFile.value }}
+        - name: VALKEY_TLS_CERT_FILE
+          value: {{ .Values.config.multipartState.valkey.tls.certFile.value | quote }}
+        {{- end }}
+        {{- if .Values.config.multipartState.valkey.tls.keyFile.value }}
+        - name: VALKEY_TLS_KEY_FILE
+          value: {{ .Values.config.multipartState.valkey.tls.keyFile.value | quote }}
+        {{- end }}
+        {{- if .Values.config.multipartState.valkey.insecureAllowPlaintext.value }}
+        - name: VALKEY_INSECURE_ALLOW_PLAINTEXT
+          value: {{ .Values.config.multipartState.valkey.insecureAllowPlaintext.value | quote }}
+        {{- end }}
+        {{- if .Values.config.multipartState.valkey.ttlSeconds.value }}
+        - name: VALKEY_TTL_SECONDS
+          value: {{ .Values.config.multipartState.valkey.ttlSeconds.value | quote }}
+        {{- end }}
         {{- with .Values.extraEnv }}
         {{- toYaml . | nindent 8 }}
         {{- end }}

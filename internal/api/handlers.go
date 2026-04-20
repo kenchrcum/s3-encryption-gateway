@@ -121,18 +121,22 @@ func (h *Handler) uploadStateEncrypted(ctx context.Context, uploadID string) (*m
 		// allowed.
 		return nil, false, nil
 	}
+	opStart := time.Now()
 	state, err := h.mpuStateStore.Get(ctx, uploadID)
 	if err != nil {
 		if errors.Is(err, mpu.ErrUploadNotFound) {
 			// Normal path for plaintext MPU — upload was never registered in Valkey.
+			h.metrics.RecordMPUStateStoreOp("Get", "not_found", time.Since(opStart))
 			return nil, false, nil
 		}
 		// Transient infra error (Valkey down, timeout). Do NOT downgrade
 		// to plaintext silently — the upload may actually be encrypted and
 		// proceeding plaintext would write unencrypted data to a destination
 		// that the client thinks is encrypted. Caller must surface as 503.
+		h.metrics.RecordMPUStateStoreOp("Get", "error", time.Since(opStart))
 		return nil, false, err
 	}
+	h.metrics.RecordMPUStateStoreOp("Get", "success", time.Since(opStart))
 	return state, state.PolicySnapshot.EncryptMultipartUploads, nil
 }
 
@@ -2570,76 +2574,16 @@ func (h *Handler) handleUploadPart(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// For multipart uploads, skip encryption to avoid concatenation issues
-	// Each part would be encrypted individually, but when concatenated on the backend,
-	// this creates multiple encrypted streams that cannot be decrypted as a single object
+	// Default: no encryption layer added here (plaintext parts per ADR 0002, or
+	// encrypted per-upload DEK below when the upload has a Valkey state record).
 	var encryptedReader io.Reader = r.Body
-	var encMetadata map[string]string
 	var contentLengthPtr *int64
 	// encMPUState is non-nil only for encrypted MPU parts; used after UploadPart
 	// to record the PartRecord without a second Valkey round-trip.
 	var encMPUState *mpu.UploadState
 	var encMPUPlainLen int64
 
-	if uploadID == "" {
-		// Single-part upload: encrypt the data
-		metadata := make(map[string]string)
-		var originalBytes int64
-		if contentLength := r.Header.Get("Content-Length"); contentLength != "" {
-			if parsed, parseErr := strconv.ParseInt(contentLength, 10, 64); parseErr == nil && parsed >= 0 {
-				originalBytes = parsed
-			} else {
-				h.logger.WithError(parseErr).WithFields(logrus.Fields{
-					"bucket":   bucket,
-					"key":      key,
-					"uploadID": uploadID,
-				}).Warn("Invalid Content-Length for upload part; proceeding without content length optimization")
-			}
-		}
-
-		// Get encryption engine
-		engine, err := h.getEncryptionEngine(bucket)
-		if err != nil {
-			h.logger.WithError(err).Error("Failed to get encryption engine")
-			s3Err := &S3Error{Code: "InternalError", Message: "Failed to load encryption configuration", Resource: r.URL.Path, HTTPStatus: http.StatusInternalServerError}
-			s3Err.WriteXML(w)
-			h.metrics.RecordHTTPRequest(r.Context(), "PUT", r.URL.Path, s3Err.HTTPStatus, time.Since(start), 0)
-			return
-		}
-
-		encryptedReader, encMetadata, err = engine.Encrypt(r.Body, metadata)
-		if err != nil {
-			h.logger.WithError(err).Error("Failed to encrypt part")
-			s3Err := &S3Error{
-				Code:       "InternalError",
-				Message:    "Failed to encrypt part",
-				Resource:   r.URL.Path,
-				HTTPStatus: http.StatusInternalServerError,
-			}
-			s3Err.WriteXML(w)
-			h.metrics.RecordHTTPRequest(r.Context(), "PUT", r.URL.Path, s3Err.HTTPStatus, time.Since(start), 0)
-			return
-		}
-
-		// Provide encrypted content length when possible to avoid SDK re-reads
-		if originalBytes > 0 {
-			const aeadTagSize = 16
-			if encMetadata[crypto.MetaChunkedFormat] == "true" {
-				chunkSize := crypto.DefaultChunkSize
-				if csStr := encMetadata[crypto.MetaChunkSize]; csStr != "" {
-					if cs, err := strconv.Atoi(csStr); err == nil && cs > 0 {
-						chunkSize = cs
-					}
-				}
-				chunkCount := (originalBytes + int64(chunkSize) - 1) / int64(chunkSize)
-				encLen := originalBytes + chunkCount*int64(aeadTagSize)
-				contentLengthPtr = &encLen
-			} else if encMetadata[crypto.MetaEncrypted] == "true" {
-				encLen := originalBytes + int64(aeadTagSize)
-				contentLengthPtr = &encLen
-			}
-		}
-	} else if uploadState, isEnc, stateErr := h.uploadStateEncrypted(ctx, uploadID); stateErr != nil {
+	if uploadState, isEnc, stateErr := h.uploadStateEncrypted(ctx, uploadID); stateErr != nil {
 		// Transient Valkey failure mid-upload — do NOT downgrade to plaintext.
 		// The upload may be an encrypted MPU whose state we temporarily can't
 		// read; proceeding plaintext would write unencrypted bytes under the
@@ -2673,11 +2617,15 @@ func (h *Handler) handleUploadPart(w http.ResponseWriter, r *http.Request) {
 	} else if isEnc {
 		// Encrypted multipart path — decision based on PolicySnapshot stored at
 		// CreateMultipartUpload, not live policy (ADR-0009 §Security Considerations).
+		// Determine the plaintext length for encryption metadata.
+		// Handle STREAMING-* (AWS chunked encoding) by checking x-amz-decoded-content-length.
 		var plainLen int64
-		if cl := r.Header.Get("Content-Length"); cl != "" {
-			if v, e := strconv.ParseInt(cl, 10, 64); e == nil && v >= 0 {
+		if decodedLen := r.Header.Get("x-amz-decoded-content-length"); decodedLen != "" {
+			if v, e := strconv.ParseInt(decodedLen, 10, 64); e == nil && v >= 0 {
 				plainLen = v
 			}
+		} else if r.ContentLength >= 0 {
+			plainLen = r.ContentLength
 		}
 
 		// Pass the pre-fetched state to avoid a second Valkey round-trip inside encryptMPUPart.
@@ -2700,14 +2648,14 @@ func (h *Handler) handleUploadPart(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		encryptedReader = encReader
-		encMetadata = make(map[string]string)
 		contentLengthPtr = &encLen
 		// Hoist state into outer scope so AppendPart can use it without a
 		// second Valkey round-trip after UploadPart succeeds.
 		encMPUState = uploadState
 		encMPUPlainLen = plainLen
 	} else {
-		// Multipart upload: skip encryption but buffer data to make it seekable for AWS SDK
+		// Plaintext multipart path (ADR 0002): buffer to make body seekable for
+		// the AWS SDK's retry behaviour.
 		partData, err := io.ReadAll(r.Body)
 		if err != nil {
 			h.logger.WithError(err).Error("Failed to read multipart upload part")
@@ -2722,7 +2670,6 @@ func (h *Handler) handleUploadPart(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		encryptedReader = bytes.NewReader(partData)
-		encMetadata = make(map[string]string)
 		partSize := int64(len(partData))
 		contentLengthPtr = &partSize
 	}
@@ -3111,10 +3058,13 @@ func (h *Handler) handleAbortMultipartUpload(w http.ResponseWriter, r *http.Requ
 // Prefer encryptMPUPartWithState when the state has already been fetched to
 // avoid a redundant Valkey round-trip.
 func (h *Handler) encryptMPUPart(ctx context.Context, bucket, uploadID string, partNumber int32, body io.Reader, plainLen int64) (io.Reader, int64, error) {
+	opStart := time.Now()
 	state, err := h.mpuStateStore.Get(ctx, uploadID)
 	if err != nil {
+		h.metrics.RecordMPUStateStoreOp("Get", "error", time.Since(opStart))
 		return nil, 0, fmt.Errorf("encryptMPUPart: get state: %w", err)
 	}
+	h.metrics.RecordMPUStateStoreOp("Get", "success", time.Since(opStart))
 	return h.encryptMPUPartWithState(ctx, bucket, uploadID, partNumber, body, plainLen, state)
 }
 
@@ -3355,10 +3305,13 @@ func (h *Handler) serveMPURangedGet(
 // metadata carries x-amz-meta-encrypted-mpu=true and the pointer set at
 // CreateMultipartUpload time.
 func (h *Handler) writeMPUManifestObject(ctx context.Context, uploadID, bucket, key string, s3Client s3.Client) error {
+	opStart := time.Now()
 	state, err := h.mpuStateStore.Get(ctx, uploadID)
 	if err != nil {
+		h.metrics.RecordMPUStateStoreOp("Get", "error", time.Since(opStart))
 		return fmt.Errorf("writeMPUManifest: get state: %w", err)
 	}
+	h.metrics.RecordMPUStateStoreOp("Get", "success", time.Since(opStart))
 
 	// Sort parts by part number for determinism.
 	sortedParts := sortedPartRecords(state.Parts)
@@ -3393,7 +3346,7 @@ func (h *Handler) writeMPUManifestObject(ctx context.Context, uploadID, bucket, 
 	if err != nil {
 		return fmt.Errorf("writeMPUManifest: marshal: %w", err)
 	}
-	
+
 	h.metrics.ObserveMPUManifestBytes(len(manifestJSON))
 	h.metrics.RecordMPUManifestStorage("fallback")
 

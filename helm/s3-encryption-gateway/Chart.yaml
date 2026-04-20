@@ -16,7 +16,13 @@ type: application
 version: 0.5.10
 appVersion: "0.5.10"
 dependencies:
+  # Valkey subchart for encrypted multipart upload state (V0.6-SEC-3 / ADR-0009).
+  # Enabled when `encryptMultipartUploads` is set on any bucket policy;
+  # otherwise leave disabled. Uses the community Valkey chart at
+  # https://valkey.io/valkey-helm/ (package `valkey/valkey` on Artifact Hub).
+  # Chosen over Bitnami because Bitnami's catalog moved to a commercial
+  # license model; this chart is Apache-2.0 + verified publisher.
   - name: valkey
-    version: ~0.1.0
-    repository: https://valkey-io.github.io/helm-charts/
+    version: "~0.9.0"
+    repository: https://valkey.io/valkey-helm/
     condition: valkey.enabled

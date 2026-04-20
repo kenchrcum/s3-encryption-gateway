@@ -44,23 +44,21 @@ func DeriveMultipartIV(dek []byte, uploadIDHash [32]byte, ivPrefix [12]byte, par
 	binary.BigEndian.PutUint32(info[12:16], partNumber)
 	binary.BigEndian.PutUint32(info[16:20], chunkIndex)
 
-	r := hkdf.Expand(sha256.New, dek, info)
-	// Incorporate uploadIDHash as additional salt by XOR-ing the first 12 bytes of a
-	// separate HKDF expansion keyed by uploadIDHash into the iv derivation.
-	// Equivalent: derive with salt=uploadIDHash, info as above.
-	r2 := hkdf.New(sha256.New, dek, uploadIDHash[:], info)
+	// Full HKDF (Extract-then-Expand) binds the derivation to the per-upload
+	// salt (sha256(uploadID)). Since DEK is already a uniformly-random 256-bit
+	// key, Extract is effectively a no-op wrt entropy, but salt is still used
+	// as HMAC-SHA256 key during Extract — so the output is uniquely namespaced
+	// per uploadID even if two uploads somehow ended up with the same DEK.
+	r := hkdf.New(sha256.New, dek, uploadIDHash[:], info)
 
 	var iv [mpuIVSize]byte
-	if _, err := io.ReadFull(r2, iv[:]); err != nil {
+	if _, err := io.ReadFull(r, iv[:]); err != nil {
 		// io.ReadFull from HKDF can only fail on malformed input; the sizes here are
 		// fixed and valid, so this path is unreachable in practice. Panic to make
 		// any future regression immediately visible during testing.
 		panic("mpu_iv: HKDF expansion failed: " + err.Error())
 	}
 
-	// r is used for its side-effect of consuming from the reader — not needed here;
-	// the r2 path is the authoritative derivation.
-	_ = r
 	return iv
 }
 

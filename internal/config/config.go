@@ -20,20 +20,20 @@ import (
 
 // Config holds the complete application configuration.
 type Config struct {
-	ListenAddr    string            `yaml:"listen_addr" env:"LISTEN_ADDR"`
-	LogLevel      string            `yaml:"log_level" env:"LOG_LEVEL"`
-	ProxiedBucket string            `yaml:"proxied_bucket" env:"PROXIED_BUCKET"` // If set, only this bucket will be accessible
-	Backend       BackendConfig     `yaml:"backend"`
-	Encryption    EncryptionConfig  `yaml:"encryption"`
-	Compression   CompressionConfig `yaml:"compression"`
-	Cache         CacheConfig       `yaml:"cache"`
-	Audit         AuditConfig       `yaml:"audit"`
-	TLS           TLSConfig         `yaml:"tls"`
-	Server        ServerConfig      `yaml:"server"`
-	RateLimit     RateLimitConfig   `yaml:"rate_limit"`
-	Tracing       TracingConfig     `yaml:"tracing"`
-	Metrics       MetricsConfig     `yaml:"metrics"`
-	Logging       LoggingConfig     `yaml:"logging"`
+	ListenAddr     string               `yaml:"listen_addr" env:"LISTEN_ADDR"`
+	LogLevel       string               `yaml:"log_level" env:"LOG_LEVEL"`
+	ProxiedBucket  string               `yaml:"proxied_bucket" env:"PROXIED_BUCKET"` // If set, only this bucket will be accessible
+	Backend        BackendConfig        `yaml:"backend"`
+	Encryption     EncryptionConfig     `yaml:"encryption"`
+	Compression    CompressionConfig    `yaml:"compression"`
+	Cache          CacheConfig          `yaml:"cache"`
+	Audit          AuditConfig          `yaml:"audit"`
+	TLS            TLSConfig            `yaml:"tls"`
+	Server         ServerConfig         `yaml:"server"`
+	RateLimit      RateLimitConfig      `yaml:"rate_limit"`
+	Tracing        TracingConfig        `yaml:"tracing"`
+	Metrics        MetricsConfig        `yaml:"metrics"`
+	Logging        LoggingConfig        `yaml:"logging"`
 	Admin          AdminConfig          `yaml:"admin"`
 	PolicyFiles    []string             `yaml:"policies" env:"POLICIES"`
 	MultipartState MultipartStateConfig `yaml:"multipart_state"`
@@ -252,10 +252,10 @@ type LoggingConfig struct {
 // gated by bearer-token authentication with constant-time comparison.
 // When enabled on a non-loopback address, TLS must be enabled.
 type AdminConfig struct {
-	Enabled   bool           `yaml:"enabled" env:"ADMIN_ENABLED"`
-	Address   string         `yaml:"address" env:"ADMIN_ADDRESS"`
-	TLS       AdminTLSConfig `yaml:"tls"`
-	Auth      AdminAuthConfig `yaml:"auth"`
+	Enabled   bool                 `yaml:"enabled" env:"ADMIN_ENABLED"`
+	Address   string               `yaml:"address" env:"ADMIN_ADDRESS"`
+	TLS       AdminTLSConfig       `yaml:"tls"`
+	Auth      AdminAuthConfig      `yaml:"auth"`
 	RateLimit AdminRateLimitConfig `yaml:"rate_limit"`
 }
 
@@ -268,9 +268,9 @@ type AdminTLSConfig struct {
 
 // AdminAuthConfig holds authentication settings for the admin API.
 type AdminAuthConfig struct {
-	Type      string `yaml:"type" env:"ADMIN_AUTH_TYPE"`           // Only "bearer" in v0.6
+	Type      string `yaml:"type" env:"ADMIN_AUTH_TYPE"`             // Only "bearer" in v0.6
 	TokenFile string `yaml:"token_file" env:"ADMIN_AUTH_TOKEN_FILE"` // File path; 0600, never inline
-	Token     string `yaml:"token" env:"ADMIN_AUTH_TOKEN"`          // Inline only with ADMIN_ALLOW_INLINE_TOKEN=1
+	Token     string `yaml:"token" env:"ADMIN_AUTH_TOKEN"`           // Inline only with ADMIN_ALLOW_INLINE_TOKEN=1
 }
 
 // AdminRateLimitConfig holds rate-limiting settings for the admin API.
@@ -285,13 +285,13 @@ type MultipartStateConfig struct {
 
 // ValkeyConfig holds the connection settings for the Valkey state store.
 type ValkeyConfig struct {
-	Addr   string `yaml:"addr" env:"VALKEY_ADDR"`   // e.g. "valkey.internal:6379"
+	Addr string `yaml:"addr" env:"VALKEY_ADDR"` // e.g. "valkey.internal:6379"
 	// Username for Valkey 6.0+ ACL auth (optional).
 	Username string `yaml:"username" env:"VALKEY_USERNAME"`
 	// PasswordEnv is the name of the environment variable that holds the
 	// plaintext password. Never the literal password.
-	PasswordEnv string `yaml:"password_env" env:"VALKEY_PASSWORD_ENV"`
-	DB          int    `yaml:"db" env:"VALKEY_DB"`
+	PasswordEnv string          `yaml:"password_env" env:"VALKEY_PASSWORD_ENV"`
+	DB          int             `yaml:"db" env:"VALKEY_DB"`
 	TLS         ValkeyTLSConfig `yaml:"tls"`
 	// InsecureAllowPlaintext permits a non-TLS Valkey connection.
 	// Development only. A startup warning and metric are emitted when true.
@@ -747,6 +747,52 @@ func loadFromEnv(config *Config) {
 	if v := os.Getenv("ADMIN_RATE_LIMIT_RPM"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n > 0 {
 			config.Admin.RateLimit.RequestsPerMinute = n
+		}
+	}
+
+	// Multipart-state / Valkey env bindings. Needed so the Helm chart can wire
+	// the Valkey subchart's service name into the gateway without requiring a
+	// ConfigMap-mounted config.yaml.
+	if v := os.Getenv("VALKEY_ADDR"); v != "" {
+		config.MultipartState.Valkey.Addr = v
+	}
+	if v := os.Getenv("VALKEY_USERNAME"); v != "" {
+		config.MultipartState.Valkey.Username = v
+	}
+	if v := os.Getenv("VALKEY_PASSWORD_ENV"); v != "" {
+		config.MultipartState.Valkey.PasswordEnv = v
+	}
+	if v := os.Getenv("VALKEY_DB"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
+			config.MultipartState.Valkey.DB = n
+		}
+	}
+	if v := os.Getenv("VALKEY_TLS_ENABLED"); v != "" {
+		config.MultipartState.Valkey.TLS.Enabled = v == "true" || v == "1"
+	}
+	if v := os.Getenv("VALKEY_TLS_CA_FILE"); v != "" {
+		config.MultipartState.Valkey.TLS.CAFile = v
+	}
+	if v := os.Getenv("VALKEY_TLS_CERT_FILE"); v != "" {
+		config.MultipartState.Valkey.TLS.CertFile = v
+	}
+	if v := os.Getenv("VALKEY_TLS_KEY_FILE"); v != "" {
+		config.MultipartState.Valkey.TLS.KeyFile = v
+	}
+	if v := os.Getenv("VALKEY_TLS_INSECURE_SKIP_VERIFY"); v != "" {
+		config.MultipartState.Valkey.TLS.InsecureSkipVerify = v == "true" || v == "1"
+	}
+	if v := os.Getenv("VALKEY_INSECURE_ALLOW_PLAINTEXT"); v != "" {
+		config.MultipartState.Valkey.InsecureAllowPlaintext = v == "true" || v == "1"
+	}
+	if v := os.Getenv("VALKEY_TTL_SECONDS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			config.MultipartState.Valkey.TTLSeconds = n
+		}
+	}
+	if v := os.Getenv("VALKEY_POOL_SIZE"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			config.MultipartState.Valkey.PoolSize = n
 		}
 	}
 }

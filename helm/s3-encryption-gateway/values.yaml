@@ -353,6 +353,34 @@ config:
       retryBackoff:
         value: "1s"
 
+  # ── Encrypted multipart upload state store (V0.6-SEC-3 / ADR-0009) ─────────
+  # When `valkey.enabled: true` (below, top-level), the deployment template
+  # auto-wires VALKEY_ADDR to the Valkey subchart's primary service. The
+  # values below are for supplying an external Valkey cluster instead; leave
+  # blank to inherit the in-cluster subchart address.
+  multipartState:
+    valkey:
+      addr:
+        value: ""
+        valueFrom: {}
+      tls:
+        enabled:
+          value: ""
+        caFile:
+          value: ""
+        certFile:
+          value: ""
+        keyFile:
+          value: ""
+      # insecureAllowPlaintext: set to "true" to allow plaintext Valkey in
+      # development ONLY. Production deployments should set tls.enabled=true.
+      insecureAllowPlaintext:
+        value: ""
+      # ttlSeconds: how long an in-flight MPU state record lives in Valkey
+      # before TTL expiry reaps it. Default (inside the gateway) is 604800 (7d).
+      ttlSeconds:
+        value: ""
+
 # cert-manager configuration
 certManager:
   # Issuer configuration

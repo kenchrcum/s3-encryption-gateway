@@ -67,6 +67,60 @@ func TestLoadConfig_EnvOverrides(t *testing.T) {
 	}
 }
 
+// TestLoadConfig_ValkeyEnvOverrides verifies the V0.6-SEC-3 / #14 env var
+// bindings for the Helm chart's Valkey subchart wiring.
+func TestLoadConfig_ValkeyEnvOverrides(t *testing.T) {
+	t.Setenv("ENCRYPTION_PASSWORD", "test-password-12345")
+	t.Setenv("BACKEND_ENDPOINT", "http://localhost:9000")
+	t.Setenv("BACKEND_ACCESS_KEY", "test-key")
+	t.Setenv("BACKEND_SECRET_KEY", "test-secret")
+	t.Setenv("VALKEY_ADDR", "valkey.prod.svc:6379")
+	t.Setenv("VALKEY_USERNAME", "default")
+	t.Setenv("VALKEY_PASSWORD_ENV", "VALKEY_PW")
+	t.Setenv("VALKEY_DB", "3")
+	t.Setenv("VALKEY_TLS_ENABLED", "true")
+	t.Setenv("VALKEY_TLS_CA_FILE", "/etc/tls/ca.pem")
+	t.Setenv("VALKEY_TLS_CERT_FILE", "/etc/tls/cert.pem")
+	t.Setenv("VALKEY_TLS_KEY_FILE", "/etc/tls/key.pem")
+	t.Setenv("VALKEY_TLS_INSECURE_SKIP_VERIFY", "false")
+	t.Setenv("VALKEY_INSECURE_ALLOW_PLAINTEXT", "false")
+	t.Setenv("VALKEY_TTL_SECONDS", "86400")
+	t.Setenv("VALKEY_POOL_SIZE", "32")
+
+	cfg, err := LoadConfig("")
+	if err != nil {
+		t.Fatalf("LoadConfig failed: %v", err)
+	}
+
+	if cfg.MultipartState.Valkey.Addr != "valkey.prod.svc:6379" {
+		t.Errorf("expected Valkey.Addr valkey.prod.svc:6379, got %s", cfg.MultipartState.Valkey.Addr)
+	}
+	if cfg.MultipartState.Valkey.Username != "default" {
+		t.Errorf("expected Username 'default', got %q", cfg.MultipartState.Valkey.Username)
+	}
+	if cfg.MultipartState.Valkey.DB != 3 {
+		t.Errorf("expected DB 3, got %d", cfg.MultipartState.Valkey.DB)
+	}
+	if !cfg.MultipartState.Valkey.TLS.Enabled {
+		t.Errorf("expected TLS.Enabled=true, got false")
+	}
+	if cfg.MultipartState.Valkey.TLS.CAFile != "/etc/tls/ca.pem" {
+		t.Errorf("expected TLS.CAFile /etc/tls/ca.pem, got %q", cfg.MultipartState.Valkey.TLS.CAFile)
+	}
+	if cfg.MultipartState.Valkey.TLS.CertFile != "/etc/tls/cert.pem" {
+		t.Errorf("expected TLS.CertFile /etc/tls/cert.pem, got %q", cfg.MultipartState.Valkey.TLS.CertFile)
+	}
+	if cfg.MultipartState.Valkey.InsecureAllowPlaintext {
+		t.Errorf("expected InsecureAllowPlaintext=false, got true")
+	}
+	if cfg.MultipartState.Valkey.TTLSeconds != 86400 {
+		t.Errorf("expected TTLSeconds 86400, got %d", cfg.MultipartState.Valkey.TTLSeconds)
+	}
+	if cfg.MultipartState.Valkey.PoolSize != 32 {
+		t.Errorf("expected PoolSize 32, got %d", cfg.MultipartState.Valkey.PoolSize)
+	}
+}
+
 func TestConfig_Validate(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -134,7 +188,7 @@ func TestConfig_Validate(t *testing.T) {
 			config: &Config{
 				ListenAddr: ":8080",
 				Backend: BackendConfig{
-					Endpoint:            "http://localhost:9000",
+					Endpoint:             "http://localhost:9000",
 					UseClientCredentials: true,
 					// AccessKey and SecretKey are empty - this is valid
 				},
@@ -149,7 +203,7 @@ func TestConfig_Validate(t *testing.T) {
 			config: &Config{
 				ListenAddr: ":8080",
 				Backend: BackendConfig{
-					Endpoint:            "http://localhost:9000",
+					Endpoint:             "http://localhost:9000",
 					UseClientCredentials: false,
 					// Missing AccessKey and SecretKey
 				},

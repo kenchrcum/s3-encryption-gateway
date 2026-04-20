@@ -80,6 +80,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
     `gateway_mpu_state_store_latency_seconds`, `gateway_mpu_valkey_up`,
     `gateway_mpu_valkey_insecure`, `gateway_mpu_manifest_bytes`,
     `gateway_mpu_manifest_storage_total`.
-  - New admin endpoints: `POST /admin/mpu/abort/{uploadId}`,
-    `GET /admin/mpu/list`.
+  - New admin endpoints (gated by existing admin bearer auth):
+    `POST /admin/mpu/abort/{uploadId}`, `GET /admin/mpu/list`.
+  - New audit events: `mpu.create`, `mpu.part`, `mpu.complete`,
+    `mpu.abort`, `mpu.tamper_detected`, `mpu.valkey_unavailable`.
+  - `/readyz` endpoint extended with per-dependency checks (kms,
+    valkey) returning a 503 with a JSON `checks` map when any
+    configured dependency is unhealthy. K8s-convention aliases
+    `/healthz`, `/readyz`, `/livez` added.
+  - Helm chart: optional `valkey` subchart dependency
+    (https://valkey.io/valkey-helm/, Apache-2.0, verified
+    publisher); `VALKEY_ADDR` auto-wired when
+    `valkey.enabled=true`. All Valkey config keys also accept env
+    var overrides (`VALKEY_ADDR`, `VALKEY_TLS_ENABLED`, etc.).
+  - FIPS-compliant: AES-256-GCM + HKDF-SHA256 primitives only; no
+    ChaCha20 dependency. All SEC-3 code passes `go test -tags=fips
+    -race` cleanly.
   - Default: `false` in v0.6 for soak. v0.7 flips default to `true`.
