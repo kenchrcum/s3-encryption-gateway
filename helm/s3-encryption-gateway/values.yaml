@@ -562,3 +562,9 @@ topologySpreadConstraints: []
 #       matchLabels:
 #         app.kubernetes.io/name: s3-encryption-gateway
 
+# Valkey subchart configuration (for MPU state store)
+valkey:
+  enabled: false
+  architecture: standalone
+  auth:
+    enabled: false

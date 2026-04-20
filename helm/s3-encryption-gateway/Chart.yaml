@@ -15,3 +15,8 @@ maintainers:
 type: application
 version: 0.5.10
 appVersion: "0.5.10"
+dependencies:
+  - name: valkey
+    version: ~0.1.0
+    repository: https://valkey-io.github.io/helm-charts/
+    condition: valkey.enabled
