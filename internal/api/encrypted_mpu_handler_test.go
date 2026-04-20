@@ -755,3 +755,80 @@ func min(a, b int) int {
 	}
 	return b
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Issue #5 regression: AppendPart failure must return 503, not 200.
+//
+// Previously the handler logged a Warn and returned 200 OK even when Valkey
+// rejected the AppendPart write. The backend part was committed but the state
+// record was absent; a subsequent CompleteMultipartUpload would produce a
+// manifest with the part missing and fail. The fix returns 503 so the client
+// can retry the part (idempotently overwriting the backend part) or abort.
+// ─────────────────────────────────────────────────────────────────────────────
+
+// failOnAppendStateStore wraps a real StateStore and injects an error only on
+// AppendPart, leaving Get/Create/Delete intact so the encrypted MPU path is
+// exercised fully up to the point of state recording.
+type failOnAppendStateStore struct {
+	mpu.StateStore
+	appendErr error
+}
+
+func (f *failOnAppendStateStore) AppendPart(_ context.Context, _ string, _ mpu.PartRecord) error {
+	return f.appendErr
+}
+
+func TestMPU_Issue5_AppendPartFailureReturns503(t *testing.T) {
+	handler, _, mr := newMPUTestHandler(t, "ap5-*")
+	router := mux.NewRouter()
+	handler.RegisterRoutes(router)
+
+	bucket, key := "ap5-bucket", "obj.bin"
+
+	// Step 1: CreateMultipartUpload — must succeed.
+	req := httptest.NewRequest("POST", "/"+bucket+"/"+key+"?uploads=", nil)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("Create: %d %s", w.Code, w.Body.String())
+	}
+	uploadID := extractUploadID(t, w.Body.String())
+
+	// Step 2: Wrap the real state store so AppendPart injects an error while
+	// Get/Create/Delete still hit miniredis normally. This simulates a transient
+	// write failure after the backend S3 UploadPart has already committed.
+	realStore := handler.mpuStateStore
+	handler.mpuStateStore = &failOnAppendStateStore{
+		StateStore: realStore,
+		appendErr:  fmt.Errorf("READONLY simulated Valkey write failure"),
+	}
+	t.Cleanup(func() { handler.mpuStateStore = realStore })
+
+	// Step 3: UploadPart — the backend S3 write succeeds (mock), but AppendPart
+	// to Valkey will fail. The handler MUST return 5xx, not 200.
+	part := bytes.Repeat([]byte("encrypted-data-"), 10_000)
+	req = httptest.NewRequest("PUT", fmt.Sprintf("/%s/%s?partNumber=1&uploadId=%s", bucket, key, uploadID),
+		bytes.NewReader(part))
+	req.Header.Set("Content-Length", fmt.Sprintf("%d", len(part)))
+	w = httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	if w.Code < 500 {
+		t.Errorf("UploadPart with AppendPart failure should return 5xx; got %d body=%s",
+			w.Code, w.Body.String())
+	}
+
+	// Step 4: Restore real store and confirm part:1 was never recorded in Valkey.
+	handler.mpuStateStore = realStore
+	for _, k := range mr.Keys() {
+		if !strings.HasPrefix(k, "mpu:") {
+			continue
+		}
+		partField := mr.HGet(k, "part:1")
+		if partField != "" {
+			t.Errorf("AppendPart failure should leave no part:1 in Valkey; found %q", partField)
+		}
+	}
+}
+
+

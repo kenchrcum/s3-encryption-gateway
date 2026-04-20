@@ -2492,6 +2492,10 @@ func (h *Handler) handleUploadPart(w http.ResponseWriter, r *http.Request) {
 	var encryptedReader io.Reader = r.Body
 	var encMetadata map[string]string
 	var contentLengthPtr *int64
+	// encMPUState is non-nil only for encrypted MPU parts; used after UploadPart
+	// to record the PartRecord without a second Valkey round-trip.
+	var encMPUState *mpu.UploadState
+	var encMPUPlainLen int64
 
 	if uploadID == "" {
 		// Single-part upload: encrypt the data
@@ -2583,6 +2587,10 @@ func (h *Handler) handleUploadPart(w http.ResponseWriter, r *http.Request) {
 		encryptedReader = encReader
 		encMetadata = make(map[string]string)
 		contentLengthPtr = &encLen
+		// Hoist state into outer scope so AppendPart can use it without a
+		// second Valkey round-trip after UploadPart succeeds.
+		encMPUState = uploadState
+		encMPUPlainLen = plainLen
 	} else {
 		// Multipart upload: skip encryption but buffer data to make it seekable for AWS SDK
 		partData, err := io.ReadAll(r.Body)
@@ -2619,22 +2627,21 @@ func (h *Handler) handleUploadPart(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// After a successful UploadPart on an encrypted MPU, record the part metadata.
-	// Use uploadStateEncrypted again (second call) because uploadState is not in
-	// scope here — it was declared inside the else-if block above. The Valkey
-	// Get is lightweight and only runs for encrypted uploads.
-	if _, isEnc := h.uploadStateEncrypted(ctx, uploadID); isEnc && contentLengthPtr != nil {
-		var plainLen int64
-		if cl := r.Header.Get("Content-Length"); cl != "" {
-			if v, e := strconv.ParseInt(cl, 10, 64); e == nil && v >= 0 {
-				plainLen = v
-			}
-		}
-		chunkCount := int32((plainLen + int64(crypto.DefaultChunkSize) - 1) / int64(crypto.DefaultChunkSize))
+	// After a successful UploadPart on an encrypted MPU, record the part metadata
+	// in Valkey. encMPUState is non-nil only for the encrypted path; it was
+	// populated inside the else-if branch above to avoid a second Valkey Get.
+	//
+	// Failure here is NOT silently swallowed: the backend part has been written
+	// but the state record is absent, so a subsequent CompleteMultipartUpload
+	// would produce a manifest with a missing part and fail. We must return 500
+	// so the client retries (which idempotently overwrites the backend part) or
+	// aborts the upload. Returning 200 here would be a silent data-loss path.
+	if encMPUState != nil && contentLengthPtr != nil {
+		chunkCount := int32((encMPUPlainLen + int64(crypto.DefaultChunkSize) - 1) / int64(crypto.DefaultChunkSize))
 		pr := mpu.PartRecord{
 			PartNumber: int32(partNumber),
 			ETag:       etag,
-			PlainLen:   plainLen,
+			PlainLen:   encMPUPlainLen,
 			EncLen:     *contentLengthPtr,
 			ChunkCount: chunkCount,
 		}
@@ -2644,7 +2651,17 @@ func (h *Handler) handleUploadPart(w http.ResponseWriter, r *http.Request) {
 				"key":        key,
 				"uploadID":   uploadID,
 				"partNumber": partNumber,
-			}).Warn("Failed to persist MPU part record; state may be incomplete")
+			}).Error("mpu.append_part.failure: backend part written but state not recorded; returning 500 so client retries")
+			h.metrics.RecordS3Error(r.Context(), "AppendMPUPartState", bucket, "StateUnavailable")
+			s3Err := &S3Error{
+				Code:       "ServiceUnavailable",
+				Message:    "Multipart encryption state store unavailable; retry the part upload",
+				Resource:   r.URL.Path,
+				HTTPStatus: http.StatusServiceUnavailable,
+			}
+			s3Err.WriteXML(w)
+			h.metrics.RecordHTTPRequest(r.Context(), "PUT", r.URL.Path, s3Err.HTTPStatus, time.Since(start), 0)
+			return
 		}
 	}
 
