@@ -539,12 +539,15 @@ func main() {
 	// Initialise Valkey state store for encrypted multipart uploads when any
 	// bucket policy enables EncryptMultipartUploads. Fail-closed: if Valkey is
 	// unreachable at startup and encrypted MPU is required, refuse to start.
+	var mpuStore mpupkg.StateStore
 	if cfg.MultipartState.Valkey.Addr != "" {
-		mpuStore, err := mpupkg.NewValkeyStateStore(context.Background(), cfg.MultipartState.Valkey)
+		var err error
+		mpuStore, err = mpupkg.NewValkeyStateStore(context.Background(), cfg.MultipartState.Valkey)
 		if err != nil {
 			logger.WithError(err).Fatal("Failed to initialise MPU Valkey state store")
 		}
 		handler.WithMPUStateStore(mpuStore)
+		m.SetMPUValkeyInsecure(!cfg.MultipartState.Valkey.TLS.Enabled)
 		logger.WithField("addr", cfg.MultipartState.Valkey.Addr).Info("MPU Valkey state store initialised")
 	}
 
@@ -666,6 +669,13 @@ func main() {
 		// Register rotation handler on admin mux
 		rotationHandler := api.NewAdminRotationHandler(encryptionEngine, logger, m, auditLogger)
 		rotationHandler.RegisterRoutes(adminServer.Mux())
+
+		// Register MPU admin endpoints
+		var abortFn admin.MPUAbortFunc
+		if s3Client != nil {
+			abortFn = s3Client.AbortMultipartUpload
+		}
+		admin.RegisterMPUAdminRoutes(adminServer.Mux(), mpuStore, abortFn, logger)
 
 		// Set admin API enabled metric
 		m.SetAdminAPIEnabled(true)

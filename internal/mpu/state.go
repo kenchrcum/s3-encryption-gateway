@@ -82,6 +82,9 @@ type StateStore interface {
 	// Delete removes the upload state. Safe to call on missing keys.
 	Delete(ctx context.Context, uploadID string) error
 
+	// List returns all active multipart uploads by scanning the store.
+	List(ctx context.Context) ([]UploadState, error)
+
 	// HealthCheck performs a lightweight liveness check against Valkey.
 	HealthCheck(ctx context.Context) error
 
@@ -283,6 +286,31 @@ func (s *ValkeyStateStore) Delete(ctx context.Context, uploadID string) error {
 		return wrapRedisErr(err)
 	}
 	return nil
+}
+
+// List uses SCAN to find all mpu:* keys and retrieves their UploadState.
+func (s *ValkeyStateStore) List(ctx context.Context) ([]UploadState, error) {
+	var states []UploadState
+	iter := s.client.Scan(ctx, 0, "mpu:*", 0).Iterator()
+	for iter.Next(ctx) {
+		key := iter.Val()
+		metaRaw, err := s.client.HGet(ctx, key, fieldMeta).Result()
+		if err != nil {
+			if errors.Is(err, redis.Nil) {
+				continue
+			}
+			return nil, wrapRedisErr(err)
+		}
+		var state UploadState
+		if err := json.Unmarshal([]byte(metaRaw), &state); err != nil {
+			return nil, fmt.Errorf("mpu: unmarshal state for key %s: %w", key, err)
+		}
+		states = append(states, state)
+	}
+	if err := iter.Err(); err != nil {
+		return nil, wrapRedisErr(err)
+	}
+	return states, nil
 }
 
 // HealthCheck pings Valkey with a 1-second timeout.
