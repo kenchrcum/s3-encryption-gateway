@@ -184,8 +184,11 @@ func (h *Handler) IsAdmin(r *http.Request) bool {
 // RegisterRoutes registers all API routes.
 func (h *Handler) RegisterRoutes(r *mux.Router) {
 	r.HandleFunc("/health", h.handleHealth).Methods("GET")
+	r.HandleFunc("/healthz", h.handleHealth).Methods("GET") // k8s-convention alias
 	r.HandleFunc("/ready", h.handleReady).Methods("GET")
+	r.HandleFunc("/readyz", h.handleReady).Methods("GET") // k8s-convention alias
 	r.HandleFunc("/live", h.handleLive).Methods("GET")
+	r.HandleFunc("/livez", h.handleLive).Methods("GET") // k8s-convention alias
 
 	// S3 API routes
 	s3Router := r.PathPrefix("/").Subrouter()
@@ -716,28 +719,48 @@ func (h *Handler) handleHealth(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleReady handles readiness check requests.
+// It runs a health check against every configured dependency (KMS, Valkey state
+// store) and returns 503 if any check fails, 200 otherwise. The response body
+// includes a per-component "checks" map so Kubernetes and operators can see
+// exactly which dependency is unhealthy.
 func (h *Handler) handleReady(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
 
-	// Create health check function if key manager is enabled
-	var healthCheck func(context.Context) error
+	// Build the list of named dependency checks. Only add a check when the
+	// dependency is actually configured — omitting it keeps the map clean for
+	// deployments that don't use that optional feature.
+	var checks []metrics.ReadyCheck
 	if h.keyManager != nil {
-		healthCheck = h.keyManager.HealthCheck
+		checks = append(checks, metrics.ReadyCheck{
+			Name:  "kms",
+			Check: h.keyManager.HealthCheck,
+		})
+	}
+	if h.mpuStateStore != nil {
+		checks = append(checks, metrics.ReadyCheck{
+			Name:  "valkey",
+			Check: h.mpuStateStore.HealthCheck,
+		})
 	}
 
-	// Check KMS health before calling handler
-	statusCode := http.StatusOK
-	if healthCheck != nil {
-		if err := healthCheck(r.Context()); err != nil {
-			statusCode = http.StatusServiceUnavailable
-		}
-	}
-
-	handler := metrics.ReadinessHandler(healthCheck)
-	handler(w, r)
-
-	h.metrics.RecordHTTPRequest(r.Context(), "GET", "/ready", statusCode, time.Since(start), 0)
+	// Wrap w so we can read back the status code for the metric without
+	// re-running every health check a second time.
+	rec := &statusRecorder{ResponseWriter: w, code: http.StatusOK}
+	metrics.ReadinessHandler(checks...)(rec, r)
+	h.metrics.RecordHTTPRequest(r.Context(), "GET", "/readyz", rec.code, time.Since(start), 0)
 }
+
+// statusRecorder wraps http.ResponseWriter to capture the written status code.
+type statusRecorder struct {
+	http.ResponseWriter
+	code int
+}
+
+func (s *statusRecorder) WriteHeader(code int) {
+	s.code = code
+	s.ResponseWriter.WriteHeader(code)
+}
+
 
 // handleLive handles liveness check requests.
 func (h *Handler) handleLive(w http.ResponseWriter, r *http.Request) {
