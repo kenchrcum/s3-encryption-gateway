@@ -1,5 +1,6 @@
 # Binaries
 bin/
+*.tgz
 *.exe
 *.exe~
 *.dll
