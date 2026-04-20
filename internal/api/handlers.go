@@ -98,27 +98,42 @@ func (h *Handler) bucketEncryptsMPU(bucket string) bool {
 	return h.policyManager.BucketEncryptsMultipart(bucket)
 }
 
-// uploadStateEncrypted fetches the Valkey UploadState for uploadID and returns
-// (state, true) when the upload was created with EncryptMultipartUploads=true.
-// Returns (nil, false) when the upload has no state record (plaintext MPU) or
-// when the infrastructure (state store / key manager) is absent.
+// uploadStateEncrypted fetches the Valkey UploadState for uploadID.
+//
+//   - (state, true, nil)  — upload is an encrypted MPU; use state.PolicySnapshot.
+//   - (nil,   false, nil) — upload has no state record: this is a *plaintext*
+//     MPU (created before Valkey was introduced, or on a bucket that doesn't
+//     require encryption). Safe to take the plaintext branch.
+//   - (nil,   false, err) — transient infrastructure failure (Valkey down,
+//     timeout, etc). The caller MUST treat this as fail-closed and refuse
+//     the request rather than silently downgrading to plaintext, because
+//     the upload may actually be encrypted and we just can't tell right now.
 //
 // This is the correct decision predicate for UploadPart, CompleteMultipartUpload,
 // and AbortMultipartUpload — it reads the PolicySnapshot stored at Create time
 // rather than the live policy, preventing mid-upload policy flips from affecting
-// in-flight encrypted uploads.
-func (h *Handler) uploadStateEncrypted(ctx context.Context, uploadID string) (*mpu.UploadState, bool) {
+// in-flight encrypted uploads (ADR-0009 §Security Considerations).
+func (h *Handler) uploadStateEncrypted(ctx context.Context, uploadID string) (*mpu.UploadState, bool, error) {
 	if h.mpuStateStore == nil || h.keyManager == nil {
-		return nil, false
+		// Infrastructure absent is structurally "not encrypted" — bucketEncryptsMPU
+		// + mpuGuardMisconfig at request entry already produced a 503 if the
+		// policy required encryption, so reaching here means plaintext is
+		// allowed.
+		return nil, false, nil
 	}
 	state, err := h.mpuStateStore.Get(ctx, uploadID)
 	if err != nil {
-		// ErrUploadNotFound is the normal path for non-encrypted uploads.
-		// Any other error is logged but treated as non-encrypted to avoid
-		// breaking plaintext uploads on transient Valkey hiccups.
-		return nil, false
+		if errors.Is(err, mpu.ErrUploadNotFound) {
+			// Normal path for plaintext MPU — upload was never registered in Valkey.
+			return nil, false, nil
+		}
+		// Transient infra error (Valkey down, timeout). Do NOT downgrade
+		// to plaintext silently — the upload may actually be encrypted and
+		// proceeding plaintext would write unencrypted data to a destination
+		// that the client thinks is encrypted. Caller must surface as 503.
+		return nil, false, err
 	}
-	return state, state.PolicySnapshot.EncryptMultipartUploads
+	return state, state.PolicySnapshot.EncryptMultipartUploads, nil
 }
 
 // mpuEncryptionReady reports whether the infrastructure required for
@@ -760,7 +775,6 @@ func (s *statusRecorder) WriteHeader(code int) {
 	s.code = code
 	s.ResponseWriter.WriteHeader(code)
 }
-
 
 // handleLive handles liveness check requests.
 func (h *Handler) handleLive(w http.ResponseWriter, r *http.Request) {
@@ -2578,7 +2592,28 @@ func (h *Handler) handleUploadPart(w http.ResponseWriter, r *http.Request) {
 				contentLengthPtr = &encLen
 			}
 		}
-	} else if uploadState, isEnc := h.uploadStateEncrypted(ctx, uploadID); isEnc {
+	} else if uploadState, isEnc, stateErr := h.uploadStateEncrypted(ctx, uploadID); stateErr != nil {
+		// Transient Valkey failure mid-upload — do NOT downgrade to plaintext.
+		// The upload may be an encrypted MPU whose state we temporarily can't
+		// read; proceeding plaintext would write unencrypted bytes under the
+		// client's encrypted multipart upload (silent security degradation).
+		h.logger.WithError(stateErr).WithFields(logrus.Fields{
+			"bucket":     bucket,
+			"key":        key,
+			"uploadID":   uploadID,
+			"partNumber": partNumber,
+		}).Error("mpu.state.unavailable: cannot determine upload encryption status; failing closed")
+		h.metrics.RecordS3Error(r.Context(), "UploadPart", bucket, "StateUnavailable")
+		s3Err := &S3Error{
+			Code:       "ServiceUnavailable",
+			Message:    "Multipart encryption state store unavailable; retry the part upload",
+			Resource:   r.URL.Path,
+			HTTPStatus: http.StatusServiceUnavailable,
+		}
+		s3Err.WriteXML(w)
+		h.metrics.RecordHTTPRequest(r.Context(), "PUT", r.URL.Path, s3Err.HTTPStatus, time.Since(start), 0)
+		return
+	} else if isEnc {
 		// Encrypted multipart path — decision based on PolicySnapshot stored at
 		// CreateMultipartUpload, not live policy (ADR-0009 §Security Considerations).
 		var plainLen int64
@@ -2777,7 +2812,24 @@ func (h *Handler) handleCompleteMultipartUpload(w http.ResponseWriter, r *http.R
 	// For encrypted MPU: consult the PolicySnapshot stored at Create time so
 	// a policy flip mid-upload cannot cause the manifest to be skipped or
 	// written for an upload that was never encrypted (ADR-0009).
-	_, completeIsEnc := h.uploadStateEncrypted(ctx, uploadID)
+	_, completeIsEnc, completeStateErr := h.uploadStateEncrypted(ctx, uploadID)
+	if completeStateErr != nil {
+		h.logger.WithError(completeStateErr).WithFields(logrus.Fields{
+			"bucket":   bucket,
+			"key":      key,
+			"uploadID": uploadID,
+		}).Error("mpu.state.unavailable: cannot determine encryption state at Complete; failing closed")
+		h.metrics.RecordS3Error(r.Context(), "CompleteMultipartUpload", bucket, "StateUnavailable")
+		s3Err := &S3Error{
+			Code:       "ServiceUnavailable",
+			Message:    "Multipart encryption state store unavailable; retry the Complete call",
+			Resource:   r.URL.Path,
+			HTTPStatus: http.StatusServiceUnavailable,
+		}
+		s3Err.WriteXML(w)
+		h.metrics.RecordHTTPRequest(r.Context(), "POST", r.URL.Path, s3Err.HTTPStatus, time.Since(start), 0)
+		return
+	}
 	if completeIsEnc {
 		if manifestErr := h.writeMPUManifestObject(ctx, uploadID, bucket, key, s3Client); manifestErr != nil {
 			h.logger.WithError(manifestErr).WithFields(logrus.Fields{
@@ -2903,7 +2955,17 @@ func (h *Handler) handleAbortMultipartUpload(w http.ResponseWriter, r *http.Requ
 
 	// Delete Valkey state for encrypted MPU aborts using the PolicySnapshot so
 	// a mid-upload policy flip cannot cause the state to be left orphaned.
-	if _, abortIsEnc := h.uploadStateEncrypted(ctx, uploadID); abortIsEnc {
+	// On transient state-store failure we log and rely on TTL expiry to clean
+	// up the orphan — backend abort has already succeeded so returning success
+	// to the client is correct.
+	_, abortIsEnc, abortStateErr := h.uploadStateEncrypted(ctx, uploadID)
+	if abortStateErr != nil {
+		h.logger.WithError(abortStateErr).WithFields(logrus.Fields{
+			"bucket":   bucket,
+			"key":      key,
+			"uploadID": uploadID,
+		}).Warn("mpu.abort: state-store unavailable; backend abort succeeded, state will expire via TTL")
+	} else if abortIsEnc {
 		if delErr := h.mpuStateStore.Delete(ctx, uploadID); delErr != nil {
 			h.logger.WithError(delErr).WithFields(logrus.Fields{
 				"bucket":   bucket,

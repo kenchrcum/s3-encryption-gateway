@@ -831,4 +831,243 @@ func TestMPU_Issue5_AppendPartFailureReturns503(t *testing.T) {
 	}
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Issue #5 regression: transient Valkey failure on Get during UploadPart /
+// CompleteMultipartUpload must return 503, NOT silently downgrade to
+// plaintext. The upload may be an encrypted MPU whose state is temporarily
+// unreadable; proceeding plaintext would produce a silent security
+// degradation.
+// ─────────────────────────────────────────────────────────────────────────────
 
+// failOnGetStateStore wraps a real StateStore and injects a non-NotFound error
+// on Get, preserving Create/Delete semantics. Emulates a transient Valkey
+// failure (e.g. READONLY, timeout) mid-upload.
+type failOnGetStateStore struct {
+	mpu.StateStore
+	getErr            error
+	injectAfterCreate bool // if true, only fail after the first Create has run
+	createsSeen       int
+}
+
+func (f *failOnGetStateStore) Create(ctx context.Context, s *mpu.UploadState) error {
+	f.createsSeen++
+	return f.StateStore.Create(ctx, s)
+}
+
+func (f *failOnGetStateStore) Get(ctx context.Context, uploadID string) (*mpu.UploadState, error) {
+	if f.injectAfterCreate && f.createsSeen == 0 {
+		return f.StateStore.Get(ctx, uploadID)
+	}
+	return nil, f.getErr
+}
+
+func TestMPU_Issue5_TransientGetFailure_UploadPart_Returns503(t *testing.T) {
+	handler, _, _ := newMPUTestHandler(t, "tg5-*")
+	router := mux.NewRouter()
+	handler.RegisterRoutes(router)
+
+	bucket, key := "tg5-bucket", "obj.bin"
+
+	// Create succeeds (state store is real at this point).
+	req := httptest.NewRequest("POST", "/"+bucket+"/"+key+"?uploads=", nil)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("Create: %d %s", w.Code, w.Body.String())
+	}
+	uploadID := extractUploadID(t, w.Body.String())
+
+	// Now inject a transient Get failure on the state store before UploadPart.
+	realStore := handler.mpuStateStore
+	handler.mpuStateStore = &failOnGetStateStore{
+		StateStore:        realStore,
+		getErr:            fmt.Errorf("LOADING Valkey is warming up"),
+		injectAfterCreate: false, // fail on every Get
+	}
+	t.Cleanup(func() { handler.mpuStateStore = realStore })
+
+	// UploadPart must refuse with 5xx — not silently downgrade to plaintext.
+	part := bytes.Repeat([]byte("A"), 1024*1024)
+	req = httptest.NewRequest("PUT",
+		fmt.Sprintf("/%s/%s?partNumber=1&uploadId=%s", bucket, key, uploadID),
+		bytes.NewReader(part))
+	req.Header.Set("Content-Length", fmt.Sprintf("%d", len(part)))
+	w = httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	if w.Code < 500 {
+		t.Errorf("UploadPart with transient Valkey Get failure should return 5xx (fail-closed); got %d body=%s",
+			w.Code, w.Body.String())
+	}
+}
+
+func TestMPU_Issue5_TransientGetFailure_Complete_Returns503(t *testing.T) {
+	handler, _, _ := newMPUTestHandler(t, "tg6-*")
+	router := mux.NewRouter()
+	handler.RegisterRoutes(router)
+
+	bucket, key := "tg6-bucket", "obj.bin"
+
+	// Create + one UploadPart — both must succeed against the real store.
+	req := httptest.NewRequest("POST", "/"+bucket+"/"+key+"?uploads=", nil)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("Create: %d %s", w.Code, w.Body.String())
+	}
+	uploadID := extractUploadID(t, w.Body.String())
+
+	part := bytes.Repeat([]byte("B"), 1024*1024)
+	req = httptest.NewRequest("PUT",
+		fmt.Sprintf("/%s/%s?partNumber=1&uploadId=%s", bucket, key, uploadID),
+		bytes.NewReader(part))
+	req.Header.Set("Content-Length", fmt.Sprintf("%d", len(part)))
+	w = httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("UploadPart: %d %s", w.Code, w.Body.String())
+	}
+	etag := w.Header().Get("ETag")
+
+	// Now inject a transient Get failure and attempt Complete.
+	realStore := handler.mpuStateStore
+	handler.mpuStateStore = &failOnGetStateStore{
+		StateStore: realStore,
+		getErr:     fmt.Errorf("connection refused"),
+	}
+	t.Cleanup(func() { handler.mpuStateStore = realStore })
+
+	completeXML := fmt.Sprintf(`<?xml version="1.0"?>
+<CompleteMultipartUpload><Part><PartNumber>1</PartNumber><ETag>%s</ETag></Part></CompleteMultipartUpload>`, etag)
+	req = httptest.NewRequest("POST", "/"+bucket+"/"+key+"?uploadId="+uploadID,
+		strings.NewReader(completeXML))
+	w = httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	if w.Code < 500 {
+		t.Errorf("Complete with transient Valkey Get failure should return 5xx (fail-closed); got %d body=%s",
+			w.Code, w.Body.String())
+	}
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Issue #6 regression: startup fail-closed when Valkey addr is unconfigured
+// but a policy requires encrypted MPU.
+// ─────────────────────────────────────────────────────────────────────────────
+
+func TestMPU_Issue6_AnyPolicyRequiresMPUEncryption(t *testing.T) {
+	// Case 1: no policies loaded → false.
+	pm := config.NewPolicyManager()
+	if pm.AnyPolicyRequiresMPUEncryption() {
+		t.Error("empty policy manager should not require MPU encryption")
+	}
+
+	// Case 2: nil receiver → false.
+	var nilPM *config.PolicyManager
+	if nilPM.AnyPolicyRequiresMPUEncryption() {
+		t.Error("nil policy manager should not require MPU encryption")
+	}
+
+	// Case 3: policy with EncryptMultipartUploads=false → false.
+	policyDir := t.TempDir()
+	noEnc := `id: no-enc
+buckets: ["*"]
+encrypt_multipart_uploads: false
+`
+	if err := os.WriteFile(policyDir+"/p.yaml", []byte(noEnc), 0600); err != nil {
+		t.Fatal(err)
+	}
+	pm2 := config.NewPolicyManager()
+	if err := pm2.LoadPolicies([]string{policyDir + "/p.yaml"}); err != nil {
+		t.Fatal(err)
+	}
+	if pm2.AnyPolicyRequiresMPUEncryption() {
+		t.Error("policy with encrypt_multipart_uploads=false should not trigger startup gate")
+	}
+
+	// Case 4: policy with EncryptMultipartUploads=true → true (the fail-closed trigger).
+	policyDir2 := t.TempDir()
+	withEnc := `id: with-enc
+buckets: ["encrypted-*"]
+encrypt_multipart_uploads: true
+`
+	if err := os.WriteFile(policyDir2+"/p.yaml", []byte(withEnc), 0600); err != nil {
+		t.Fatal(err)
+	}
+	pm3 := config.NewPolicyManager()
+	if err := pm3.LoadPolicies([]string{policyDir2 + "/p.yaml"}); err != nil {
+		t.Fatal(err)
+	}
+	if !pm3.AnyPolicyRequiresMPUEncryption() {
+		t.Error("policy with encrypt_multipart_uploads=true MUST trigger startup gate")
+	}
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Issue #8 regression: /readyz reflects Valkey state-store health.
+// ─────────────────────────────────────────────────────────────────────────────
+
+func TestMPU_Issue8_ReadyzReflectsValkeyHealth(t *testing.T) {
+	handler, _, mr := newMPUTestHandler(t, "rdy-*")
+	router := mux.NewRouter()
+	handler.RegisterRoutes(router)
+
+	// Happy path: Valkey is up → 200.
+	req := httptest.NewRequest("GET", "/readyz", nil)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("ready when up: %d %s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), `"valkey":"ok"`) {
+		t.Errorf("expected valkey check in body; got %s", w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), `"kms":"ok"`) {
+		t.Errorf("expected kms check in body; got %s", w.Body.String())
+	}
+
+	// Failure path: close miniredis → /readyz must return 503 with valkey:unavailable.
+	mr.Close()
+	req = httptest.NewRequest("GET", "/readyz", nil)
+	w = httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+	if w.Code != http.StatusServiceUnavailable {
+		t.Errorf("ready after Valkey close should be 503; got %d body=%s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "valkey") {
+		t.Errorf("failed valkey check should appear in body; got %s", w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), `"status":"not_ready"`) {
+		t.Errorf("body should mark status=not_ready; got %s", w.Body.String())
+	}
+}
+
+// TestMPU_Issue5_NotFound_IsPlaintext verifies the benign case: when Get
+// returns ErrUploadNotFound (i.e. the upload was never registered in Valkey —
+// a plaintext MPU), the handler takes the plaintext branch, NOT a 5xx.
+func TestMPU_Issue5_NotFound_IsPlaintext(t *testing.T) {
+	handler, _, _ := newMPUTestHandler(t, "nf5-*")
+	router := mux.NewRouter()
+	handler.RegisterRoutes(router)
+
+	bucket, key := "nf5-bucket", "obj.bin"
+
+	// Fabricate an uploadID that was never registered in Valkey.
+	fakeUploadID := "unregistered-upload-id-12345"
+
+	part := bytes.Repeat([]byte("X"), 1024*1024)
+	req := httptest.NewRequest("PUT",
+		fmt.Sprintf("/%s/%s?partNumber=1&uploadId=%s", bucket, key, fakeUploadID),
+		bytes.NewReader(part))
+	req.Header.Set("Content-Length", fmt.Sprintf("%d", len(part)))
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	// Expect 200 — Get returns ErrUploadNotFound, the handler falls through to
+	// the plaintext MPU path. The backend mock accepts the part without
+	// complaint because no real backend uploadID validation happens in the mock.
+	if w.Code != http.StatusOK {
+		t.Errorf("UploadPart with ErrUploadNotFound should fall through to plaintext path (200); got %d body=%s",
+			w.Code, w.Body.String())
+	}
+}
