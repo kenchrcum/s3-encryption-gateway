@@ -167,6 +167,23 @@ func (pm *PolicyManager) BucketEncryptsMultipart(bucket string) bool {
 	return policy.EncryptMultipartUploads
 }
 
+// AnyPolicyRequiresMPUEncryption reports whether at least one loaded policy has
+// EncryptMultipartUploads=true. Used at startup to enforce fail-closed behaviour
+// when the Valkey state store is not configured.
+func (pm *PolicyManager) AnyPolicyRequiresMPUEncryption() bool {
+	if pm == nil {
+		return false
+	}
+	pm.mu.RLock()
+	defer pm.mu.RUnlock()
+	for _, p := range pm.policies {
+		if p.EncryptMultipartUploads {
+			return true
+		}
+	}
+	return false
+}
+
 // BucketDisallowsLockBypass returns true if the bucket policy disallows lock bypass.
 func (pm *PolicyManager) BucketDisallowsLockBypass(bucket string) bool {
 	pm.mu.RLock()

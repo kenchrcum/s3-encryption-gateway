@@ -524,6 +524,15 @@ func main() {
 		logger.WithField("count", len(cfg.PolicyFiles)).Info("Policy files loaded")
 	}
 
+	// Fail-closed startup check: if any bucket policy enables EncryptMultipartUploads
+	// but the Valkey addr is not configured, refuse to start rather than silently
+	// falling back to plaintext multipart uploads (Phase C DoD requirement).
+	if policyManager.AnyPolicyRequiresMPUEncryption() && cfg.MultipartState.Valkey.Addr == "" {
+		logger.Fatal("One or more bucket policies require EncryptMultipartUploads=true " +
+			"but multipart_state.valkey.addr is not configured. " +
+			"Configure Valkey or remove EncryptMultipartUploads from all policies.")
+	}
+
 	// Initialize API handler with Phase 5 features
 	handler := api.NewHandlerWithFeatures(s3Client, encryptionEngine, logger, m, keyManager, objectCache, auditLogger, cfg, policyManager)
 
