@@ -753,8 +753,12 @@ func (h *Handler) handleReady(w http.ResponseWriter, r *http.Request) {
 	}
 	if h.mpuStateStore != nil {
 		checks = append(checks, metrics.ReadyCheck{
-			Name:  "valkey",
-			Check: h.mpuStateStore.HealthCheck,
+			Name: "valkey",
+			Check: func(ctx context.Context) error {
+				err := h.mpuStateStore.HealthCheck(ctx)
+				h.metrics.SetMPUValkeyUp(err == nil)
+				return err
+			},
 		})
 	}
 
@@ -990,6 +994,16 @@ func (h *Handler) handleGetObject(w http.ResponseWriter, r *http.Request) {
 				"key":    key,
 			}).Error("MPU decrypt failed on first chunk (tamper or corruption)")
 			h.metrics.RecordEncryptionError(r.Context(), "decrypt", "mpu_tamper_detected")
+			if h.auditLogger != nil {
+				h.auditLogger.Log(&audit.AuditEvent{
+					EventType: audit.EventTypeMPUTamperDetected,
+					Timestamp: time.Now().UTC(),
+					Bucket:    bucket,
+					Key:       key,
+					Success:   false,
+					Metadata:  map[string]interface{}{"status": "tamper_detected"},
+				})
+			}
 			s3Err := &S3Error{
 				Code:       "InternalError",
 				Message:    "Object integrity check failed",
@@ -1020,6 +1034,16 @@ func (h *Handler) handleGetObject(w http.ResponseWriter, r *http.Request) {
 					"key":    key,
 				}).Error("MPU decrypt failed mid-stream after 200 OK; connection terminated")
 				h.metrics.RecordEncryptionError(r.Context(), "decrypt", "mpu_tamper_detected_midstream")
+				if h.auditLogger != nil {
+					h.auditLogger.Log(&audit.AuditEvent{
+						EventType: audit.EventTypeMPUTamperDetected,
+						Timestamp: time.Now().UTC(),
+						Bucket:    bucket,
+						Key:       key,
+						Success:   false,
+						Metadata:  map[string]interface{}{"status": "tamper_detected_midstream"},
+					})
+				}
 			}
 			written += int(extra)
 		}
@@ -2208,9 +2232,18 @@ func (h *Handler) handleCreateMultipartUpload(w http.ResponseWriter, r *http.Req
 	// When EncryptMultipartUploads is enabled for this bucket, generate a
 	// per-upload DEK and persist state to Valkey before returning to the client.
 	if h.bucketEncryptsMPU(bucket) {
-		if storeErr := h.initMPUEncryptionState(ctx, uploadID, bucket, key); storeErr != nil {
+		opStart := time.Now()
+		storeErr := h.initMPUEncryptionState(ctx, uploadID, bucket, key)
+		if storeErr != nil {
+			h.metrics.RecordMPUStateStoreOp("Create", "error", time.Since(opStart))
+		} else {
+			h.metrics.RecordMPUStateStoreOp("Create", "success", time.Since(opStart))
+		}
+
+		if storeErr != nil {
 			// Roll back the backend upload that was already created.
 			_ = s3Client.AbortMultipartUpload(ctx, bucket, key, uploadID)
+			h.metrics.RecordMPUEncrypted("failed")
 			h.logger.WithError(storeErr).WithFields(logrus.Fields{
 				"bucket":   bucket,
 				"key":      key,
@@ -2226,6 +2259,20 @@ func (h *Handler) handleCreateMultipartUpload(w http.ResponseWriter, r *http.Req
 			h.metrics.RecordHTTPRequest(r.Context(), "POST", r.URL.Path, s3Err.HTTPStatus, time.Since(start), 0)
 			return
 		}
+
+		h.metrics.RecordMPUEncrypted("success")
+		if h.auditLogger != nil {
+			h.auditLogger.Log(&audit.AuditEvent{
+				EventType: audit.EventTypeMPUCreate,
+				Timestamp: time.Now().UTC(),
+				Bucket:    bucket,
+				Key:       key,
+				Success:   true,
+				Metadata:  map[string]interface{}{"upload_id": uploadID},
+			})
+		}
+	} else {
+		h.metrics.RecordMPUEncrypted("plaintext")
 	}
 
 	// Return XML response with upload ID
@@ -2604,6 +2651,16 @@ func (h *Handler) handleUploadPart(w http.ResponseWriter, r *http.Request) {
 			"partNumber": partNumber,
 		}).Error("mpu.state.unavailable: cannot determine upload encryption status; failing closed")
 		h.metrics.RecordS3Error(r.Context(), "UploadPart", bucket, "StateUnavailable")
+		if h.auditLogger != nil {
+			h.auditLogger.Log(&audit.AuditEvent{
+				EventType: audit.EventTypeMPUValkeyUnavail,
+				Timestamp: time.Now().UTC(),
+				Bucket:    bucket,
+				Key:       key,
+				Success:   false,
+				Metadata:  map[string]interface{}{"upload_id": uploadID, "status": "valkey_unavailable"},
+			})
+		}
 		s3Err := &S3Error{
 			Code:       "ServiceUnavailable",
 			Message:    "Multipart encryption state store unavailable; retry the part upload",
@@ -2703,7 +2760,27 @@ func (h *Handler) handleUploadPart(w http.ResponseWriter, r *http.Request) {
 			EncLen:     *contentLengthPtr,
 			ChunkCount: chunkCount,
 		}
-		if appendErr := h.mpuStateStore.AppendPart(ctx, uploadID, pr); appendErr != nil {
+		opStart := time.Now()
+		appendErr := h.mpuStateStore.AppendPart(ctx, uploadID, pr)
+		if appendErr != nil {
+			h.metrics.RecordMPUStateStoreOp("AppendPart", "error", time.Since(opStart))
+			h.metrics.RecordMPUPart("failed")
+		} else {
+			h.metrics.RecordMPUStateStoreOp("AppendPart", "success", time.Since(opStart))
+			h.metrics.RecordMPUPart("success")
+			if h.auditLogger != nil {
+				h.auditLogger.Log(&audit.AuditEvent{
+					EventType: audit.EventTypeMPUPart,
+					Timestamp: time.Now().UTC(),
+					Bucket:    bucket,
+					Key:       key,
+					Success:   true,
+					Metadata:  map[string]interface{}{"upload_id": uploadID},
+				})
+			}
+		}
+
+		if appendErr != nil {
 			h.logger.WithError(appendErr).WithFields(logrus.Fields{
 				"bucket":     bucket,
 				"key":        key,
@@ -2711,6 +2788,16 @@ func (h *Handler) handleUploadPart(w http.ResponseWriter, r *http.Request) {
 				"partNumber": partNumber,
 			}).Error("mpu.append_part.failure: backend part written but state not recorded; returning 500 so client retries")
 			h.metrics.RecordS3Error(r.Context(), "AppendMPUPartState", bucket, "StateUnavailable")
+			if h.auditLogger != nil {
+				h.auditLogger.Log(&audit.AuditEvent{
+					EventType: audit.EventTypeMPUValkeyUnavail,
+					Timestamp: time.Now().UTC(),
+					Bucket:    bucket,
+					Key:       key,
+					Success:   false,
+					Metadata:  map[string]interface{}{"upload_id": uploadID},
+				})
+			}
 			s3Err := &S3Error{
 				Code:       "ServiceUnavailable",
 				Message:    "Multipart encryption state store unavailable; retry the part upload",
@@ -2820,6 +2907,16 @@ func (h *Handler) handleCompleteMultipartUpload(w http.ResponseWriter, r *http.R
 			"uploadID": uploadID,
 		}).Error("mpu.state.unavailable: cannot determine encryption state at Complete; failing closed")
 		h.metrics.RecordS3Error(r.Context(), "CompleteMultipartUpload", bucket, "StateUnavailable")
+		if h.auditLogger != nil {
+			h.auditLogger.Log(&audit.AuditEvent{
+				EventType: audit.EventTypeMPUValkeyUnavail,
+				Timestamp: time.Now().UTC(),
+				Bucket:    bucket,
+				Key:       key,
+				Success:   false,
+				Metadata:  map[string]interface{}{"upload_id": uploadID, "status": "valkey_unavailable"},
+			})
+		}
 		s3Err := &S3Error{
 			Code:       "ServiceUnavailable",
 			Message:    "Multipart encryption state store unavailable; retry the Complete call",
@@ -2846,6 +2943,17 @@ func (h *Handler) handleCompleteMultipartUpload(w http.ResponseWriter, r *http.R
 			s3Err.WriteXML(w)
 			h.metrics.RecordHTTPRequest(r.Context(), "POST", r.URL.Path, s3Err.HTTPStatus, time.Since(start), 0)
 			return
+		}
+
+		if h.auditLogger != nil {
+			h.auditLogger.Log(&audit.AuditEvent{
+				EventType: audit.EventTypeMPUComplete,
+				Timestamp: time.Now().UTC(),
+				Bucket:    bucket,
+				Key:       key,
+				Success:   true,
+				Metadata:  map[string]interface{}{"upload_id": uploadID},
+			})
 		}
 	}
 
@@ -2966,12 +3074,28 @@ func (h *Handler) handleAbortMultipartUpload(w http.ResponseWriter, r *http.Requ
 			"uploadID": uploadID,
 		}).Warn("mpu.abort: state-store unavailable; backend abort succeeded, state will expire via TTL")
 	} else if abortIsEnc {
-		if delErr := h.mpuStateStore.Delete(ctx, uploadID); delErr != nil {
+		opStart := time.Now()
+		delErr := h.mpuStateStore.Delete(ctx, uploadID)
+		if delErr != nil {
+			h.metrics.RecordMPUStateStoreOp("Delete", "error", time.Since(opStart))
 			h.logger.WithError(delErr).WithFields(logrus.Fields{
 				"bucket":   bucket,
 				"key":      key,
 				"uploadID": uploadID,
 			}).Warn("mpu.abort.orphan: failed to delete MPU state after abort")
+		} else {
+			h.metrics.RecordMPUStateStoreOp("Delete", "success", time.Since(opStart))
+		}
+
+		if h.auditLogger != nil {
+			h.auditLogger.Log(&audit.AuditEvent{
+				EventType: audit.EventTypeMPUAbort,
+				Timestamp: time.Now().UTC(),
+				Bucket:    bucket,
+				Key:       key,
+				Success:   true,
+				Metadata:  map[string]interface{}{"upload_id": uploadID},
+			})
 		}
 	}
 
@@ -3184,6 +3308,16 @@ func (h *Handler) serveMPURangedGet(
 				"firstChunk": firstChunk,
 			}).Error("serveMPURangedGet: tamper detected")
 			h.metrics.RecordEncryptionError(r.Context(), "decrypt", "mpu_tamper_detected")
+			if h.auditLogger != nil {
+				h.auditLogger.Log(&audit.AuditEvent{
+					EventType: audit.EventTypeMPUTamperDetected,
+					Timestamp: time.Now().UTC(),
+					Bucket:    bucket,
+					Key:       key,
+					Success:   false,
+					Metadata:  map[string]interface{}{"status": "tamper_detected_range"},
+				})
+			}
 			(&S3Error{Code: "InternalError", Message: "Object integrity check failed", Resource: r.URL.Path, HTTPStatus: http.StatusInternalServerError}).WriteXML(w)
 			h.metrics.RecordHTTPRequest(r.Context(), "GET", r.URL.Path, http.StatusInternalServerError, time.Since(start), 0)
 			return
@@ -3259,6 +3393,9 @@ func (h *Handler) writeMPUManifestObject(ctx context.Context, uploadID, bucket, 
 	if err != nil {
 		return fmt.Errorf("writeMPUManifest: marshal: %w", err)
 	}
+	
+	h.metrics.ObserveMPUManifestBytes(len(manifestJSON))
+	h.metrics.RecordMPUManifestStorage("fallback")
 
 	// Encrypt the manifest before writing so iv_prefix, part layout, and the
 	// wrapped DEK are not exposed in plaintext on the backend.

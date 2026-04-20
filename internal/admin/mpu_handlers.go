@@ -16,6 +16,7 @@ import (
 type MPUStateStore interface {
 	Get(ctx context.Context, uploadID string) (*mpu.UploadState, error)
 	Delete(ctx context.Context, uploadID string) error
+	List(ctx context.Context) ([]mpu.UploadState, error)
 }
 
 // MPUAbortFunc is called by the admin abort endpoint to also abort the backend upload.
@@ -81,11 +82,22 @@ func RegisterMPUAdminRoutes(muxSrv *http.ServeMux, store MPUStateStore, abortFn 
 			writeAdminError(w, http.StatusMethodNotAllowed, "MethodNotAllowed", "GET required")
 			return
 		}
-		// Return a status-only response. Full listing via SCAN is deferred to
-		// the integration tier; the endpoint exists for health-check purposes.
+
+		ctx := r.Context()
+		states, err := store.List(ctx)
+		if err != nil {
+			logger.WithError(err).Error("admin/mpu/list: failed to scan state store")
+			writeAdminError(w, http.StatusInternalServerError, "InternalError", "failed to list active uploads")
+			return
+		}
+		if states == nil {
+			states = []mpu.UploadState{}
+		}
+
 		resp := map[string]interface{}{
-			"note":      "Full upload listing requires a Redis SCAN pass. Use SCAN mpu:* on Valkey directly for operational visibility.",
-			"timestamp": time.Now().UTC().Format(time.RFC3339),
+			"active_uploads": states,
+			"count":          len(states),
+			"timestamp":      time.Now().UTC().Format(time.RFC3339),
 		}
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
