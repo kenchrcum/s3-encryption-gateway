@@ -70,63 +70,81 @@ test-integration:
 
 # ── Tier-2 load tests (in-process, Docker via Testcontainers) ─────────────────
 #
-# Load tests live in the conformance suite (test/conformance/load_test.go) and
-# run fully in-process — no pre-running gateway or backend required.
+# All load targets run the same test functions in test/conformance/load_test.go
+# using the in-process harness (MinIO via Testcontainers, no pre-running
+# gateway or backend required).  Scale is controlled by environment variables:
 #
-# test-load        All load tests (range + multipart) against local providers.
-# test-load-range  Range-read concurrency only.
-# test-load-multipart  Multipart upload concurrency only.
-# test-load-soak   Long-running soak using the external binary (cmd/loadtest).
-#                  Requires a gateway + backend already running.  Pass
-#                  GATEWAY_URL=http://host:port to override the default.
+#   SOAK_WORKERS     number of concurrent worker goroutines
+#   SOAK_DURATION    test duration (e.g. "60s", "5m")
+#   SOAK_QPS         requests per second per worker
+#   SOAK_OBJECT_SIZE object size in bytes
+#   SOAK_CHUNK_SIZE  encryption chunk size in bytes
+#   SOAK_PART_SIZE   multipart part size in bytes (≥ 5242880)
 #
-# The old shell-script driver (test/run_load_tests.sh) and binary
-# (cmd/loadtest) are retained for manual/external soak runs and CI
-# environments that pre-provision a gateway.
+# CI defaults (when env vars are unset): 3 workers · 5 s · 10 qps · 100 KiB
+# Soak defaults:                        10 workers · 60 s · 25 qps · 50 MiB
+#
+# test-load            Fast CI gate: both load tests, small scale.
+# test-load-range      Range-read concurrency only (CI scale).
+# test-load-multipart  Multipart upload concurrency only (CI scale).
+# test-load-soak       Full-scale soak: both tests, large objects, long run.
+# test-load-minio      Soak: MinIO provider only (skip Garage).
+# test-load-garage     Soak: Garage provider only (skip MinIO).
+
+SOAK_ENV = \
+	SOAK_WORKERS=10 \
+	SOAK_DURATION=60s \
+	SOAK_QPS=25 \
+	SOAK_OBJECT_SIZE=52428800 \
+	SOAK_PART_SIZE=10485760
 
 test-load-range:
-	@echo "Running range load tests (conformance suite, local providers)..."
-	@go test -tags=conformance -race -v -run 'TestConformance/.*/Load_RangeRead' ./test/conformance/...
+	@echo "Running range load tests (conformance suite, local providers, CI scale)..."
+	@go test -tags=conformance -race -v -timeout 120s \
+		-run 'TestConformance/.*/Load_RangeRead' ./test/conformance/...
 
 test-load-multipart:
-	@echo "Running multipart load tests (conformance suite, local providers)..."
-	@go test -tags=conformance -race -v -run 'TestConformance/.*/Load_Multipart' ./test/conformance/...
+	@echo "Running multipart load tests (conformance suite, local providers, CI scale)..."
+	@go test -tags=conformance -race -v -timeout 120s \
+		-run 'TestConformance/.*/Load_Multipart' ./test/conformance/...
 
 test-load: test-load-range test-load-multipart
 
-# Long-running soak (external binary, requires a running gateway + backend).
-# Usage: make test-load-soak GATEWAY_URL=http://localhost:8080
+# Full-scale soak: same tests, soak-scale parameters, no timeout limit.
 test-load-soak:
-	@echo "Running soak load tests (external binary, requires running gateway)..."
-	@echo "Gateway URL: $${GATEWAY_URL:-http://localhost:8080}"
-	@go run ./cmd/loadtest \
-		--gateway-url "$${GATEWAY_URL:-http://localhost:8080}" \
-		--test-type both \
-		--duration 60s \
-		--workers 10 \
-		--qps 50
+	@echo "Running full-scale soak load tests (all local providers, 60 s, 10 workers, 50 MiB objects)..."
+	@$(SOAK_ENV) go test -tags=conformance -v -timeout 0 \
+		-run 'TestConformance/.*/Load_' ./test/conformance/...
 
-# Soak with automatic MinIO + gateway management (unchanged from legacy).
+# Soak MinIO only.
 test-load-minio:
-	@echo "Running soak load tests with automatic MinIO and Gateway management..."
-	@echo "Environment will be removed even if tests are interrupted."
-	@cd test && ./run_load_tests.sh --manage-minio
+	@echo "Running full-scale soak load tests (MinIO only)..."
+	@GATEWAY_TEST_SKIP_GARAGE=1 GATEWAY_TEST_SKIP_RUSTFS=1 GATEWAY_TEST_SKIP_EXTERNAL=1 \
+		$(SOAK_ENV) go test -tags=conformance -v -timeout 0 \
+		-run 'TestConformance/minio/Load_' ./test/conformance/...
 
-# Soak with automatic Garage + gateway management (unchanged from legacy).
+# Soak Garage only.
 test-load-garage:
-	@echo "Running soak load tests with automatic Garage and Gateway management..."
-	@echo "Environment will be removed even if tests are interrupted."
-	@cd test && ./run_load_tests.sh --manage-garage
+	@echo "Running full-scale soak load tests (Garage only)..."
+	@GATEWAY_TEST_SKIP_MINIO=1 GATEWAY_TEST_SKIP_RUSTFS=1 GATEWAY_TEST_SKIP_EXTERNAL=1 \
+		$(SOAK_ENV) go test -tags=conformance -v -timeout 0 \
+		-run 'TestConformance/garage/Load_' ./test/conformance/...
 
-# Soak: run with Prometheus metrics (requires running Prometheus).
+# Soak with custom duration override.
+# Usage: make test-load-prometheus SOAK_DURATION=5m
 test-load-prometheus:
-	@echo "Running soak load tests with Prometheus metrics..."
-	@cd test && ./run_load_tests.sh --prometheus http://localhost:9090
+	@echo "Running soak load tests (custom duration; set SOAK_DURATION to override)..."
+	@$(SOAK_ENV) go test -tags=conformance -v -timeout 0 \
+		-run 'TestConformance/.*/Load_' ./test/conformance/...
 
-# Soak: update regression baselines.
+# Update baselines by running soak and capturing output.
+# The soak tests log throughput/latency data; redirect to a file for tracking.
 test-load-baseline:
-	@echo "Running soak load tests and updating baselines..."
-	@cd test && ./run_load_tests.sh --update-baseline
+	@echo "Running soak load tests for baseline capture..."
+	@$(SOAK_ENV) go test -tags=conformance -v -timeout 0 \
+		-run 'TestConformance/.*/Load_' ./test/conformance/... \
+		2>&1 | tee testdata/baselines/soak_$(shell date +%Y%m%d_%H%M%S).log
+	@echo "Baseline log written to testdata/baselines/"
 
 # Run key rotation conformance tests.
 # Rotation tests live in the tier-2 conformance suite (test/conformance/rotation_test.go)
@@ -142,9 +160,10 @@ test-fuzz:
 	@echo "Running fuzz tests (regression mode)..."
 	@go test -v ./internal/crypto -run=Fuzz -fuzztime=1s
 
-# Build load test binary
+# Build the legacy load test binary (optional; kept for external/manual soak use).
+# The automated test-load* targets no longer require this binary.
 build-loadtest:
-	@echo "Building load test binary..."
+	@echo "Building legacy load test binary (cmd/loadtest)..."
 	@go build -o bin/loadtest ./cmd/loadtest
 
 # Run all tests including integration
@@ -245,14 +264,14 @@ help:
 	@echo "  test-conformance-external - Conformance: external providers with credentials"
 	@echo "  test-isolation-check    - Check test/ does not reference docker-compose / hard-coded ports"
 	@echo "  test-integration   - [DEPRECATED] Use test-conformance-minio"
-	@echo "  test-load          - Run all load tests (tier-2, local providers; range + multipart)"
-	@echo "  test-load-range    - Load: range-read concurrency (tier-2, local providers)"
-	@echo "  test-load-multipart- Load: multipart upload concurrency (tier-2, local providers)"
-	@echo "  test-load-soak     - Soak: long-running external binary (requires running gateway)"
-	@echo "  test-load-baseline - Soak: update regression baselines"
-	@echo "  test-load-prometheus-Soak: load tests with Prometheus metrics"
-	@echo "  test-load-minio    - Soak: auto-manage MinIO + gateway environment"
-	@echo "  test-load-garage   - Soak: auto-manage Garage + gateway environment"
+	@echo "  test-load          - CI load gate: range + multipart, small scale (5 s, 100 KiB)"
+	@echo "  test-load-range    - CI load gate: range-read concurrency only"
+	@echo "  test-load-multipart- CI load gate: multipart upload concurrency only"
+	@echo "  test-load-soak     - Full soak: both tests, 60 s, 10 workers, 50 MiB objects"
+	@echo "  test-load-minio    - Full soak: MinIO provider only"
+	@echo "  test-load-garage   - Full soak: Garage provider only"
+	@echo "  test-load-baseline - Soak run with log capture to testdata/baselines/"
+	@echo "  test-load-prometheus-Soak run with custom duration (set SOAK_DURATION)"
 	@echo "  test-rotation      - Run key rotation conformance tests (tier-2, all providers)"
 	@echo "  build-loadtest     - Build load test binary"
 	@echo "  test-all           - Run all tests including integration"
