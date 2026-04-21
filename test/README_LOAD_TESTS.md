@@ -1,5 +1,9 @@
 # Load Testing Suite for S3 Encryption Gateway
 
+> **Superseded** — load tests are being migrated to `test/load/` under
+> the `//go:build load` tag. See **[docs/TESTING.md](../docs/TESTING.md)**
+> for the current testing guide.
+
 This document describes the comprehensive load testing suite designed to test and monitor the performance of range operations and multipart uploads in the S3 Encryption Gateway.
 
 ## Overview

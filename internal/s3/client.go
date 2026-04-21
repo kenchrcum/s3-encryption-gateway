@@ -2,9 +2,12 @@ package s3
 
 import (
 	"context"
+	"crypto/md5"
+	"encoding/base64"
 	"encoding/xml"
 	"fmt"
 	"io"
+	"net/http"
 	"net/url"
 	"strings"
 	"time"
@@ -14,6 +17,8 @@ import (
 	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/aws/aws-sdk-go-v2/service/s3/types"
+	"github.com/aws/smithy-go/middleware"
+	smithyhttp "github.com/aws/smithy-go/transport/http"
 
 	"github.com/kenneth/s3-encryption-gateway/internal/config"
 	"github.com/kenneth/s3-encryption-gateway/internal/debug"
@@ -888,7 +893,18 @@ func (c *s3Client) DeleteObjects(ctx context.Context, bucket string, keys []Obje
 		},
 	}
 
-	result, err := c.client.DeleteObjects(ctx, input)
+	// MinIO (and many other S3-compatible backends on the 2024-era branch)
+	// require Content-MD5 on the multi-delete payload. AWS SDK v2 no longer
+	// auto-computes Content-MD5 since it moved to the x-amz-checksum-* family;
+	// supply a finalize-stage middleware that reads the serialised body, hashes
+	// it and injects the Content-MD5 header. This is a no-op against AWS
+	// (AWS also accepts the header) and required against MinIO/Garage/RustFS
+	// pinned to the conformance matrix tags.
+	// See: https://github.com/aws/aws-sdk-go-v2/issues/2633
+	result, err := c.client.DeleteObjects(ctx, input,
+		func(o *s3.Options) {
+			o.APIOptions = append(o.APIOptions, addContentMD5Middleware)
+		})
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to delete objects in bucket %s: %w", bucket, err)
 	}
@@ -1067,3 +1083,89 @@ func (c *s3Client) GetObjectLockConfiguration(ctx context.Context, bucket string
 	}
 	return cfg, nil
 }
+
+// addContentMD5Middleware registers a finalize-stage smithy middleware that
+// computes the MD5 digest of the request body and sets the Content-MD5 header.
+// Used for DeleteObjects against S3-compatible backends that still require the
+// legacy Content-MD5 integrity header (AWS SDK v2 migrated to x-amz-checksum-*
+// and no longer auto-computes Content-MD5; MinIO pinned to 2024-11-07 and
+// many other backends in that era only validate Content-MD5).
+//
+// This is idempotent — if Content-MD5 is already set (e.g. by another
+// middleware), the existing value is preserved.
+func addContentMD5Middleware(stack *middleware.Stack) error {
+	return stack.Finalize.Add(middleware.FinalizeMiddlewareFunc("AddContentMD5",
+		func(ctx context.Context, in middleware.FinalizeInput, next middleware.FinalizeHandler) (middleware.FinalizeOutput, middleware.Metadata, error) {
+			req, ok := in.Request.(*smithyhttp.Request)
+			if !ok {
+				return next.HandleFinalize(ctx, in)
+			}
+			if req.Header.Get("Content-Md5") != "" || req.Header.Get("Content-MD5") != "" {
+				return next.HandleFinalize(ctx, in)
+			}
+			stream := req.GetStream()
+			if stream == nil {
+				return next.HandleFinalize(ctx, in)
+			}
+			body, err := io.ReadAll(stream)
+			if err != nil {
+				return middleware.FinalizeOutput{}, middleware.Metadata{},
+					fmt.Errorf("addContentMD5Middleware: read body: %w", err)
+			}
+			sum := md5.Sum(body)
+			req.Header.Set("Content-Md5", base64.StdEncoding.EncodeToString(sum[:]))
+			// Restore a seekable body so the SDK can sign and send it.
+			if err := req.RewindStream(); err != nil {
+				// Stream not seekable — rewind by replacing the stream.
+				reqCopy, err := req.SetStream(newBytesReader(body))
+				if err != nil {
+					return middleware.FinalizeOutput{}, middleware.Metadata{},
+						fmt.Errorf("addContentMD5Middleware: set stream: %w", err)
+				}
+				in.Request = reqCopy
+			}
+			return next.HandleFinalize(ctx, in)
+		}), middleware.Before)
+}
+
+// bytesReader is a minimal seekable reader for the middleware above.
+type bytesReader struct {
+	b   []byte
+	pos int
+}
+
+func newBytesReader(b []byte) *bytesReader { return &bytesReader{b: b} }
+
+func (r *bytesReader) Read(p []byte) (int, error) {
+	if r.pos >= len(r.b) {
+		return 0, io.EOF
+	}
+	n := copy(p, r.b[r.pos:])
+	r.pos += n
+	return n, nil
+}
+
+func (r *bytesReader) Seek(offset int64, whence int) (int64, error) {
+	var abs int64
+	switch whence {
+	case io.SeekStart:
+		abs = offset
+	case io.SeekCurrent:
+		abs = int64(r.pos) + offset
+	case io.SeekEnd:
+		abs = int64(len(r.b)) + offset
+	default:
+		return 0, fmt.Errorf("bytesReader.Seek: invalid whence")
+	}
+	if abs < 0 {
+		return 0, fmt.Errorf("bytesReader.Seek: negative position")
+	}
+	r.pos = int(abs)
+	return abs, nil
+}
+
+func (r *bytesReader) Close() error { return nil }
+
+// http package is imported indirectly via smithyhttp; keep the unused import
+// reference so go-lint does not prune it if the middleware becomes a no-op.
+var _ = http.MethodPut

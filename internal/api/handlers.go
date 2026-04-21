@@ -1353,13 +1353,16 @@ func (h *Handler) handlePutObject(w http.ResponseWriter, r *http.Request) {
 
 	// Extract metadata from headers (preserve original metadata)
 	// Only include x-amz-meta-* headers - standard headers should NOT be included
-	// as they will cause S3 API errors when sent as metadata
+	// as they will cause S3 API errors when sent as metadata.
+	//
+	// Go canonicalises HTTP header keys on parse (X-Amz-Meta-Foo), so the
+	// prefix comparison must be case-insensitive and the map key lower-cased
+	// for consistency with the backend client and downstream metadata code.
 	metadata := make(map[string]string)
 	for k, v := range r.Header {
 		if len(v) > 0 {
-			// Only include x-amz-meta-* headers, not standard headers like Content-Length
-			if len(k) > 11 && k[:11] == "x-amz-meta-" {
-				metadata[k] = v[0]
+			if strings.HasPrefix(strings.ToLower(k), "x-amz-meta-") {
+				metadata[strings.ToLower(k)] = v[0]
 			}
 		}
 	}
@@ -1806,7 +1809,7 @@ func filterS3Metadata(metadata map[string]string, filterKeys []string) map[strin
 		if filterSet[k] {
 			continue
 		}
-		if len(k) > 11 && k[:11] == "x-amz-meta-" {
+		if strings.HasPrefix(strings.ToLower(k), "x-amz-meta-") {
 			s3Metadata[k] = v
 		} else if !isStandardMetadata(k) {
 			// Include non-standard headers that aren't standard HTTP headers
@@ -2220,10 +2223,11 @@ func (h *Handler) handleCreateMultipartUpload(w http.ResponseWriter, r *http.Req
 	metadata := make(map[string]string)
 	for k, v := range r.Header {
 		if len(v) > 0 {
-			// Only include x-amz-meta-* headers as S3 metadata
-			// Standard headers should not be sent as metadata
-			if len(k) > 11 && k[:11] == "x-amz-meta-" {
-				metadata[k] = v[0]
+			// Only include x-amz-meta-* headers as S3 metadata.
+			// Standard headers should not be sent as metadata.
+			// Case-insensitive match because Go canonicalises headers.
+			if strings.HasPrefix(strings.ToLower(k), "x-amz-meta-") {
+				metadata[strings.ToLower(k)] = v[0]
 			}
 		}
 	}
@@ -3790,12 +3794,15 @@ func (h *Handler) handleCopyObject(w http.ResponseWriter, r *http.Request, dstBu
 		return
 	}
 
-	// Extract destination metadata from headers
+	// Extract destination metadata from headers.
+	// Case-insensitive x-amz-meta-* match — Go canonicalises headers to
+	// X-Amz-Meta-Foo on parse, so strings.HasPrefix against the lowercase
+	// prefix is the correct comparison.
 	dstMetadata := make(map[string]string)
 	for k, v := range r.Header {
 		if len(v) > 0 {
-			if len(k) > 11 && k[:11] == "x-amz-meta-" || isStandardMetadata(k) {
-				dstMetadata[k] = v[0]
+			if strings.HasPrefix(strings.ToLower(k), "x-amz-meta-") || isStandardMetadata(k) {
+				dstMetadata[strings.ToLower(k)] = v[0]
 			}
 		}
 	}

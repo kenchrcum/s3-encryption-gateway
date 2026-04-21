@@ -1,5 +1,9 @@
 # Integration Testing
 
+> **Superseded** — this document is outdated. The authoritative testing guide
+> is **[docs/TESTING.md](../docs/TESTING.md)**. The new conformance suite
+> uses Testcontainers-Go and does not require `docker-compose up`.
+
 This directory contains integration tests that run against a real MinIO S3-compatible backend.
 
 ## Requirements

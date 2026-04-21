@@ -1,5 +1,13 @@
-//go:build integration
-// +build integration
+//go:build ignore
+
+// Deprecated: The tests that lived here have been promoted to tier-1 and
+// relocated to the correct packages:
+//
+//   - TestRotationMetrics  → internal/metrics/rotation_engine_test.go
+//   - TestRotationAuditLog → internal/audit/rotation_audit_test.go
+//
+// This file is kept as a tombstone and excluded from all build tags.
+// It can be deleted after one minor release.
 
 package test
 

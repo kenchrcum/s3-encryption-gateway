@@ -8,6 +8,64 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **Unified multi-provider conformance test suite** (V0.6-QA-4):
+  Introduced `test/provider/`, `test/harness/`, and
+  `test/conformance/` packages implementing a three-tier test taxonomy
+  (Unit / Conformance / Soak+Load+Chaos). The new `Provider` interface
+  and Testcontainers-Go-backed MinIO (`minio/minio:RELEASE.2024-11-07T00-52-20Z`),
+  Garage (`dxflrs/garage:v2.3.0`), and Valkey (`valkey/valkey:8.0-alpine`)
+  implementations replace the four inconsistent test harness variants
+  that existed previously. 32 provider-agnostic conformance tests
+  cover PutGet, Head, List, Delete, BatchDelete, CopyObject, ranged
+  reads (including cross-chunk boundaries), chunked and legacy AEAD
+  encryption, multipart upload (basic / abort / list-parts),
+  UploadPartCopy (full / range / plaintext / legacy / mixed / abort /
+  cross-bucket), object tagging, presigned URLs, key-rotation
+  dual-read window, Object Lock retention / legal-hold / bypass-refused,
+  metadata round-trip, and concurrent operations under `-race`.
+  External S3 vendors (AWS, Wasabi, Backblaze B2, Hetzner) plug in
+  via a one-file pattern and activate automatically when credentials
+  are set. A mechanical `matrix_guard_test.go` AST check prevents
+  provider-name literals from appearing in conformance test bodies;
+  `scripts/test-isolation.sh` prevents regression to `docker-compose`
+  / hard-coded ports / binary backend invocations.
+
+  New `make` targets: `test-conformance`, `test-conformance-local`,
+  `test-conformance-minio`, `test-conformance-external`,
+  `test-isolation-check`. `make test-comprehensive` now runs
+  tier-1 + local conformance + isolation check without requiring
+  `docker-compose up`. See `docs/TESTING.md`.
+
+  **Phase-1 hotfix**: `StartSharedMinIOServerForProvider` in
+  `test/minio.go` now creates the bucket before returning, fixing the
+  root cause of the `TestProvider_Compatibility` /
+  `TestGateway_ProviderIntegration` failures in `make test-comprehensive`
+  step 3.
+
+### Fixed
+
+- **User metadata was silently dropped on PUT / CopyObject / MPU**
+  (uncovered by V0.6-QA-4). Four sites in `internal/api/handlers.go`
+  (`handlePutObject`, `filterS3Metadata`, `handleCreateMultipartUpload`,
+  `handleCopyObject`) compared `k[:11] == "x-amz-meta-"` against keys
+  from `r.Header`. Go canonicalises HTTP headers to `X-Amz-Meta-Foo`
+  on parse, so the case-sensitive comparison never matched and all
+  `x-amz-meta-*` headers were discarded. Replaced with
+  `strings.HasPrefix(strings.ToLower(k), "x-amz-meta-")` and
+  lowercase the map key for downstream consistency.
+
+- **`DeleteObjects` failed against MinIO and older S3-compatible
+  backends** (uncovered by V0.6-QA-4). MinIO
+  (pre-`RELEASE.2024-11-07T00-52-20Z` era) and many other backends
+  only validate the legacy `Content-MD5` integrity header; AWS SDK
+  v2 migrated to `x-amz-checksum-*` and no longer auto-computes
+  `Content-MD5`. Added a smithy finalize-stage middleware in
+  `internal/s3/client.go` that computes and sets `Content-MD5`
+  from the serialised body when not already present. Idempotent
+  against AWS (which also accepts the header).
+
+### Added
+
 - **Object Lock / Retention / Legal Hold pass-through** (V0.6-S3-2):
   the six Object-Lock subresource endpoints are now routed
   (`PUT/GET /{bucket}/{key}?retention`, `?legal-hold`, and

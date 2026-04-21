@@ -1,5 +1,8 @@
 # Integration Tests with Cosmian KMS
 
+> **Superseded** — this document is outdated. The authoritative testing guide
+> is **[docs/TESTING.md](../docs/TESTING.md)**.
+
 This document describes how to run integration tests that use a real Cosmian KMS instance.
 
 ## Prerequisites

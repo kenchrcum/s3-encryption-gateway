@@ -1,0 +1,113 @@
+//go:build conformance
+
+package conformance
+
+import (
+	"bytes"
+	"fmt"
+	"io"
+	"net/http"
+	"sync/atomic"
+	"testing"
+	"time"
+
+	"github.com/kenneth/s3-encryption-gateway/test/harness"
+)
+
+// keySeq provides unique keys within a test run.
+var keySeq int64
+
+// uniqueSuffix returns a short unique string suitable for use in key names.
+func uniqueSuffix(t *testing.T) string {
+	t.Helper()
+	n := atomic.AddInt64(&keySeq, 1)
+	return fmt.Sprintf("%d-%d", time.Now().UnixNano(), n)
+}
+
+// uniqueKey returns a unique object key that encodes the test name and a
+// monotonically-increasing counter so parallel tests never collide.
+func uniqueKey(t *testing.T) string {
+	t.Helper()
+	return fmt.Sprintf("conf/%s/%s", sanitizeName(t.Name()), uniqueSuffix(t))
+}
+
+// sanitizeName replaces characters invalid in S3 keys with underscores.
+func sanitizeName(s string) string {
+	var out []byte
+	for _, c := range []byte(s) {
+		if (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+			(c >= '0' && c <= '9') || c == '-' || c == '_' || c == '/' {
+			out = append(out, c)
+		} else {
+			out = append(out, '_')
+		}
+	}
+	return string(out)
+}
+
+// objectURL returns the full URL for an object in the gateway.
+func objectURL(gw *harness.Gateway, bucket, key string) string {
+	return fmt.Sprintf("%s/%s/%s", gw.URL, bucket, key)
+}
+
+// put uploads data to the gateway and fails the test if the status is not 200.
+func put(t *testing.T, gw *harness.Gateway, bucket, key string, data []byte) {
+	t.Helper()
+	req, err := http.NewRequest("PUT", objectURL(gw, bucket, key), bytes.NewReader(data))
+	if err != nil {
+		t.Fatalf("put: new request: %v", err)
+	}
+	resp, err := gw.HTTPClient().Do(req)
+	if err != nil {
+		t.Fatalf("put %q: %v", key, err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("put %q: status %d: %s", key, resp.StatusCode, string(body))
+	}
+}
+
+// get downloads an object from the gateway and returns the body bytes.
+// The test is failed if the response status is not 200.
+func get(t *testing.T, gw *harness.Gateway, bucket, key string) []byte {
+	t.Helper()
+	resp, err := gw.HTTPClient().Get(objectURL(gw, bucket, key))
+	if err != nil {
+		t.Fatalf("get %q: %v", key, err)
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("get %q: read body: %v", key, err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("get %q: status %d: %s", key, resp.StatusCode, string(body))
+	}
+	return body
+}
+
+// getRange downloads a byte range from the gateway. start and end are
+// inclusive, matching the HTTP Range header semantics.
+func getRange(t *testing.T, gw *harness.Gateway, bucket, key string, start, end int64) []byte {
+	t.Helper()
+	req, err := http.NewRequest("GET", objectURL(gw, bucket, key), nil)
+	if err != nil {
+		t.Fatalf("getRange: new request: %v", err)
+	}
+	req.Header.Set("Range", fmt.Sprintf("bytes=%d-%d", start, end))
+	resp, err := gw.HTTPClient().Do(req)
+	if err != nil {
+		t.Fatalf("getRange %q [%d-%d]: %v", key, start, end, err)
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("getRange %q: read body: %v", key, err)
+	}
+	if resp.StatusCode != http.StatusPartialContent {
+		t.Fatalf("getRange %q [%d-%d]: status %d (want 206): %s",
+			key, start, end, resp.StatusCode, string(body))
+	}
+	return body
+}

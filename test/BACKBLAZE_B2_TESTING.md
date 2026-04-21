@@ -1,5 +1,9 @@
 # Backblaze B2 Integration Testing
 
+> **Superseded** — this document is outdated. B2 tests are now provider-parameterised
+> in the conformance suite (`test/conformance/`). See **[docs/TESTING.md](../docs/TESTING.md)**
+> for the plug-in recipe and run instructions.
+
 This document describes how to run integration tests against Backblaze B2 (S3-compatible storage).
 
 ## Overview

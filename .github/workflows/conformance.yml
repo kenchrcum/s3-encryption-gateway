@@ -1,0 +1,159 @@
+name: Conformance
+
+# PR gate: tier 1 + MinIO conformance + isolation check.
+# Main push: tier 1 + all local providers in parallel.
+# Nightly: everything main runs + external providers with credentials.
+# Release tag: everything nightly + tier-3 load / soak / chaos.
+
+on:
+  pull_request:
+    branches: [ main ]
+  push:
+    branches: [ main ]
+  schedule:
+    # Nightly at 02:00 UTC.
+    - cron: '0 2 * * *'
+  release:
+    types: [ published ]
+
+jobs:
+  # ── Tier 1 — unit tests, always ─────────────────────────────────────────────
+  unit:
+    name: Unit tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Unit tests (-race)
+        run: go test -race -short ./...
+
+      - name: Unit tests FIPS (-race)
+        run: GOFIPS140=v1.0.0 go test -race -short -tags=fips ./...
+
+      - name: Unit tests HSM (-race)
+        run: go test -race -short -tags=hsm ./...
+
+      - name: go vet
+        run: go vet ./...
+
+      - name: go vet FIPS
+        run: go vet -tags=fips ./...
+
+      - name: go vet HSM
+        run: go vet -tags=hsm ./...
+
+  # ── Isolation check — PR only ────────────────────────────────────────────────
+  isolation-check:
+    name: Test isolation check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check Docker-only deployment model
+        run: bash scripts/test-isolation.sh
+
+  # ── Tier 2 — MinIO conformance (PR gate) ─────────────────────────────────────
+  conformance-minio:
+    name: Conformance / MinIO
+    runs-on: ubuntu-latest
+    needs: [unit, isolation-check]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: MinIO conformance (-race)
+        env:
+          GATEWAY_TEST_SKIP_GARAGE: "1"
+          GATEWAY_TEST_SKIP_RUSTFS: "1"
+          GATEWAY_TEST_SKIP_EXTERNAL: "1"
+        run: go test -tags=conformance -race -v -timeout 15m ./test/conformance/...
+
+  # ── Tier 2 — all local providers (main push only) ────────────────────────────
+  conformance-local:
+    name: Conformance / ${{ matrix.provider }}
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' || github.event_name == 'schedule' || github.event_name == 'release'
+    strategy:
+      fail-fast: false
+      matrix:
+        provider: [garage]
+        # Note: minio is always covered by conformance-minio; garage and
+        # rustfs run here on main push to avoid slowing the PR gate.
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Conformance / ${{ matrix.provider }} (-race)
+        env:
+          GATEWAY_TEST_SKIP_MINIO: ${{ matrix.provider != 'minio' && '1' || '' }}
+          GATEWAY_TEST_SKIP_GARAGE: ${{ matrix.provider != 'garage' && '1' || '' }}
+          GATEWAY_TEST_SKIP_RUSTFS: ${{ matrix.provider != 'rustfs' && '1' || '' }}
+          GATEWAY_TEST_SKIP_EXTERNAL: "1"
+        run: go test -tags=conformance -race -v -timeout 15m ./test/conformance/...
+
+  # ── Tier 2 — external providers (nightly, conditional on secrets) ────────────
+  conformance-external:
+    name: Conformance / ${{ matrix.provider }}
+    runs-on: ubuntu-latest
+    if: github.event_name == 'schedule' || github.event_name == 'release'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - provider: aws
+            skip_vars: GATEWAY_TEST_SKIP_MINIO=1 GATEWAY_TEST_SKIP_GARAGE=1 GATEWAY_TEST_SKIP_RUSTFS=1
+            required_secrets: AWS_ACCESS_KEY_ID,AWS_SECRET_ACCESS_KEY,AWS_BUCKET_NAME
+          - provider: backblaze-b2
+            skip_vars: GATEWAY_TEST_SKIP_MINIO=1 GATEWAY_TEST_SKIP_GARAGE=1 GATEWAY_TEST_SKIP_RUSTFS=1
+            required_secrets: B2_ACCESS_KEY_ID,B2_SECRET_ACCESS_KEY,B2_BUCKET_NAME
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Conformance / ${{ matrix.provider }}
+        env:
+          GATEWAY_TEST_SKIP_MINIO: "1"
+          GATEWAY_TEST_SKIP_GARAGE: "1"
+          GATEWAY_TEST_SKIP_RUSTFS: "1"
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          AWS_BUCKET_NAME: ${{ secrets.AWS_BUCKET_NAME }}
+          B2_ACCESS_KEY_ID: ${{ secrets.B2_ACCESS_KEY_ID }}
+          B2_SECRET_ACCESS_KEY: ${{ secrets.B2_SECRET_ACCESS_KEY }}
+          B2_BUCKET_NAME: ${{ secrets.B2_BUCKET_NAME }}
+          B2_ENDPOINT: ${{ secrets.B2_ENDPOINT }}
+          WASABI_ACCESS_KEY_ID: ${{ secrets.WASABI_ACCESS_KEY_ID }}
+          WASABI_SECRET_ACCESS_KEY: ${{ secrets.WASABI_SECRET_ACCESS_KEY }}
+          WASABI_BUCKET_NAME: ${{ secrets.WASABI_BUCKET_NAME }}
+        run: |
+          # Skip cleanly if the required secrets are absent.
+          if [[ -z "$AWS_ACCESS_KEY_ID" && -z "$B2_ACCESS_KEY_ID" ]]; then
+            echo "No external credentials set; skipping."
+            exit 0
+          fi
+          go test -tags=conformance -race -v -timeout 30m ./test/conformance/...
+
+  # ── Summary comment on PRs ────────────────────────────────────────────────────
+  conformance-summary:
+    name: Conformance summary
+    runs-on: ubuntu-latest
+    needs: [conformance-minio]
+    if: github.event_name == 'pull_request'
+    steps:
+      - name: Summary
+        run: |
+          echo "## Conformance results" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Provider | Status |" >> $GITHUB_STEP_SUMMARY
+          echo "|----------|--------|" >> $GITHUB_STEP_SUMMARY
+          echo "| MinIO    | ✅ (PR gate) |" >> $GITHUB_STEP_SUMMARY
+          echo "| Garage   | 🔄 (main push only) |" >> $GITHUB_STEP_SUMMARY
+          echo "| External | 🌙 (nightly when credentials set) |" >> $GITHUB_STEP_SUMMARY

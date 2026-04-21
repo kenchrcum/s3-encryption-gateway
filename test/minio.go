@@ -124,6 +124,11 @@ func StartSharedMinIOServerForProvider(t *testing.T) *MinIOTestServer {
 			minioProviderError = fmt.Errorf("failed to connect to docker-compose MinIO for provider tests: %w. Please ensure 'docker-compose -f test/docker-compose.yml up -d' is running", err)
 			return
 		}
+		// TODO(V0.6-QA-4): remove after harness rewrite — this createBucket call
+		// was missing, causing NoSuchBucket on first PUT in provider tests.
+		if err := server.createBucket(); err != nil {
+			t.Logf("Warning: could not pre-create provider test bucket: %v (proceeding anyway)", err)
+		}
 		minioProviderServer = server
 		t.Logf("Connected to docker-compose MinIO provider server successfully")
 	})
