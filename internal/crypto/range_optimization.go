@@ -53,6 +53,16 @@ func CalculateEncryptedRangeForPlaintextRange(metadata map[string]string, plaint
 		return 0, 0, fmt.Errorf("failed to load manifest: %w", err)
 	}
 
+	// Backfill ChunkCount when the encrypt path left it at 0 (see engine.go
+	// DecryptRange for rationale). Without this backfill, the range is
+	// collapsed to 0-0 which triggers the fallback-to-full-decrypt path in
+	// handleGetObject — defeating the point of range optimisation.
+	if manifest.ChunkCount == 0 && manifest.ChunkSize > 0 {
+		if plaintextSize, err2 := GetPlaintextSizeFromMetadata(metadata); err2 == nil && plaintextSize > 0 {
+			manifest.ChunkCount = int((plaintextSize + int64(manifest.ChunkSize) - 1) / int64(manifest.ChunkSize))
+		}
+	}
+
 	// Calculate which chunks we need
 	startChunk, endChunk, _, _ := calculateChunkRangeFromPlaintext(
 		plaintextStart,

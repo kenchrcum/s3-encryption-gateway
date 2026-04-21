@@ -2,6 +2,7 @@ package test
 
 import (
 	"context"
+	"fmt"
 	"net"
 	"net/http"
 	"testing"
@@ -9,10 +10,12 @@ import (
 
 	"github.com/gorilla/mux"
 	"github.com/kenneth/s3-encryption-gateway/internal/api"
+	"github.com/kenneth/s3-encryption-gateway/internal/audit"
 	"github.com/kenneth/s3-encryption-gateway/internal/config"
 	"github.com/kenneth/s3-encryption-gateway/internal/crypto"
 	"github.com/kenneth/s3-encryption-gateway/internal/metrics"
 	"github.com/kenneth/s3-encryption-gateway/internal/middleware"
+	"github.com/kenneth/s3-encryption-gateway/internal/mpu"
 	"github.com/kenneth/s3-encryption-gateway/internal/s3"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/sirupsen/logrus"
@@ -27,9 +30,56 @@ type TestGateway struct {
 	listener net.Listener
 }
 
+// testGatewayOpts holds optional dependencies for StartGateway.
+type testGatewayOpts struct {
+	policyManager      *config.PolicyManager
+	keyManager         crypto.KeyManager
+	mpuStore           mpu.StateStore
+	auditLogger        audit.Logger
+	headObjectOverride func(bucket, key string) *int64 // returns non-nil to override Content-Length
+}
+
+// TestGatewayOption is a functional option for StartGateway.
+type TestGatewayOption func(*testGatewayOpts)
+
+// WithPolicyManager wires a per-bucket policy manager into the gateway.
+func WithPolicyManager(pm *config.PolicyManager) TestGatewayOption {
+	return func(o *testGatewayOpts) { o.policyManager = pm }
+}
+
+// WithKeyManager wires a KeyManager (for MPU DEK wrap/unwrap) into the gateway.
+func WithKeyManager(km crypto.KeyManager) TestGatewayOption {
+	return func(o *testGatewayOpts) { o.keyManager = km }
+}
+
+// WithMPUStateStore wires a Valkey state store into the gateway.
+func WithMPUStateStore(store mpu.StateStore) TestGatewayOption {
+	return func(o *testGatewayOpts) { o.mpuStore = store }
+}
+
+// WithAuditLogger wires an audit logger into the gateway.
+func WithAuditLogger(al audit.Logger) TestGatewayOption {
+	return func(o *testGatewayOpts) { o.auditLogger = al }
+}
+
+// WithHeadObjectOverride wires a hook that overrides the Content-Length
+// returned by HeadObject for specific (bucket, key) pairs. Use this to
+// simulate large objects (> 5 GiB) without actually uploading them.
+// fn must return nil to leave Content-Length unmodified.
+func WithHeadObjectOverride(fn func(bucket, key string) *int64) TestGatewayOption {
+	return func(o *testGatewayOpts) { o.headObjectOverride = fn }
+}
+
 // StartGateway starts a gateway server for testing.
-func StartGateway(t *testing.T, cfg *config.Config) *TestGateway {
+// The variadic opts parameter accepts TestGatewayOption values; all existing
+// callers that pass no options continue to compile and behave identically.
+func StartGateway(t *testing.T, cfg *config.Config, opts ...TestGatewayOption) *TestGateway {
 	t.Helper()
+
+	o := &testGatewayOpts{}
+	for _, opt := range opts {
+		opt(o)
+	}
 
 	// Find available port
 	listener, err := net.Listen("tcp", cfg.ListenAddr)
@@ -51,11 +101,14 @@ func StartGateway(t *testing.T, cfg *config.Config) *TestGateway {
 	// Initialize S3 client (only if useClientCredentials is not enabled)
 	var s3Client s3.Client
 	if !cfg.Backend.UseClientCredentials {
-		var err error
-		s3Client, err = s3.NewClient(&cfg.Backend)
-		if err != nil {
+		var innerErr error
+		s3Client, innerErr = s3.NewClient(&cfg.Backend)
+		if innerErr != nil {
 			listener.Close()
-			t.Fatalf("Failed to create S3 client: %v", err)
+			t.Fatalf("Failed to create S3 client: %v", innerErr)
+		}
+		if o.headObjectOverride != nil {
+			s3Client = &headObjectOverrideClient{Client: s3Client, fn: o.headObjectOverride}
 		}
 	}
 
@@ -83,7 +136,12 @@ func StartGateway(t *testing.T, cfg *config.Config) *TestGateway {
 	}
 
 	// Initialize API handler with config support (required for useClientCredentials)
-	handler := api.NewHandlerWithFeatures(s3Client, encryptionEngine, logger, m, nil, nil, nil, cfg, nil)
+	handler := api.NewHandlerWithFeatures(s3Client, encryptionEngine, logger, m,
+		o.keyManager, nil, o.auditLogger, cfg, o.policyManager)
+
+	if o.mpuStore != nil {
+		handler.WithMPUStateStore(o.mpuStore)
+	}
 
 	// Setup router
 	router := mux.NewRouter()
@@ -150,6 +208,30 @@ ready:
 		client:   client,
 		listener: listener,
 	}
+}
+
+// headObjectOverrideClient wraps an s3.Client and overrides Content-Length in
+// HeadObject responses when the provided fn returns a non-nil value. This is
+// used to simulate objects larger than 5 GiB without uploading real data.
+type headObjectOverrideClient struct {
+	s3.Client
+	fn func(bucket, key string) *int64
+}
+
+func (c *headObjectOverrideClient) HeadObject(ctx context.Context, bucket, key string, versionID *string) (map[string]string, error) {
+	meta, err := c.Client.HeadObject(ctx, bucket, key, versionID)
+	if err != nil || meta == nil {
+		return meta, err
+	}
+	if override := c.fn(bucket, key); override != nil {
+		cp := make(map[string]string, len(meta)+1)
+		for k, v := range meta {
+			cp[k] = v
+		}
+		cp["Content-Length"] = fmt.Sprintf("%d", *override)
+		return cp, nil
+	}
+	return meta, nil
 }
 
 // Close shuts down the gateway server.

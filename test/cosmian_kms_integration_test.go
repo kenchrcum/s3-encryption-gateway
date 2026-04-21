@@ -26,15 +26,20 @@ import (
 	"testing"
 	"time"
 
+	"github.com/aws/aws-sdk-go-v2/aws"
+	s3sdk "github.com/aws/aws-sdk-go-v2/service/s3"
+	"github.com/aws/aws-sdk-go-v2/service/s3/types"
 	"github.com/gorilla/mux"
 	"github.com/kenneth/s3-encryption-gateway/internal/api"
 	"github.com/kenneth/s3-encryption-gateway/internal/config"
 	"github.com/kenneth/s3-encryption-gateway/internal/crypto"
 	"github.com/kenneth/s3-encryption-gateway/internal/metrics"
 	"github.com/kenneth/s3-encryption-gateway/internal/middleware"
+	"github.com/kenneth/s3-encryption-gateway/internal/mpu"
 	"github.com/kenneth/s3-encryption-gateway/internal/s3"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/sirupsen/logrus"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
@@ -1096,4 +1101,136 @@ func createBucketInMinIOForGateway(t *testing.T, minioEndpoint, bucket string) {
 		}
 	}
 	t.Logf("Warning: Could not create bucket %s with AWS CLI, proceeding anyway", bucket)
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// V0.6-S3-3 Phase E: Cosmian KMS + encrypted MPU round-trip smoke test
+// ─────────────────────────────────────────────────────────────────────────────
+
+// TestCosmianKMS_EncryptedMPU_RoundTrip exercises the full encrypted-MPU code
+// path (Create → UploadPart × 2 → Complete → GetObject) with a Cosmian-wrapped
+// DEK. It verifies:
+//  1. Byte-for-byte round trip through the gateway.
+//  2. The in-flight UploadState.KMSProvider in Valkey == "cosmian" (not "password").
+//
+// Skipped if Docker is unavailable.
+func TestCosmianKMS_EncryptedMPU_RoundTrip(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping Cosmian MPU integration test in short mode")
+	}
+	if _, err := exec.LookPath("docker"); err != nil {
+		t.Skip("Docker not available, skipping Cosmian MPU integration test")
+	}
+
+	// ── 1. Start Cosmian KMS ──────────────────────────────────────────────────
+	_, kmsEndpoint, tlsCfg, cleanup, containerName, _ := startCosmianKMS(t)
+	defer cleanup()
+	waitForKMSReady(t, kmsEndpoint, containerName)
+
+	keyID := createWrappingKey(t, kmsEndpoint)
+	cosmianKM, err := crypto.NewCosmianKMIPManager(crypto.CosmianKMIPOptions{
+		Endpoint:       kmsEndpoint,
+		Keys:           []crypto.KMIPKeyReference{{ID: keyID, Version: 1}},
+		TLSConfig:      tlsCfg,
+		Timeout:        10 * time.Second,
+		Provider:       "cosmian",
+		DualReadWindow: 1,
+	})
+	require.NoError(t, err)
+	defer func() { _ = cosmianKM.Close(context.Background()) }()
+
+	// ── 2. Start MinIO + Valkey ───────────────────────────────────────────────
+	minio := StartMinIOServer(t)
+	prefix := TestBucketPrefix(t) + "-c"
+	bucket := prefix + "-enc"
+
+	CreateBucketForTest(t, minio, bucket)
+	ctx := context.Background()
+
+	store := NewTestMPUStateStore(t)
+	pm := EncryptedMPUPolicy(t, bucket+"*")
+
+	cfg := minio.GetGatewayConfig()
+	cfg.Encryption.Password = testMPUPassword
+	gw := StartGateway(t, cfg,
+		WithPolicyManager(pm),
+		WithKeyManager(cosmianKM),
+		WithMPUStateStore(store),
+	)
+	t.Cleanup(gw.Close)
+
+	cl := newSDKClient(t, gw.URL, minio.AccessKey, minio.SecretKey)
+
+	// ── 3. Create MPU ─────────────────────────────────────────────────────────
+	const partSize = 8 * 1024 * 1024
+	part1 := make([]byte, partSize)
+	part2 := make([]byte, partSize)
+	for i := range part1 {
+		part1[i] = byte(i & 0xFF)
+	}
+	for i := range part2 {
+		part2[i] = byte((i + 128) & 0xFF)
+	}
+
+	key := "cosmian-mpu.bin"
+	ctxT, cancel := context.WithTimeout(ctx, 120*time.Second)
+	defer cancel()
+
+	createResp, err := cl.CreateMultipartUpload(ctxT, &s3sdk.CreateMultipartUploadInput{
+		Bucket: aws.String(bucket), Key: aws.String(key),
+	})
+	require.NoError(t, err)
+	uploadID := createResp.UploadId
+	t.Cleanup(func() {
+		cl.AbortMultipartUpload(context.Background(), &s3sdk.AbortMultipartUploadInput{
+			Bucket: aws.String(bucket), Key: aws.String(key), UploadId: uploadID,
+		})
+	})
+
+	up1, err := cl.UploadPart(ctxT, &s3sdk.UploadPartInput{
+		Bucket: aws.String(bucket), Key: aws.String(key),
+		UploadId: uploadID, PartNumber: aws.Int32(1),
+		Body: bytes.NewReader(part1),
+	})
+	require.NoError(t, err)
+
+	// ── 4. Assert Valkey KMSProvider == "cosmian" before Complete ─────────────
+	state, storeErr := store.Get(ctxT, aws.ToString(uploadID))
+	require.NoError(t, storeErr, "Valkey Get during upload")
+	assert.Equal(t, "cosmian", state.KMSProvider,
+		"WrappedDEK envelope must use Cosmian KMS, not password manager")
+
+	// ── 5. Upload part 2 and complete ─────────────────────────────────────────
+	up2, err := cl.UploadPart(ctxT, &s3sdk.UploadPartInput{
+		Bucket: aws.String(bucket), Key: aws.String(key),
+		UploadId: uploadID, PartNumber: aws.Int32(2),
+		Body: bytes.NewReader(part2),
+	})
+	require.NoError(t, err)
+
+	_, err = cl.CompleteMultipartUpload(ctxT, &s3sdk.CompleteMultipartUploadInput{
+		Bucket: aws.String(bucket), Key: aws.String(key), UploadId: uploadID,
+		MultipartUpload: &types.CompletedMultipartUpload{
+			Parts: []types.CompletedPart{
+				{ETag: up1.ETag, PartNumber: aws.Int32(1)},
+				{ETag: up2.ETag, PartNumber: aws.Int32(2)},
+			},
+		},
+	})
+	require.NoError(t, err, "CompleteMultipartUpload")
+
+	// ── 6. Verify round-trip ─────────────────────────────────────────────────
+	getResp, err := cl.GetObject(ctxT, &s3sdk.GetObjectInput{
+		Bucket: aws.String(bucket), Key: aws.String(key),
+	})
+	require.NoError(t, err)
+	defer getResp.Body.Close()
+	got, err := io.ReadAll(getResp.Body)
+	require.NoError(t, err)
+
+	want := append(part1, part2...)
+	assert.Equal(t, want, got, "Cosmian-encrypted MPU byte-for-byte round trip")
+
+	// mpu import: used above for store.Get return type assertion.
+	var _ = mpu.ErrUploadNotFound
 }

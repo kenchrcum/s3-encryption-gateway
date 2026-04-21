@@ -206,6 +206,19 @@ func (f *ClientFactory) GetClientWithCredentials(accessKey, secretKey string) (C
 			secretKey,
 			"",
 		)),
+		// Disable automatic payload checksum computation. The gateway forwards
+		// unseekable encrypted streams; aws-sdk-go-v2 >= v1.32 defaults to
+		// computing a SHA-256 over the body which requires either seekability
+		// or `aws-chunked+trailing-checksum` (only available over TLS).
+		// Plaintext MinIO backends reject the latter, causing a PutObject /
+		// UploadPart failure on any payload larger than the gateway buffers.
+		// Use "when required" so the SDK only computes checksums when the
+		// target operation mandates them (e.g. legal-hold), and relies on
+		// SigV4's payload hash for integrity otherwise.
+		awsconfig.WithRequestChecksumCalculation(aws.RequestChecksumCalculationWhenRequired),
+		// Disable automatic response checksum validation for parity: MinIO may
+		// not always return the x-amz-checksum-* headers the SDK expects.
+		awsconfig.WithResponseChecksumValidation(aws.ResponseChecksumValidationWhenRequired),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("failed to load AWS config: %w", err)
@@ -835,7 +848,14 @@ func (c *s3Client) UploadPartCopy(ctx context.Context, dstBucket, dstKey, upload
 	etag := ""
 	lastModified := time.Now() // Default to now; backend should provide this
 	if result.CopyPartResult.ETag != nil {
-		etag = strings.Trim(*result.CopyPartResult.ETag, "\"")
+		// Preserve quoting: AWS UploadPartCopy returns quoted ETags, and
+		// CompleteMultipartUpload expects the same. Stripping here produced
+		// an unquoted ETag that MinIO rejected as "Invalid ETag format".
+		etag = *result.CopyPartResult.ETag
+		// Ensure the ETag is quoted (some backends normalise differently).
+		if len(etag) >= 2 && (etag[0] != '"' || etag[len(etag)-1] != '"') {
+			etag = "\"" + strings.Trim(etag, "\"") + "\""
+		}
 	}
 	if result.CopyPartResult.LastModified != nil {
 		lastModified = *result.CopyPartResult.LastModified

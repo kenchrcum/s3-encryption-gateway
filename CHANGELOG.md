@@ -97,3 +97,43 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
     ChaCha20 dependency. All SEC-3 code passes `go test -tags=fips
     -race` cleanly.
   - Default: `false` in v0.6 for soak. v0.7 flips default to `true`.
+
+- **UploadPartCopy + Encrypted MPU Integration Test Suite** (V0.6-S3-3,
+  plan: `docs/plans/V0.6-S3-3-plan.md`): 18 new integration tests closing
+  every gap flagged during V0.6-S3-1 and V0.6-SEC-3 delivery:
+  - Tests 1–10 (`TestUploadPartCopy_{Chunked,Chunked_WithRange,Legacy,Plaintext,
+    LargeSource_MustUseRange,CrossBucket,AbortMidway,MixedWithUploadPart,
+    CrossBucket_ReadDenied_Integration,PlaintextSource_EncryptedDestBucket_Refused_Integration}`)
+    run against a real MinIO backend.
+  - Tests 11–13 (`TestUploadPartCopy_MPU_{PlaintextSource_EncryptedDest,
+    ChunkedSource_EncryptedDest_WithRange,LegacySource_EncryptedDest}`)
+    close the Phase-E zero-coverage gap: UploadPartCopy into encrypted-MPU
+    destinations is now exercised end-to-end against MinIO + Valkey.
+  - Tests 14–17 (`TestEncryptedMPU_PasswordKeyManager_{SmallObject,Ranged_GET,
+    AtRestCiphertext,AbortDeletesState}`) replace the env-gated
+    `test/encrypted_mpu_test.go` smoke test with proper CI-runnable assertions
+    including at-rest ciphertext checks and Valkey state-deletion verification.
+  - Test 18 (`TestCosmianKMS_EncryptedMPU_RoundTrip`) adds Cosmian-wrapped
+    DEK coverage to the encrypted-MPU code path.
+  - Test harness extensions: `StartGateway` now accepts variadic
+    `TestGatewayOption` values (`WithPolicyManager`, `WithKeyManager`,
+    `WithMPUStateStore`, `WithAuditLogger`, `WithHeadObjectOverride`);
+    all 16 existing gateway tests compile and pass unchanged.
+  - New `test/mpu_fixtures.go` with `NewTestMPUStateStore`,
+    `NewTestPasswordKeyManager`, `NewRawBackendS3Client`,
+    `NewTestPolicyManager`, `EncryptedMPUPolicy`, `TestBucketPrefix`.
+  - `MinIOTestServer.SeedMinIOUser` helper for multi-credential tests
+    (skips cleanly if `mc` CLI is absent).
+
+### Fixed
+
+- **`UploadPartCopy` Phase-E silent data loss** (`internal/api/upload_part_copy.go`):
+  when `mpuStateStore.AppendPart` fails during an UploadPartCopy into an
+  encrypted-MPU destination, the handler previously logged a warning and
+  returned 200 OK, leaving the encryption state store inconsistent. The fix
+  aligns this path with `handlers.go:2730-2757`: the handler now logs at
+  error level, records `RecordS3Error("AppendMPUPartState", "StateUnavailable")`,
+  emits a `mpu.valkey_unavailable` audit event, and returns **503
+  ServiceUnavailable** so the client retries. A duplicate backend part from
+  a retry is discarded by `CompleteMultipartUpload`'s ETag-set reconciliation.
+  New unit test: `TestUploadPartCopy_MPU_AppendPartFailure_Returns503`.

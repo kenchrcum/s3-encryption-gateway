@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/gorilla/mux"
+	"github.com/kenneth/s3-encryption-gateway/internal/audit"
 	"github.com/kenneth/s3-encryption-gateway/internal/config"
 	"github.com/kenneth/s3-encryption-gateway/internal/crypto"
 	"github.com/kenneth/s3-encryption-gateway/internal/mpu"
@@ -341,6 +342,14 @@ func (h *Handler) handleUploadPartCopy(w http.ResponseWriter, r *http.Request) {
 				Resource:   r.URL.Path,
 				HTTPStatus: http.StatusRequestedRangeNotSatisfiable,
 			}
+		} else if errors.Is(strategyErr, errMPUStateUnavailable) {
+			// Audit/metrics already recorded in uploadPartCopyReencryptMPU.
+			s3Err = &S3Error{
+				Code:       "ServiceUnavailable",
+				Message:    "Multipart encryption state store unavailable; retry the part upload",
+				Resource:   r.URL.Path,
+				HTTPStatus: http.StatusServiceUnavailable,
+			}
 		}
 		s3Err.WriteXML(w)
 		h.logger.WithError(strategyErr).WithFields(logrus.Fields{
@@ -497,17 +506,15 @@ func (h *Handler) uploadPartCopyChunked(ctx context.Context, s3Client s3.Client,
 		plaintextEnd = plaintextSize - 1
 	}
 
-	// Translate plaintext range to encrypted byte range.
-	encryptedStart, encryptedEnd, err := crypto.CalculateEncryptedRangeForPlaintextRange(srcMetadata, plaintextStart, plaintextEnd)
+	// DecryptRange assumes the source reader contains the FULL encrypted
+	// object (see range_decrypt.go: it skips startChunk*encryptedChunkSize
+	// bytes from the source before decoding). We therefore fetch the full
+	// object, not a pre-ranged slice. The memory cost is bounded by the
+	// server's MaxLegacyCopySourceBytes cap; chunked streaming keeps peak
+	// heap well below the full ciphertext size.
+	srcReader, _, err := s3Client.GetObject(ctx, srcBucket, srcKey, srcVersionID, nil)
 	if err != nil {
-		return nil, 0, fmt.Errorf("failed to calculate encrypted range: %w", err)
-	}
-
-	// Fetch encrypted range from backend.
-	encryptedRangeHeader := fmt.Sprintf("bytes=%d-%d", encryptedStart, encryptedEnd)
-	srcReader, _, err := s3Client.GetObject(ctx, srcBucket, srcKey, srcVersionID, &encryptedRangeHeader)
-	if err != nil {
-		return nil, 0, fmt.Errorf("failed to get source object range: %w", err)
+		return nil, 0, fmt.Errorf("failed to get source object: %w", err)
 	}
 	defer srcReader.Close()
 
@@ -518,12 +525,21 @@ func (h *Handler) uploadPartCopyChunked(ctx context.Context, s3Client s3.Client,
 		return nil, 0, fmt.Errorf("failed to decrypt range: %w", err)
 	}
 
-	etag, err := s3Client.UploadPart(ctx, dstBucket, dstKey, uploadID, partNumber, decryptedReader, nil)
+	// Buffer into a seekable reader. Required because the backend SDK's SigV4
+	// signer must seek the body to compute the payload hash over plaintext HTTP.
+	// The memory budget is bounded by the S3 5 GiB per-part cap, and in practice
+	// by the 5 MiB – 5 GiB mainstream-client range that UploadPart already
+	// implies. See ADR 0006 §UploadPart contract.
+	decryptedBytes, err := io.ReadAll(decryptedReader)
+	if err != nil {
+		return nil, 0, fmt.Errorf("failed to read decrypted range: %w", err)
+	}
+	bytesCopied := int64(len(decryptedBytes))
+	etag, err := s3Client.UploadPart(ctx, dstBucket, dstKey, uploadID, partNumber, bytes.NewReader(decryptedBytes), &bytesCopied)
 	if err != nil {
 		return nil, 0, fmt.Errorf("failed to upload part: %w", err)
 	}
 
-	bytesCopied := plaintextEnd - plaintextStart + 1
 	return &s3.CopyPartResult{
 		ETag:         etag,
 		LastModified: time.Now(),
@@ -600,7 +616,8 @@ func (h *Handler) uploadPartCopyLegacy(ctx context.Context, s3Client s3.Client,
 		partData = plaintextData
 	}
 
-	etag, err := s3Client.UploadPart(ctx, dstBucket, dstKey, uploadID, partNumber, bytes.NewReader(partData), nil)
+	partLen := int64(len(partData))
+	etag, err := s3Client.UploadPart(ctx, dstBucket, dstKey, uploadID, partNumber, bytes.NewReader(partData), &partLen)
 	if err != nil {
 		return nil, 0, fmt.Errorf("failed to upload part: %w", err)
 	}
@@ -614,12 +631,17 @@ func (h *Handler) uploadPartCopyLegacy(ctx context.Context, s3Client s3.Client,
 // --- sentinel errors & helpers ---
 
 var (
-	errLegacySourceTooLarge = fmt.Errorf("legacy copy source exceeds gateway cap")
-	errRangeNotSatisfiable  = fmt.Errorf("range not satisfiable")
+	errLegacySourceTooLarge  = fmt.Errorf("legacy copy source exceeds gateway cap")
+	errRangeNotSatisfiable   = fmt.Errorf("range not satisfiable")
+	errMPUStateUnavailable   = fmt.Errorf("mpu state store unavailable")
 )
 
 func isLegacySourceTooLarge(err error) bool {
 	return err != nil && errors.Is(err, errLegacySourceTooLarge)
+}
+
+func isMPUStateUnavailable(err error) bool {
+	return err != nil && errors.Is(err, errMPUStateUnavailable)
 }
 
 func isRangeNotSatisfiable(err error) bool {
@@ -735,12 +757,9 @@ func (h *Handler) uploadPartCopyReencryptMPU(
 			}
 			pEnd = plaintextSize - 1
 		}
-		encStart, encEnd, err := crypto.CalculateEncryptedRangeForPlaintextRange(srcMeta, pStart, pEnd)
-		if err != nil {
-			return nil, 0, fmt.Errorf("uploadPartCopyReencryptMPU: calc enc range: %w", err)
-		}
-		rh := fmt.Sprintf("bytes=%d-%d", encStart, encEnd)
-		r, _, err := s3Client.GetObject(ctx, srcBucket, srcKey, srcVersionID, &rh)
+		// DecryptRange expects the source reader to contain the FULL encrypted
+		// object — see uploadPartCopyChunked for rationale.
+		r, _, err := s3Client.GetObject(ctx, srcBucket, srcKey, srcVersionID, nil)
 		if err != nil {
 			return nil, 0, fmt.Errorf("uploadPartCopyReencryptMPU: get chunked source: %w", err)
 		}
@@ -790,12 +809,24 @@ func (h *Handler) uploadPartCopyReencryptMPU(
 		return nil, 0, fmt.Errorf("uploadPartCopyReencryptMPU: re-encrypt: %w", err)
 	}
 
-	etag, err := s3Client.UploadPart(ctx, dstBucket, dstKey, uploadID, partNumber, encReader, &encLen)
+	// Buffer the re-encrypted bytes so UploadPart can pass a seekable body to
+	// the backend SDK. This is required for plaintext-HTTP backends where
+	// SigV4 must seek to compute payload hash (see uploadPartCopyChunked for
+	// detailed rationale).
+	encBytes, err := io.ReadAll(encReader)
+	if err != nil {
+		return nil, 0, fmt.Errorf("uploadPartCopyReencryptMPU: read re-encrypted part: %w", err)
+	}
+	if int64(len(encBytes)) != encLen {
+		return nil, 0, fmt.Errorf("uploadPartCopyReencryptMPU: encrypted length mismatch: got %d, expected %d", len(encBytes), encLen)
+	}
+	etag, err := s3Client.UploadPart(ctx, dstBucket, dstKey, uploadID, partNumber, bytes.NewReader(encBytes), &encLen)
 	if err != nil {
 		return nil, 0, fmt.Errorf("uploadPartCopyReencryptMPU: upload re-encrypted part: %w", err)
 	}
 
-	// Persist the part record.
+	// Persist the part record. Fail-closed: a state-store hiccup here must
+	// return 503 so the client retries, matching handlers.go:2730-2757.
 	chunkCount := int32((int64(len(plaintextData)) + int64(crypto.DefaultChunkSize) - 1) / int64(crypto.DefaultChunkSize))
 	if appendErr := h.mpuStateStore.AppendPart(ctx, uploadID, mpu.PartRecord{
 		PartNumber: partNumber,
@@ -804,12 +835,24 @@ func (h *Handler) uploadPartCopyReencryptMPU(
 		EncLen:     encLen,
 		ChunkCount: chunkCount,
 	}); appendErr != nil {
-		if h.logger != nil {
-			h.logger.WithError(appendErr).WithFields(logrus.Fields{
-				"uploadID":   uploadID,
-				"partNumber": partNumber,
-			}).Warn("Failed to persist re-encrypted MPU part record")
+		h.logger.WithError(appendErr).WithFields(logrus.Fields{
+			"bucket":     dstBucket,
+			"key":        dstKey,
+			"uploadID":   uploadID,
+			"partNumber": partNumber,
+		}).Error("mpu.append_part.failure: backend part written but state not recorded; returning 503 so client retries")
+		h.metrics.RecordS3Error(ctx, "AppendMPUPartState", dstBucket, "StateUnavailable")
+		if h.auditLogger != nil {
+			h.auditLogger.Log(&audit.AuditEvent{
+				EventType: audit.EventTypeMPUValkeyUnavail,
+				Timestamp: time.Now().UTC(),
+				Bucket:    dstBucket,
+				Key:       dstKey,
+				Success:   false,
+				Metadata:  map[string]interface{}{"upload_id": uploadID},
+			})
 		}
+		return nil, 0, errMPUStateUnavailable
 	}
 
 	return &s3.CopyPartResult{

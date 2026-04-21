@@ -1021,7 +1021,7 @@ func (h *Handler) handleGetObject(w http.ResponseWriter, r *http.Request) {
 		firstChunk = firstChunk[:n]
 		// Forward safe metadata headers.
 		for k, v := range metadata {
-			if k != crypto.MetaMPUEncrypted && k != crypto.MetaFallbackMode && k != crypto.MetaFallbackPointer {
+			if k != crypto.MetaMPUEncrypted && k != crypto.MetaFallbackMode && k != crypto.MetaFallbackPointer && strings.ToLower(k) != "content-length" {
 				w.Header().Set(k, v)
 			}
 		}
@@ -1766,6 +1766,23 @@ func isEncryptionMetadata(key string) bool {
 		}
 	}
 	return false
+}
+
+func decryptedSizeForMPU(metadata map[string]string) int64 {
+	if metadata == nil {
+		return 0
+	}
+	if sizeStr, ok := metadata["x-amz-meta-original-content-length"]; ok && sizeStr != "" {
+		if size, err := strconv.ParseInt(sizeStr, 10, 64); err == nil && size >= 0 {
+			return size
+		}
+	}
+	if sizeStr, ok := metadata[crypto.MetaOriginalSize]; ok && sizeStr != "" {
+		if size, err := strconv.ParseInt(sizeStr, 10, 64); err == nil && size >= 0 {
+			return size
+		}
+	}
+	return 0
 }
 
 // filterS3Metadata filters out standard HTTP headers from metadata map.
@@ -2647,7 +2664,45 @@ func (h *Handler) handleUploadPart(w http.ResponseWriter, r *http.Request) {
 			h.metrics.RecordHTTPRequest(r.Context(), "PUT", r.URL.Path, s3Err.HTTPStatus, time.Since(start), 0)
 			return
 		}
-		encryptedReader = encReader
+		// Plaintext-HTTP backends require a seekable body for SigV4 retries.
+		encBytes, readErr := io.ReadAll(encReader)
+		if readErr != nil {
+			h.logger.WithError(readErr).WithFields(logrus.Fields{
+				"bucket":     bucket,
+				"key":        key,
+				"uploadID":   uploadID,
+				"partNumber": partNumber,
+			}).Error("Failed to buffer encrypted MPU part")
+			s3Err := &S3Error{
+				Code:       "InternalError",
+				Message:    "Failed to prepare multipart upload part",
+				Resource:   r.URL.Path,
+				HTTPStatus: http.StatusInternalServerError,
+			}
+			s3Err.WriteXML(w)
+			h.metrics.RecordHTTPRequest(r.Context(), "PUT", r.URL.Path, s3Err.HTTPStatus, time.Since(start), 0)
+			return
+		}
+		if int64(len(encBytes)) != encLen {
+			h.logger.WithFields(logrus.Fields{
+				"bucket":       bucket,
+				"key":          key,
+				"uploadID":     uploadID,
+				"partNumber":   partNumber,
+				"expected_len": encLen,
+				"actual_len":   len(encBytes),
+			}).Error("Encrypted MPU part length mismatch")
+			s3Err := &S3Error{
+				Code:       "InternalError",
+				Message:    "Failed to prepare multipart upload part",
+				Resource:   r.URL.Path,
+				HTTPStatus: http.StatusInternalServerError,
+			}
+			s3Err.WriteXML(w)
+			h.metrics.RecordHTTPRequest(r.Context(), "PUT", r.URL.Path, s3Err.HTTPStatus, time.Since(start), 0)
+			return
+		}
+		encryptedReader = bytes.NewReader(encBytes)
 		contentLengthPtr = &encLen
 		// Hoist state into outer scope so AppendPart can use it without a
 		// second Valkey round-trip after UploadPart succeeds.

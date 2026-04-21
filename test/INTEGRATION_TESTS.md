@@ -113,7 +113,105 @@ To manually test with a running Cosmian KMS:
 
 4. Run the gateway and test operations
 
-## Model Attribution
+---
 
-All integration test functions are implemented by **Auto (agent router)** as indicated in function comments.
+## UploadPartCopy (MinIO) Integration Tests
+
+Added by V0.6-S3-3. Covers the 10 named tests from the issue list plus 3
+Phase-E encrypted-MPU tests.
+
+### Prerequisites
+
+- **Docker Compose** (running MinIO via `test/docker-compose.yml`):
+  ```bash
+  cd test && docker-compose up -d
+  ```
+- `mc` CLI **only for** `TestUploadPartCopy_CrossBucket_ReadDenied_Integration`
+  (test 9); that test skips cleanly if `mc` is absent
+
+**Important:** Tests require the docker-compose services to be running. They will skip/fail if MinIO cannot be reached at `http://127.0.0.1:9000`.
+
+### Run
+
+```bash
+# First, ensure docker-compose services are running
+cd test && docker-compose up -d
+
+# Then run the tests
+go test -tags=integration -race -v -run 'TestUploadPartCopy_' ./test
+```
+
+### Tests
+
+| # | Name | What it checks |
+|---|------|----------------|
+| 1 | `TestUploadPartCopy_Chunked` | Chunked-encrypted source → plaintext dst, byte-for-byte round trip |
+| 2 | `TestUploadPartCopy_Chunked_WithRange` | Mid-chunk, boundary, cross-chunk range copies |
+| 3 | `TestUploadPartCopy_Legacy` | Legacy-AEAD source; `gateway_upload_part_copy_legacy_fallback_total` increments |
+| 4 | `TestUploadPartCopy_Plaintext` | Backend-native fast path, no decrypt activity |
+| 5 | `TestUploadPartCopy_LargeSource_MustUseRange` | HeadObject override reports > 5 GiB; no-range → 400, ranged → 200 |
+| 6 | `TestUploadPartCopy_CrossBucket` | Two buckets, two per-bucket passwords, round trip |
+| 7 | `TestUploadPartCopy_AbortMidway` | Abort after 2 parts; no orphan objects |
+| 8 | `TestUploadPartCopy_MixedWithUploadPart` | Interleaved UploadPart + UploadPartCopy, 4-part verify |
+| 9 | `TestUploadPartCopy_CrossBucket_ReadDenied_Integration` | alice creds (write-only on dst) → 403; requires `mc` |
+| 10 | `TestUploadPartCopy_PlaintextSource_EncryptedDestBucket_Refused_Integration` | `require_encryption: true` on dst → 500 |
+
+---
+
+## Encrypted Multipart Upload (MinIO + Valkey) Integration Tests
+
+Added by V0.6-S3-3. Covers Phase-E (UploadPartCopy → encrypted MPU dst) and
+end-to-end encrypted MPU with PasswordKeyManager.
+
+### Prerequisites
+
+- **Docker Compose** (running MinIO + Valkey via `test/docker-compose.yml`):
+  ```bash
+  cd test && docker-compose up -d
+  ```
+
+**Important:** Tests require BOTH MinIO and Valkey to be running. They will skip if either service is unavailable.
+
+### Run
+
+```bash
+# First, ensure docker-compose services are running
+cd test && docker-compose up -d
+
+# Then run the tests
+go test -tags=integration -race -v -run 'TestEncryptedMPU_|TestUploadPartCopy_MPU_' ./test
+```
+
+### Tests
+
+| # | Name | What it checks |
+|---|------|----------------|
+| 11 | `TestUploadPartCopy_MPU_PlaintextSource_EncryptedDest` | Plaintext → encrypted MPU; at-rest ciphertext ≠ plaintext |
+| 12 | `TestUploadPartCopy_MPU_ChunkedSource_EncryptedDest_WithRange` | Chunked range → encrypted MPU; downloaded slice matches |
+| 13 | `TestUploadPartCopy_MPU_LegacySource_EncryptedDest` | Legacy → encrypted MPU + legacy fallback metric increments |
+| 14 | `TestEncryptedMPU_PasswordKeyManager_SmallObject` | 16 MiB / 2 parts, byte-for-byte round trip |
+| 15 | `TestEncryptedMPU_PasswordKeyManager_Ranged_GET` | 64 MiB / 8 parts; mid-chunk, cross-chunk, cross-part GET ranges |
+| 16 | `TestEncryptedMPU_PasswordKeyManager_AtRestCiphertext` | Raw backend bytes ≠ plaintext; manifest companion exists |
+| 17 | `TestEncryptedMPU_PasswordKeyManager_AbortDeletesState` | Abort clears Valkey state; ListParts + GetObject fail |
+| 18 | `TestCosmianKMS_EncryptedMPU_RoundTrip` | Cosmian-wrapped DEK, 16 MiB / 2 parts, round trip |
+
+### Troubleshooting
+
+- **MinIO connection refused at http://127.0.0.1:9000**: 
+  ```bash
+  cd test && docker-compose up -d minio
+  docker-compose ps  # Verify minio-test is healthy
+  ```
+
+- **Valkey connection refused**: 
+  ```bash
+  cd test && docker-compose up -d valkey
+  docker-compose ps  # Verify valkey-test is healthy
+  ```
+
+- **Tests skip instead of failing**: This is expected behavior. Tests will skip if docker-compose services are not available.
+
+- **mc not found** (test 9 skips cleanly): This is expected. Test 9 requires `mc` CLI for multi-credential testing. Install via `https://min.io/docs/minio/linux/reference/minio-mc.html` if needed.
+
+- **Cosmian test** (test 18): Cosmian KMS container is started automatically by the test. If test is skipped, Docker is not available.
 

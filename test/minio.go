@@ -65,41 +65,15 @@ func StartMinIOServer(t *testing.T) *MinIOTestServer {
 			Bucket:    bucketName,
 		}
 
-		// Try Docker first, then fallback to MinIO binary
-		var err error
-		t.Logf("Testing Docker availability...")
-		if hasDocker() {
-			t.Logf("Docker is available, trying Docker MinIO...")
-			err = server.startDockerMinIO(t)
-			if err != nil {
-				t.Logf("Docker MinIO failed: %v", err)
-			}
-		} else {
-			t.Logf("Docker not available")
-		}
-
-		// If Docker failed or is not available, try MinIO binary
-		if err != nil || !hasDocker() {
-			t.Logf("Testing MinIO binary availability...")
-			if hasMinIOBinary() {
-				t.Logf("MinIO binary available, trying binary MinIO...")
-				err = server.startBinaryMinIO(t)
-				if err != nil {
-					t.Logf("Binary MinIO failed: %v", err)
-					minioError = err
-					return
-				}
-				t.Logf("Binary MinIO started successfully")
-			} else {
-				t.Logf("MinIO binary not available")
-				if hasDocker() {
-					minioError = fmt.Errorf("MinIO server setup failed: Docker networking issues and no MinIO binary available. Original error: %w", err)
-				} else {
-					minioError = fmt.Errorf("MinIO server not available. Install Docker or MinIO binary for integration tests")
-				}
-				return
-			}
-		}
+	// Use docker-compose deployment exclusively (no binary fallback)
+	// The test/docker-compose.yml must be started beforehand
+	t.Logf("Connecting to docker-compose MinIO deployment...")
+	err := server.connectToDockerComposeMinio(t)
+	if err != nil {
+		minioError = fmt.Errorf("failed to connect to docker-compose MinIO: %w. Please ensure 'docker-compose -f test/docker-compose.yml up -d' is running", err)
+		return
+	}
+	t.Logf("Successfully connected to docker-compose MinIO at %s", server.Endpoint)
 
 		minioServer = server
 	})
@@ -143,27 +117,15 @@ func StartSharedMinIOServerForProvider(t *testing.T) *MinIOTestServer {
 			Bucket:    bucketName,
 		}
 
-	// Try MinIO binary first for provider tests (more stable than Docker)
-	var err error
-	t.Logf("Testing MinIO binary availability for provider tests...")
-	if hasMinIOBinary() {
-		t.Logf("MinIO binary available, trying binary MinIO for provider tests...")
-		err = server.startBinaryMinIO(t)
+		// Connect to docker-compose deployment
+		err := server.connectToDockerComposeMinio(t)
 		if err != nil {
-			t.Logf("Binary MinIO failed: %v", err)
-			minioProviderError = err
+			t.Logf("Failed to connect to docker-compose MinIO for provider tests: %v", err)
+			minioProviderError = fmt.Errorf("failed to connect to docker-compose MinIO for provider tests: %w. Please ensure 'docker-compose -f test/docker-compose.yml up -d' is running", err)
 			return
 		}
-		t.Logf("Binary MinIO started successfully for provider tests")
-	} else {
-		t.Logf("MinIO binary not available for provider tests")
-		minioProviderError = fmt.Errorf("MinIO binary not available for provider tests")
-		return
-	}
-
-
-				minioProviderServer = server
-		t.Logf("Shared MinIO provider server started successfully")
+		minioProviderServer = server
+		t.Logf("Connected to docker-compose MinIO provider server successfully")
 	})
 
 	if minioProviderError != nil {
@@ -231,41 +193,15 @@ func StartMinIOServerForProvider(t *testing.T) *MinIOTestServer {
 		Bucket:    bucketName,
 	}
 
-	// Try Docker first, then fallback to MinIO binary
-	var err error
-	t.Logf("Testing Docker availability...")
-	if hasDocker() {
-		t.Logf("Docker is available, trying Docker MinIO...")
-		err = server.startDockerMinIO(t)
-		if err != nil {
-			t.Logf("Docker MinIO failed: %v", err)
-		} else {
-			t.Logf("Docker MinIO started successfully")
-			return server
-		}
-	} else {
-		t.Logf("Docker not available")
+	// Connect to docker-compose deployment exclusively
+	t.Logf("Connecting to docker-compose MinIO deployment...")
+	err := server.connectToDockerComposeMinio(t)
+	if err != nil {
+		t.Skipf("Failed to connect to docker-compose MinIO: %v. Please ensure 'docker-compose -f test/docker-compose.yml up -d' is running", err)
+		return nil
 	}
-
-	// If Docker failed or is not available, try MinIO binary
-	if err != nil || !hasDocker() {
-		t.Logf("Testing MinIO binary availability...")
-		if hasMinIOBinary() {
-			t.Logf("MinIO binary available, trying binary MinIO...")
-			err = server.startBinaryMinIO(t)
-			if err != nil {
-				t.Logf("Binary MinIO failed: %v", err)
-			} else {
-				t.Logf("Binary MinIO started successfully")
-				return server
-			}
-		} else {
-			t.Logf("MinIO binary not available")
-		}
-	}
-
-	t.Skipf("MinIO server setup failed: %v", err)
-	return nil
+	t.Logf("Successfully connected to docker-compose MinIO")
+	return server
 }
 
 // hasDocker checks if Docker is available.
@@ -467,6 +403,41 @@ func (m *MinIOTestServer) startBinaryMinIO(t *testing.T) error {
 	return nil
 }
 
+// connectToDockerComposeMinio connects to MinIO running via docker-compose.
+// This assumes that 'docker-compose -f test/docker-compose.yml up -d' has already been run.
+// The method verifies the connection and uses the default MinIO credentials from docker-compose.yml.
+func (m *MinIOTestServer) connectToDockerComposeMinio(t *testing.T) error {
+	t.Helper()
+
+	// Use the standard docker-compose MinIO endpoint and credentials
+	m.Endpoint = "http://127.0.0.1:9000"
+	m.AccessKey = "minioadmin"
+	m.SecretKey = "minioadmin"
+	m.Bucket = fmt.Sprintf("test-bucket-%d", time.Now().UnixNano())
+
+	// Wait for MinIO to be ready
+	timeout := time.After(30 * time.Second)
+	ticker := time.NewTicker(500 * time.Millisecond)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-timeout:
+			return fmt.Errorf("timeout connecting to docker-compose MinIO at %s", m.Endpoint)
+		case <-ticker.C:
+			resp, err := http.Get(m.Endpoint + "/minio/health/live")
+			if err == nil {
+				resp.Body.Close()
+				if resp.StatusCode == http.StatusOK {
+					// MinIO is ready, no cleanup needed (docker-compose manages lifecycle)
+					m.cleanup = func() {}
+					return nil
+				}
+			}
+		}
+	}
+}
+
 // waitForMinIO waits for MinIO to be ready.
 func (m *MinIOTestServer) waitForMinIO() error {
 	timeout := time.After(30 * time.Second)
@@ -606,6 +577,53 @@ func (m *MinIOTestServer) GetS3Client() (s3.Client, error) {
 	}
 
 	return s3.NewClient(cfg)
+}
+
+// hasMCBinary checks if the MinIO client (mc) binary is available in PATH.
+func hasMCBinary() bool {
+	cmd := exec.Command("mc", "--version")
+	return cmd.Run() == nil
+}
+
+// SeedMinIOUser creates a secondary MinIO user with the given credentials and
+// attaches an inline policy. Skips the test if the mc CLI is not available.
+// The user and policy are removed in t.Cleanup.
+func (m *MinIOTestServer) SeedMinIOUser(t *testing.T, accessKey, secretKey, policyJSON string) {
+	t.Helper()
+	if !hasMCBinary() {
+		t.Skip("mc CLI not found; skipping multi-credential test")
+	}
+
+	alias := fmt.Sprintf("minio-test-%d", time.Now().UnixNano())
+	policyName := fmt.Sprintf("policy-%s", accessKey)
+
+	// Write policy JSON to a temp file.
+	policyFile, err := os.CreateTemp("", "minio-policy-*.json")
+	if err != nil {
+		t.Fatalf("SeedMinIOUser: create policy file: %v", err)
+	}
+	defer os.Remove(policyFile.Name())
+	if _, err := policyFile.WriteString(policyJSON); err != nil {
+		t.Fatalf("SeedMinIOUser: write policy: %v", err)
+	}
+	policyFile.Close()
+
+	run := func(args ...string) {
+		cmd := exec.Command("mc", args...)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("mc %v: %v\n%s", args, err, out)
+		}
+	}
+
+	run("alias", "set", alias, m.Endpoint, m.AccessKey, m.SecretKey)
+	run("admin", "user", "add", alias, accessKey, secretKey)
+	run("admin", "policy", "create", alias, policyName, policyFile.Name())
+	run("admin", "policy", "attach", alias, policyName, "--user", accessKey)
+
+	t.Cleanup(func() {
+		exec.Command("mc", "admin", "user", "remove", alias, accessKey).Run()
+		exec.Command("mc", "admin", "policy", "remove", alias, policyName).Run()
+	})
 }
 
 // GetGatewayConfig returns gateway configuration for testing.

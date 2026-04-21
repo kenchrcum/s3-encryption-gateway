@@ -1294,6 +1294,16 @@ func (e *engine) DecryptRange(reader io.Reader, metadata map[string]string, plai
 		return nil, nil, fmt.Errorf("failed to load manifest: %w", err)
 	}
 
+	// Compute ChunkCount if missing from the manifest. The encrypt path does
+	// not populate manifest.ChunkCount (see chunked.go: it's incremented at
+	// read-time, and metadata is snapshotted before any reads). For the
+	// regular GET path this is benign because Decrypt streams the whole
+	// object; for DecryptRange we need the count up-front. Derive it from
+	// the original plaintext size and chunk size (both always in metadata).
+	if manifest.ChunkCount == 0 && manifest.ChunkSize > 0 && plaintextSize > 0 {
+		manifest.ChunkCount = int((plaintextSize + int64(manifest.ChunkSize) - 1) / int64(manifest.ChunkSize))
+	}
+
 	// Extract encryption parameters
 	salt, err := decodeBase64(expandedMetadata[MetaKeySalt])
 	if err != nil {

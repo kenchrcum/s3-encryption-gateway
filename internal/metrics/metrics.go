@@ -17,6 +17,7 @@ import (
 var (
 	// defaultRegistry is the default Prometheus registry
 	defaultRegistry = prometheus.DefaultRegisterer
+	defaultGatherer = prometheus.DefaultGatherer
 )
 
 // Config holds metrics configuration.
@@ -27,6 +28,7 @@ type Config struct {
 // Metrics holds all application metrics.
 type Metrics struct {
 	config                            Config
+	gatherer                          prometheus.Gatherer
 	httpRequestsTotal                 *prometheus.CounterVec
 	httpRequestDuration               *prometheus.HistogramVec
 	httpRequestBytes                  *prometheus.CounterVec
@@ -91,8 +93,13 @@ func NewMetricsWithRegistry(reg prometheus.Registerer) *Metrics {
 // newMetricsWithRegistry creates a new metrics instance with a custom registry (for testing).
 func newMetricsWithRegistry(reg prometheus.Registerer, cfg Config) *Metrics {
 	factory := promauto.With(reg)
+	gatherer := defaultGatherer
+	if g, ok := reg.(prometheus.Gatherer); ok {
+		gatherer = g
+	}
 	return &Metrics{
-		config: cfg,
+		config:   cfg,
+		gatherer: gatherer,
 		httpRequestsTotal: factory.NewCounterVec(
 			prometheus.CounterOpts{
 				Name: "http_requests_total",
@@ -616,6 +623,9 @@ func (m *Metrics) StartSystemMetricsCollector() {
 
 // Handler returns the HTTP handler for metrics endpoint.
 func (m *Metrics) Handler() http.Handler {
+	if m != nil && m.gatherer != nil {
+		return promhttp.HandlerFor(m.gatherer, promhttp.HandlerOpts{})
+	}
 	return promhttp.Handler()
 }
 

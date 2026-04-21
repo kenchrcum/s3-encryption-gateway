@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/xml"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -535,6 +536,48 @@ func TestUploadPartCopy_SourceRangeExceeds5GiB(t *testing.T) {
 
 	assert.Equal(t, http.StatusBadRequest, w.Code, "expected 400; body=%s", w.Body.String())
 	assert.Contains(t, w.Body.String(), "InvalidRequest")
+}
+
+// TestUploadPartCopy_MPU_AppendPartFailure_Returns503 verifies that when the
+// encrypted-MPU re-encrypt path writes the backend part successfully but
+// AppendPart on the Valkey state store fails, the handler returns 503
+// ServiceUnavailable instead of a silent 200 OK. This closes the latent
+// silent-data-loss bug described in V0.6-S3-3 plan §1.2 gap 3.
+func TestUploadPartCopy_MPU_AppendPartFailure_Returns503(t *testing.T) {
+	handler, mockClient, _ := newMPUTestHandler(t, "dst-*")
+	router := mux.NewRouter()
+	handler.RegisterRoutes(router)
+
+	bucket, key := "dst-test-bucket", "test-key"
+
+	// Seed a plaintext source (no encryption metadata → SourceClassPlaintext).
+	mockClient.objects["src-bucket/src-key"] = []byte("hello from source")
+	mockClient.metadata["src-bucket/src-key"] = map[string]string{}
+
+	// Create MPU to establish state in miniredis.
+	req := httptest.NewRequest("POST", "/"+bucket+"/"+key+"?uploads=", nil)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+	require.Equal(t, http.StatusOK, w.Code, "CreateMultipartUpload: %s", w.Body.String())
+	uploadID := extractUploadID(t, w.Body.String())
+	t.Cleanup(func() {
+		req := httptest.NewRequest("DELETE", fmt.Sprintf("/%s/%s?uploadId=%s", bucket, key, uploadID), nil)
+		router.ServeHTTP(httptest.NewRecorder(), req)
+	})
+
+	// Replace the state store with one that fails AppendPart.
+	handler.WithMPUStateStore(&failOnAppendStateStore{
+		StateStore: handler.mpuStateStore,
+		appendErr:  errors.New("valkey: connection refused"),
+	})
+
+	req = httptest.NewRequest("PUT", fmt.Sprintf("/%s/%s?partNumber=1&uploadId=%s", bucket, key, uploadID), nil)
+	req.Header.Set("x-amz-copy-source", "src-bucket/src-key")
+	w = httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusServiceUnavailable, w.Code, "expected 503; body=%s", w.Body.String())
+	assert.Contains(t, w.Body.String(), "ServiceUnavailable")
 }
 
 // newPolicyManagerWithRequireEncryption builds a PolicyManager with one
