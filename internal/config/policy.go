@@ -24,6 +24,10 @@ type PolicyConfig struct {
 	// backward compatibility; set explicitly per-bucket to enforce.
 	RequireEncryption bool `yaml:"require_encryption,omitempty"`
 	DisallowLockBypass bool `yaml:"disallow_lock_bypass,omitempty"`
+	// EncryptMultipartUploads opts this bucket into the encrypted multipart
+	// upload path (ADR 0009). When true a per-upload DEK is generated at
+	// CreateMultipartUpload and state is persisted in Valkey. Default false.
+	EncryptMultipartUploads bool `yaml:"encrypt_multipart_uploads,omitempty"`
 }
 
 // PolicyManager manages loading and matching policies
@@ -147,6 +151,20 @@ func (p *PolicyConfig) ApplyToConfig(base *Config) *Config {
 	}
 
 	return &newConfig
+}
+
+// BucketEncryptsMultipart reports whether the bucket's matching policy enables
+// encrypted multipart uploads (EncryptMultipartUploads=true).
+// Returns false when no policy matches, preserving backward compatibility.
+func (pm *PolicyManager) BucketEncryptsMultipart(bucket string) bool {
+	if pm == nil {
+		return false
+	}
+	policy := pm.GetPolicyForBucket(bucket)
+	if policy == nil {
+		return false
+	}
+	return policy.EncryptMultipartUploads
 }
 
 // BucketDisallowsLockBypass returns true if the bucket policy disallows lock bypass.

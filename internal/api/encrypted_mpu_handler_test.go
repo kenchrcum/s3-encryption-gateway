@@ -1,0 +1,757 @@
+package api
+
+import (
+	"bytes"
+	"context"
+	"fmt"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/alicebob/miniredis/v2"
+	"github.com/gorilla/mux"
+	"github.com/kenneth/s3-encryption-gateway/internal/config"
+	"github.com/kenneth/s3-encryption-gateway/internal/crypto"
+	"github.com/kenneth/s3-encryption-gateway/internal/mpu"
+	"github.com/kenneth/s3-encryption-gateway/internal/s3"
+	"github.com/sirupsen/logrus"
+)
+
+// ─────────────────────────────────────────────────────────────────────────────
+// mpuMockS3Client — a richer mock than the default handlers_test.go one:
+//   * stores UploadPart ciphertext bytes
+//   * concatenates parts on CompleteMultipartUpload into one object
+//   * honours the rangeHeader on GetObject (needed for ranged GET tests)
+//   * freezes metadata at CreateMultipartUpload (mirrors real S3 semantics)
+// ─────────────────────────────────────────────────────────────────────────────
+
+type mpuMockS3Client struct {
+	mu        sync.Mutex
+	objects   map[string][]byte
+	metadata  map[string]map[string]string
+	parts     map[string][]byte            // key: "bucket|key|uploadID|partNumber"
+	partsMeta map[string]map[string]string // metadata frozen at CreateMultipartUpload
+}
+
+func newMPUMockS3Client() *mpuMockS3Client {
+	return &mpuMockS3Client{
+		objects:   map[string][]byte{},
+		metadata:  map[string]map[string]string{},
+		parts:     map[string][]byte{},
+		partsMeta: map[string]map[string]string{},
+	}
+}
+
+func (m *mpuMockS3Client) PutObject(ctx context.Context, bucket, key string, reader io.Reader, metadata map[string]string, contentLength *int64, tags string, lock *s3.ObjectLockInput) error {
+	data, err := io.ReadAll(reader)
+	if err != nil {
+		return err
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.objects[bucket+"/"+key] = data
+	cp := map[string]string{}
+	for k, v := range metadata {
+		cp[k] = v
+	}
+	m.metadata[bucket+"/"+key] = cp
+	return nil
+}
+
+func (m *mpuMockS3Client) GetObject(ctx context.Context, bucket, key string, versionID *string, rangeHeader *string) (io.ReadCloser, map[string]string, error) {
+	m.mu.Lock()
+	data, ok := m.objects[bucket+"/"+key]
+	if !ok {
+		m.mu.Unlock()
+		return nil, nil, &s3Error{code: "NoSuchKey", message: "not found"}
+	}
+	meta := m.metadata[bucket+"/"+key]
+	metaCopy := map[string]string{}
+	for k, v := range meta {
+		metaCopy[k] = v
+	}
+	m.mu.Unlock()
+
+	// Serve byte-range on GET — required for ranged-GET tests.
+	if rangeHeader != nil && *rangeHeader != "" {
+		var first, last int64
+		if _, err := fmt.Sscanf(*rangeHeader, "bytes=%d-%d", &first, &last); err == nil {
+			if last >= int64(len(data)) {
+				last = int64(len(data)) - 1
+			}
+			if first < 0 || first > last {
+				return nil, nil, fmt.Errorf("invalid range %q", *rangeHeader)
+			}
+			return io.NopCloser(bytes.NewReader(data[first : last+1])), metaCopy, nil
+		}
+	}
+	return io.NopCloser(bytes.NewReader(data)), metaCopy, nil
+}
+
+func (m *mpuMockS3Client) HeadObject(ctx context.Context, bucket, key string, versionID *string) (map[string]string, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	meta, ok := m.metadata[bucket+"/"+key]
+	if !ok {
+		return nil, &s3Error{code: "NoSuchKey", message: "not found"}
+	}
+	cp := map[string]string{}
+	for k, v := range meta {
+		cp[k] = v
+	}
+	return cp, nil
+}
+
+func (m *mpuMockS3Client) DeleteObject(ctx context.Context, bucket, key string, versionID *string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	delete(m.objects, bucket+"/"+key)
+	delete(m.metadata, bucket+"/"+key)
+	return nil
+}
+
+func (m *mpuMockS3Client) ListObjects(ctx context.Context, bucket, prefix string, opts s3.ListOptions) (s3.ListResult, error) {
+	return s3.ListResult{}, nil
+}
+
+func (m *mpuMockS3Client) CreateMultipartUpload(ctx context.Context, bucket, key string, metadata map[string]string) (string, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	uploadID := fmt.Sprintf("upload-%s-%d", key, time.Now().UnixNano())
+	cp := map[string]string{}
+	for k, v := range metadata {
+		cp[k] = v
+	}
+	m.partsMeta[bucket+"/"+key+"/"+uploadID] = cp
+	return uploadID, nil
+}
+
+func (m *mpuMockS3Client) UploadPart(ctx context.Context, bucket, key, uploadID string, partNumber int32, reader io.Reader, contentLength *int64) (string, error) {
+	data, err := io.ReadAll(reader)
+	if err != nil {
+		return "", err
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.parts[fmt.Sprintf("%s|%s|%s|%d", bucket, key, uploadID, partNumber)] = data
+	return fmt.Sprintf("\"%032x\"", partNumber), nil
+}
+
+func (m *mpuMockS3Client) CompleteMultipartUpload(ctx context.Context, bucket, key, uploadID string, parts []s3.CompletedPart, lock *s3.ObjectLockInput) (string, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var buf bytes.Buffer
+	for _, p := range parts {
+		buf.Write(m.parts[fmt.Sprintf("%s|%s|%s|%d", bucket, key, uploadID, p.PartNumber)])
+	}
+	m.objects[bucket+"/"+key] = buf.Bytes()
+	// Metadata set at CreateMultipartUpload is the final object metadata.
+	m.metadata[bucket+"/"+key] = m.partsMeta[bucket+"/"+key+"/"+uploadID]
+	return "\"final-etag\"", nil
+}
+
+func (m *mpuMockS3Client) AbortMultipartUpload(ctx context.Context, bucket, key, uploadID string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	// Clean up parts for this upload.
+	prefix := fmt.Sprintf("%s|%s|%s|", bucket, key, uploadID)
+	for k := range m.parts {
+		if strings.HasPrefix(k, prefix) {
+			delete(m.parts, k)
+		}
+	}
+	delete(m.partsMeta, bucket+"/"+key+"/"+uploadID)
+	return nil
+}
+
+func (m *mpuMockS3Client) ListParts(ctx context.Context, bucket, key, uploadID string) ([]s3.PartInfo, error) {
+	return nil, nil
+}
+
+func (m *mpuMockS3Client) CopyObject(ctx context.Context, dstBucket, dstKey string, srcBucket, srcKey string, srcVersionID *string, metadata map[string]string, lock *s3.ObjectLockInput) (string, map[string]string, error) {
+	return "", nil, fmt.Errorf("not implemented in MPU mock")
+}
+
+func (m *mpuMockS3Client) UploadPartCopy(ctx context.Context, dstBucket, dstKey, uploadID string, partNumber int32, srcBucket, srcKey string, srcVersionID *string, srcRange *s3.CopyPartRange) (*s3.CopyPartResult, error) {
+	return nil, fmt.Errorf("not implemented in MPU mock")
+}
+
+func (m *mpuMockS3Client) DeleteObjects(ctx context.Context, bucket string, keys []s3.ObjectIdentifier) ([]s3.DeletedObject, []s3.ErrorObject, error) {
+	return nil, nil, nil
+}
+
+func (m *mpuMockS3Client) PutObjectRetention(ctx context.Context, bucket, key string, versionID *string, retention *s3.RetentionConfig) error {
+	return nil
+}
+func (m *mpuMockS3Client) GetObjectRetention(ctx context.Context, bucket, key string, versionID *string) (*s3.RetentionConfig, error) {
+	return nil, nil
+}
+func (m *mpuMockS3Client) PutObjectLegalHold(ctx context.Context, bucket, key string, versionID *string, status string) error {
+	return nil
+}
+func (m *mpuMockS3Client) GetObjectLegalHold(ctx context.Context, bucket, key string, versionID *string) (string, error) {
+	return "", nil
+}
+func (m *mpuMockS3Client) PutObjectLockConfiguration(ctx context.Context, bucket string, cfg *s3.ObjectLockConfiguration) error {
+	return nil
+}
+func (m *mpuMockS3Client) GetObjectLockConfiguration(ctx context.Context, bucket string) (*s3.ObjectLockConfiguration, error) {
+	return nil, nil
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// newMPUTestHandler — stand up a handler with miniredis state + PasswordKeyManager
+// and a policy allowing EncryptMultipartUploads for bucketPattern.
+// ─────────────────────────────────────────────────────────────────────────────
+
+const mpuTestPassword = "a-test-password-at-least-16-chars"
+
+func newMPUTestHandler(t *testing.T, bucketPattern string) (*Handler, *mpuMockS3Client, *miniredis.Miniredis) {
+	t.Helper()
+	mockClient := newMPUMockS3Client()
+
+	engine, err := crypto.NewEngine(mpuTestPassword)
+	if err != nil {
+		t.Fatalf("new engine: %v", err)
+	}
+	logger := logrus.New()
+	logger.SetLevel(logrus.ErrorLevel)
+
+	// Policy manager with encrypt_multipart_uploads=true.
+	policyDir := t.TempDir()
+	policyYAML := fmt.Sprintf(`id: test-mpu
+buckets:
+  - "%s"
+encrypt_multipart_uploads: true
+`, bucketPattern)
+	policyPath := policyDir + "/policy.yaml"
+	if err := os.WriteFile(policyPath, []byte(policyYAML), 0600); err != nil {
+		t.Fatalf("write policy: %v", err)
+	}
+	pm := config.NewPolicyManager()
+	if err := pm.LoadPolicies([]string{policyPath}); err != nil {
+		t.Fatalf("load policies: %v", err)
+	}
+
+	cfg := &config.Config{
+		Server:     config.ServerConfig{},
+		Encryption: config.EncryptionConfig{Password: mpuTestPassword},
+	}
+
+	// Password-mode KeyManager — mirrors what cmd/server/main.go does.
+	km, err := crypto.NewPasswordKeyManager(mpuTestPassword)
+	if err != nil {
+		t.Fatalf("password keymanager: %v", err)
+	}
+
+	handler := NewHandlerWithFeatures(mockClient, engine, logger, getTestMetrics(), km, nil, nil, cfg, pm)
+
+	// Valkey state store (miniredis).
+	mr := miniredis.RunT(t)
+	store, err := mpu.NewValkeyStateStore(context.Background(), config.ValkeyConfig{
+		Addr:                   mr.Addr(),
+		InsecureAllowPlaintext: true,
+		TLS:                    config.ValkeyTLSConfig{Enabled: false},
+		TTLSeconds:             3600,
+		DialTimeout:            2 * time.Second,
+		ReadTimeout:            1 * time.Second,
+		WriteTimeout:           1 * time.Second,
+		PoolSize:               2,
+	})
+	if err != nil {
+		t.Fatalf("valkey store: %v", err)
+	}
+	handler.WithMPUStateStore(store)
+	t.Cleanup(func() { _ = store.Close() })
+
+	return handler, mockClient, mr
+}
+
+// Helper: parse UploadId out of the XML response body.
+func extractUploadID(t *testing.T, body string) string {
+	t.Helper()
+	oi := strings.Index(body, "<UploadId>")
+	ci := strings.Index(body, "</UploadId>")
+	if oi == -1 || ci == -1 {
+		t.Fatalf("no UploadId in body: %s", body)
+	}
+	return body[oi+len("<UploadId>") : ci]
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Issue #1 regression: no plaintext DEK in Valkey or in the manifest companion.
+// ─────────────────────────────────────────────────────────────────────────────
+
+func TestMPU_Issue1_NoPlaintextDEKAtRest(t *testing.T) {
+	handler, mockClient, mr := newMPUTestHandler(t, "sec1-*")
+	router := mux.NewRouter()
+	handler.RegisterRoutes(router)
+
+	bucket, key := "sec1-bucket", "obj.bin"
+
+	// Create + upload single part + complete.
+	req := httptest.NewRequest("POST", "/"+bucket+"/"+key+"?uploads=", nil)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("Create: %d %s", w.Code, w.Body.String())
+	}
+	uploadID := extractUploadID(t, w.Body.String())
+
+	part := bytes.Repeat([]byte("secret-data-"), 100_000)
+	req = httptest.NewRequest("PUT", fmt.Sprintf("/%s/%s?partNumber=1&uploadId=%s", bucket, key, uploadID), bytes.NewReader(part))
+	req.Header.Set("Content-Length", fmt.Sprintf("%d", len(part)))
+	w = httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("UploadPart: %d %s", w.Code, w.Body.String())
+	}
+	etag := w.Header().Get("ETag")
+
+	completeXML := fmt.Sprintf(`<?xml version="1.0"?>
+<CompleteMultipartUpload><Part><PartNumber>1</PartNumber><ETag>%s</ETag></Part></CompleteMultipartUpload>`, etag)
+	req = httptest.NewRequest("POST", "/"+bucket+"/"+key+"?uploadId="+uploadID, strings.NewReader(completeXML))
+	w = httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("Complete: %d %s", w.Code, w.Body.String())
+	}
+
+	// Gate 1: Valkey must not contain a 64-hex-char plaintext DEK.
+	// After completion the state is deleted, so this is a write-and-check-during-upload
+	// sort of concern. Re-inspect by creating another in-flight upload and examining
+	// its state.
+	req = httptest.NewRequest("POST", "/"+bucket+"/"+key+".in-flight?uploads=", nil)
+	w = httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+	inflightUploadID := extractUploadID(t, w.Body.String())
+	defer func() {
+		// Abort to clean up.
+		req := httptest.NewRequest("DELETE", fmt.Sprintf("/%s/%s.in-flight?uploadId=%s", bucket, key, inflightUploadID), nil)
+		w := httptest.NewRecorder()
+		router.ServeHTTP(w, req)
+	}()
+
+	// Inspect the miniredis hash directly.
+	keys := mr.Keys()
+	var stateKey string
+	for _, k := range keys {
+		if strings.HasPrefix(k, "mpu:") {
+			stateKey = k
+			break
+		}
+	}
+	if stateKey == "" {
+		t.Fatal("no mpu:* key found in miniredis")
+	}
+	meta := mr.HGet(stateKey, "meta")
+	if meta == "" {
+		t.Fatal("state record has no meta field")
+	}
+
+	// A 64-hex-char run inside "wrapped_dek":"..." would indicate plaintext DEK.
+	if idx := strings.Index(meta, `"wrapped_dek":"`); idx != -1 {
+		valStart := idx + len(`"wrapped_dek":"`)
+		valEnd := strings.IndexByte(meta[valStart:], '"')
+		if valEnd == 64 && isHex(meta[valStart:valStart+64]) {
+			t.Errorf("SECURITY HOLE: wrapped_dek in Valkey is 64 hex chars (plaintext DEK)\nmeta=%s", meta)
+		}
+	}
+
+	// Gate 2: Manifest companion object on backend must not contain a plaintext DEK.
+	manifestBytes, ok := mockClient.objects[bucket+"/"+key+".mpu-manifest"]
+	if !ok {
+		t.Fatal("manifest companion missing")
+	}
+	// The manifest is encrypted (Issue #2 fix). Verify:
+	// (a) the raw bytes must NOT contain the JSON header "v":1
+	// (b) the raw bytes must NOT contain 64-hex-char wrapped_dek pattern
+	if bytes.Contains(manifestBytes, []byte(`"v":1`)) || bytes.Contains(manifestBytes, []byte(`"wrapped_dek"`)) {
+		t.Errorf("SECURITY HOLE: manifest companion is NOT encrypted (contains JSON markers)\nfirst200=%q", manifestBytes[:min(200, len(manifestBytes))])
+	}
+	// Also scan for any 64-hex-char run as a belt-and-braces check.
+	for i := 0; i+64 < len(manifestBytes); i++ {
+		if isHex(string(manifestBytes[i : i+64])) {
+			// Could be coincidental — warn rather than fail.
+			t.Logf("note: 64-hex-char run at offset %d in manifest bytes; this is likely random ciphertext, not the DEK", i)
+			break
+		}
+	}
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Issue #2 regression: manifest companion is encrypted on the backend.
+// ─────────────────────────────────────────────────────────────────────────────
+
+func TestMPU_Issue2_ManifestEncryptedAtRest(t *testing.T) {
+	handler, mockClient, _ := newMPUTestHandler(t, "sec2-*")
+	router := mux.NewRouter()
+	handler.RegisterRoutes(router)
+
+	bucket, key := "sec2-bucket", "obj.bin"
+	doCompleteUpload(t, router, bucket, key, bytes.Repeat([]byte("A"), 1024*1024))
+
+	manifestBytes, ok := mockClient.objects[bucket+"/"+key+".mpu-manifest"]
+	if !ok {
+		t.Fatal("manifest companion missing")
+	}
+	if bytes.Contains(manifestBytes, []byte(`"v":1`)) {
+		t.Fatalf("manifest contains plaintext JSON marker — not encrypted: %q", manifestBytes[:100])
+	}
+	if bytes.Contains(manifestBytes, []byte(`"wrapped_dek"`)) {
+		t.Fatalf("manifest contains plaintext wrapped_dek marker — not encrypted")
+	}
+
+	// The companion object's metadata must indicate encryption.
+	meta := mockClient.metadata[bucket+"/"+key+".mpu-manifest"]
+	if meta[crypto.MetaEncrypted] != "true" {
+		t.Errorf("companion object missing x-amz-meta-encrypted=true; meta=%v", meta)
+	}
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Issue #3 regression: ranged GET returns correct plaintext bytes.
+// ─────────────────────────────────────────────────────────────────────────────
+
+func TestMPU_Issue3_RangedGET_CorrectBytes(t *testing.T) {
+	handler, _, _ := newMPUTestHandler(t, "sec3-*")
+	router := mux.NewRouter()
+	handler.RegisterRoutes(router)
+
+	bucket, key := "sec3-bucket", "obj.bin"
+
+	// 3 parts × 256 KiB each = 768 KiB total.
+	// DefaultChunkSize is 64 KiB → 4 chunks per part, 12 chunks total.
+	partSize := 256 * 1024
+	part1 := makeByteRamp(partSize, 0)
+	part2 := makeByteRamp(partSize, byte(partSize))
+	part3 := makeByteRamp(partSize, byte(partSize*2))
+	plain := append(append(append([]byte{}, part1...), part2...), part3...)
+	doCompleteUploadWithParts(t, router, bucket, key, [][]byte{part1, part2, part3})
+
+	type rangeCase struct {
+		name        string
+		first, last int64
+		want        []byte
+	}
+	cases := []rangeCase{
+		{"start-of-object", 0, 99, plain[:100]},
+		{"within-one-chunk", 1000, 1999, plain[1000:2000]},
+		{"crossing-chunk-boundary", 65000, 66535, plain[65000:66536]},
+		{"crossing-part-boundary", int64(partSize - 500), int64(partSize + 499), plain[partSize-500 : partSize+500]},
+		{"full-part-2", int64(partSize), int64(2*partSize - 1), plain[partSize : 2*partSize]},
+		{"end-of-object", int64(len(plain) - 100), int64(len(plain) - 1), plain[len(plain)-100:]},
+		{"single-byte", 42, 42, plain[42:43]},
+	}
+
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			req := httptest.NewRequest("GET", "/"+bucket+"/"+key, nil)
+			req.Header.Set("Range", fmt.Sprintf("bytes=%d-%d", c.first, c.last))
+			w := httptest.NewRecorder()
+			router.ServeHTTP(w, req)
+			if w.Code != http.StatusPartialContent && w.Code != http.StatusOK {
+				t.Fatalf("code=%d body=%s", w.Code, w.Body.String())
+			}
+			got := w.Body.Bytes()
+			if !bytes.Equal(got, c.want) {
+				t.Errorf("range [%d,%d] mismatch: want %d bytes, got %d bytes", c.first, c.last, len(c.want), len(got))
+				firstMismatch := -1
+				for i := 0; i < len(c.want) && i < len(got); i++ {
+					if got[i] != c.want[i] {
+						firstMismatch = i
+						break
+					}
+				}
+				if firstMismatch >= 0 {
+					t.Errorf("first mismatch at local offset %d: want 0x%02x, got 0x%02x", firstMismatch, c.want[firstMismatch], got[firstMismatch])
+				}
+			}
+		})
+	}
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Issue #4 regression: full-object GET is streaming.
+// ─────────────────────────────────────────────────────────────────────────────
+
+func TestMPU_Issue4_FullGETStreaming(t *testing.T) {
+	handler, _, _ := newMPUTestHandler(t, "sec4-*")
+	router := mux.NewRouter()
+	handler.RegisterRoutes(router)
+
+	bucket, key := "sec4-bucket", "obj.bin"
+
+	// 4 MiB object, large enough that a non-streaming decrypt would be obvious.
+	plain := makeByteRamp(4*1024*1024, 0)
+	doCompleteUpload(t, router, bucket, key, plain)
+
+	req := httptest.NewRequest("GET", "/"+bucket+"/"+key, nil)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("GET: %d %s", w.Code, w.Body.String())
+	}
+	got := w.Body.Bytes()
+	if !bytes.Equal(got, plain) {
+		t.Fatalf("plaintext mismatch: want %d bytes, got %d bytes", len(plain), len(got))
+	}
+
+	// The MPU streaming decrypt reader is verified functionally here; explicit
+	// heap-bound assertions live in TestNewMPUDecryptReader_Streaming at the
+	// crypto package level (internal/crypto/mpu_encrypter_test.go).
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Additional coverage: tamper detection end-to-end.
+// ─────────────────────────────────────────────────────────────────────────────
+
+func TestMPU_TamperDetection(t *testing.T) {
+	handler, mockClient, _ := newMPUTestHandler(t, "tmp-*")
+	router := mux.NewRouter()
+	handler.RegisterRoutes(router)
+
+	bucket, key := "tmp-bucket", "obj.bin"
+	doCompleteUpload(t, router, bucket, key, bytes.Repeat([]byte("X"), 1024*1024))
+
+	// Flip one byte in the stored ciphertext.
+	mockClient.mu.Lock()
+	storedLen := len(mockClient.objects[bucket+"/"+key])
+	mockClient.objects[bucket+"/"+key][42] ^= 0xff
+	mockClient.mu.Unlock()
+	t.Logf("stored ciphertext len=%d, flipped byte 42", storedLen)
+
+	req := httptest.NewRequest("GET", "/"+bucket+"/"+key, nil)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+	if w.Code < 500 {
+		t.Fatalf("tampered GET should return 5xx, got %d body=%q", w.Code, w.Body.String()[:min(200, len(w.Body.String()))])
+	}
+}
+
+// TestMPU_TamperDetection_MidStream flips a byte in the middle of the ciphertext
+// (past the first chunk) to exercise the mid-stream failure path. The status
+// code will be 200 (already written) but the connection must terminate with
+// an incomplete body; the mpu_tamper_detected_midstream metric is incremented.
+func TestMPU_TamperDetection_MidStream(t *testing.T) {
+	handler, mockClient, _ := newMPUTestHandler(t, "tmp2-*")
+	router := mux.NewRouter()
+	handler.RegisterRoutes(router)
+
+	bucket, key := "tmp2-bucket", "obj.bin"
+	// Two parts, each 256 KiB. DefaultChunkSize 64 KiB → 4 chunks per part.
+	part1 := bytes.Repeat([]byte("A"), 256*1024)
+	part2 := bytes.Repeat([]byte("B"), 256*1024)
+	doCompleteUploadWithParts(t, router, bucket, key, [][]byte{part1, part2})
+
+	// Flip a byte well past the first chunk (part 2, chunk 0 approx).
+	mockClient.mu.Lock()
+	storedLen := len(mockClient.objects[bucket+"/"+key])
+	flipOffset := storedLen - 100 // inside the final chunk of part 2
+	mockClient.objects[bucket+"/"+key][flipOffset] ^= 0xff
+	mockClient.mu.Unlock()
+
+	req := httptest.NewRequest("GET", "/"+bucket+"/"+key, nil)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+	// Status is 200 (already written after first chunk); body may be short.
+	// The key invariant: plaintext bytes returned must NOT equal the full
+	// original plaintext, because decryption halts at the tampered chunk.
+	got := w.Body.Bytes()
+	fullPlain := append(append([]byte{}, part1...), part2...)
+	if bytes.Equal(got, fullPlain) {
+		t.Errorf("mid-stream tamper went undetected: got full plaintext unchanged")
+	}
+	t.Logf("mid-stream tamper: status=%d got_len=%d plain_len=%d", w.Code, len(got), len(fullPlain))
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Startup fail-closed: encrypted MPU without a KeyManager must refuse.
+// ─────────────────────────────────────────────────────────────────────────────
+
+func TestMPU_FailClosed_NoKeyManager(t *testing.T) {
+	mockClient := newMPUMockS3Client()
+	engine, err := crypto.NewEngine(mpuTestPassword)
+	if err != nil {
+		t.Fatalf("new engine: %v", err)
+	}
+	logger := logrus.New()
+	logger.SetLevel(logrus.ErrorLevel)
+
+	policyDir := t.TempDir()
+	policyYAML := `id: test-mpu
+buckets:
+  - "fc-*"
+encrypt_multipart_uploads: true
+`
+	policyPath := policyDir + "/policy.yaml"
+	if err := os.WriteFile(policyPath, []byte(policyYAML), 0600); err != nil {
+		t.Fatalf("write policy: %v", err)
+	}
+	pm := config.NewPolicyManager()
+	if err := pm.LoadPolicies([]string{policyPath}); err != nil {
+		t.Fatalf("load policies: %v", err)
+	}
+
+	cfg := &config.Config{
+		Server:     config.ServerConfig{},
+		Encryption: config.EncryptionConfig{Password: mpuTestPassword},
+	}
+
+	// Deliberately pass nil KeyManager to simulate the broken path.
+	handler := NewHandlerWithFeatures(mockClient, engine, logger, getTestMetrics(), nil, nil, nil, cfg, pm)
+
+	mr := miniredis.RunT(t)
+	store, err := mpu.NewValkeyStateStore(context.Background(), config.ValkeyConfig{
+		Addr:                   mr.Addr(),
+		InsecureAllowPlaintext: true,
+		TLS:                    config.ValkeyTLSConfig{Enabled: false},
+		TTLSeconds:             3600,
+		DialTimeout:            2 * time.Second,
+		ReadTimeout:            1 * time.Second,
+		WriteTimeout:           1 * time.Second,
+		PoolSize:               2,
+	})
+	if err != nil {
+		t.Fatalf("valkey store: %v", err)
+	}
+	handler.WithMPUStateStore(store)
+	defer store.Close()
+
+	router := mux.NewRouter()
+	handler.RegisterRoutes(router)
+
+	// CreateMultipartUpload must fail because no KeyManager is available
+	// to wrap the DEK. Expect 5xx.
+	req := httptest.NewRequest("POST", "/fc-bucket/obj?uploads=", nil)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+	if w.Code < 500 {
+		t.Errorf("Create without KeyManager should fail 5xx; got %d %s", w.Code, w.Body.String())
+	}
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Abort semantics: deletes Valkey state + backend parts.
+// ─────────────────────────────────────────────────────────────────────────────
+
+func TestMPU_AbortDeletesState(t *testing.T) {
+	handler, _, mr := newMPUTestHandler(t, "abt-*")
+	router := mux.NewRouter()
+	handler.RegisterRoutes(router)
+
+	bucket, key := "abt-bucket", "obj.bin"
+
+	req := httptest.NewRequest("POST", "/"+bucket+"/"+key+"?uploads=", nil)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("Create: %d %s", w.Code, w.Body.String())
+	}
+	uploadID := extractUploadID(t, w.Body.String())
+
+	// Verify Valkey has a key.
+	keys := mr.Keys()
+	var found bool
+	for _, k := range keys {
+		if strings.HasPrefix(k, "mpu:") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatal("expected mpu:* key in Valkey before abort")
+	}
+
+	// Abort.
+	req = httptest.NewRequest("DELETE", fmt.Sprintf("/%s/%s?uploadId=%s", bucket, key, uploadID), nil)
+	w = httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+	if w.Code != http.StatusNoContent {
+		t.Fatalf("Abort: %d %s", w.Code, w.Body.String())
+	}
+
+	// Valkey key must be gone.
+	for _, k := range mr.Keys() {
+		if strings.HasPrefix(k, "mpu:") {
+			t.Errorf("mpu:* key still present in Valkey after abort: %s", k)
+		}
+	}
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Helpers
+// ─────────────────────────────────────────────────────────────────────────────
+
+func doCompleteUpload(t *testing.T, router *mux.Router, bucket, key string, data []byte) {
+	t.Helper()
+	doCompleteUploadWithParts(t, router, bucket, key, [][]byte{data})
+}
+
+func doCompleteUploadWithParts(t *testing.T, router *mux.Router, bucket, key string, parts [][]byte) {
+	t.Helper()
+
+	req := httptest.NewRequest("POST", "/"+bucket+"/"+key+"?uploads=", nil)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("Create: %d %s", w.Code, w.Body.String())
+	}
+	uploadID := extractUploadID(t, w.Body.String())
+
+	var etags []string
+	for i, data := range parts {
+		pn := i + 1
+		req := httptest.NewRequest("PUT", fmt.Sprintf("/%s/%s?partNumber=%d&uploadId=%s", bucket, key, pn, uploadID), bytes.NewReader(data))
+		req.Header.Set("Content-Length", fmt.Sprintf("%d", len(data)))
+		w := httptest.NewRecorder()
+		router.ServeHTTP(w, req)
+		if w.Code != http.StatusOK {
+			t.Fatalf("UploadPart %d: %d %s", pn, w.Code, w.Body.String())
+		}
+		etags = append(etags, w.Header().Get("ETag"))
+	}
+
+	var sb strings.Builder
+	sb.WriteString(`<?xml version="1.0"?><CompleteMultipartUpload>`)
+	for i, etag := range etags {
+		fmt.Fprintf(&sb, `<Part><PartNumber>%d</PartNumber><ETag>%s</ETag></Part>`, i+1, etag)
+	}
+	sb.WriteString(`</CompleteMultipartUpload>`)
+
+	req = httptest.NewRequest("POST", "/"+bucket+"/"+key+"?uploadId="+uploadID, strings.NewReader(sb.String()))
+	w = httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("Complete: %d %s", w.Code, w.Body.String())
+	}
+}
+
+func makeByteRamp(n int, start byte) []byte {
+	b := make([]byte, n)
+	for i := range b {
+		b[i] = start + byte(i)
+	}
+	return b
+}
+
+func isHex(s string) bool {
+	for _, c := range s {
+		if !(c >= '0' && c <= '9' || c >= 'a' && c <= 'f' || c >= 'A' && c <= 'F') {
+			return false
+		}
+	}
+	return true
+}
+
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
+}

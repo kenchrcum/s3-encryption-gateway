@@ -58,3 +58,28 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **Multipart Copy Support** (V0.6-S3-1): `UploadPartCopy` handler with
   three source-class strategies (chunked, legacy, plaintext). 5 GiB per-call
   cap, legacy source OOM-defense cap, cross-bucket copy support.
+
+- **Encrypted Multipart Uploads** (V0.6-SEC-3, ADR 0009): Closes the
+  plaintext-at-rest gap for multipart uploads. Opt-in per bucket via
+  `encrypt_multipart_uploads: true` in policy files. Architecture:
+  - Per-upload 32-byte DEK wrapped by the configured `KeyManager`.
+  - Per-part, per-chunk AEAD IVs derived via
+    `HKDF-Expand(SHA-256, dek, salt=sha256(uploadId), info=ivPrefix||BE32(part)||BE32(chunk))`.
+  - Finalization manifest stored as a companion object (`<key>.mpu-manifest`),
+    with a metadata pointer on the final object.
+  - `UploadPartCopy` into encrypted MPU destinations re-encrypts through
+    the destination DEK schedule regardless of source class.
+  - Range GETs supported: part-boundary arithmetic translates plaintext
+    offsets to backend ciphertext offsets.
+  - Tamper detection: AES-GCM tag failure on any chunk returns 500 + audit event.
+  - **Requires Valkey** for in-flight state storage (`multipart_state.valkey.addr`).
+    Startup fail-closed when Valkey is unreachable and any bucket policy enables
+    encrypted MPU. Emergency escape hatch: `server.disable_multipart_uploads: true`.
+  - New Prometheus metrics: `gateway_mpu_encrypted_total`,
+    `gateway_mpu_parts_total`, `gateway_mpu_state_store_ops_total`,
+    `gateway_mpu_state_store_latency_seconds`, `gateway_mpu_valkey_up`,
+    `gateway_mpu_valkey_insecure`, `gateway_mpu_manifest_bytes`,
+    `gateway_mpu_manifest_storage_total`.
+  - New admin endpoints: `POST /admin/mpu/abort/{uploadId}`,
+    `GET /admin/mpu/list`.
+  - Default: `false` in v0.6 for soak. v0.7 flips default to `true`.

@@ -60,6 +60,16 @@ type Metrics struct {
 	// V0.6-S3-2 — objects skipped by the key-rotation worker because
 	// they are Object-Lock-protected at the backend. See ADR 0008.
 	gatewayRotationSkippedLocked *prometheus.CounterVec
+
+	// V0.6-SEC-3 — encrypted multipart upload metrics (ADR 0009).
+	mpuEncryptedTotal    *prometheus.CounterVec
+	mpuPartsTotal        *prometheus.CounterVec
+	mpuStateStoreOps     *prometheus.CounterVec
+	mpuStateStoreLatency *prometheus.HistogramVec
+	mpuValkeyUp          prometheus.Gauge
+	mpuValkeyInsecure    prometheus.Gauge
+	mpuManifestBytes     prometheus.Histogram
+	mpuManifestStorage   *prometheus.CounterVec
 }
 
 // NewMetrics creates a new metrics instance with default configuration.
@@ -282,6 +292,63 @@ func newMetricsWithRegistry(reg prometheus.Registerer, cfg Config) *Metrics {
 				Help: "Objects skipped during key rotation because they are Object-Lock-protected at the backend (labelled by mode: COMPLIANCE, GOVERNANCE, LEGAL_HOLD).",
 			},
 			[]string{"mode"},
+		),
+
+		// V0.6-SEC-3 MPU metrics.
+		mpuEncryptedTotal: factory.NewCounterVec(
+			prometheus.CounterOpts{
+				Name: "gateway_mpu_encrypted_total",
+				Help: "Total encrypted multipart uploads completed (result=success|error).",
+			},
+			[]string{"result"},
+		),
+		mpuPartsTotal: factory.NewCounterVec(
+			prometheus.CounterOpts{
+				Name: "gateway_mpu_parts_total",
+				Help: "Total encrypted multipart parts uploaded (result=success|error).",
+			},
+			[]string{"result"},
+		),
+		mpuStateStoreOps: factory.NewCounterVec(
+			prometheus.CounterOpts{
+				Name: "gateway_mpu_state_store_ops_total",
+				Help: "Total Valkey state store operations (op=create|append|get|delete|healthcheck; result=success|error).",
+			},
+			[]string{"op", "result"},
+		),
+		mpuStateStoreLatency: factory.NewHistogramVec(
+			prometheus.HistogramOpts{
+				Name:    "gateway_mpu_state_store_latency_seconds",
+				Help:    "Latency of Valkey state store operations in seconds.",
+				Buckets: []float64{0.0005, 0.001, 0.005, 0.01, 0.05, 0.1, 0.5, 1, 5},
+			},
+			[]string{"op"},
+		),
+		mpuValkeyUp: factory.NewGauge(
+			prometheus.GaugeOpts{
+				Name: "gateway_mpu_valkey_up",
+				Help: "1 if the last Valkey health check succeeded, 0 otherwise.",
+			},
+		),
+		mpuValkeyInsecure: factory.NewGauge(
+			prometheus.GaugeOpts{
+				Name: "gateway_mpu_valkey_insecure",
+				Help: "1 if the gateway was started with insecure_allow_plaintext=true for Valkey.",
+			},
+		),
+		mpuManifestBytes: factory.NewHistogram(
+			prometheus.HistogramOpts{
+				Name:    "gateway_mpu_manifest_bytes",
+				Help:    "Size of serialised MPU manifests in bytes.",
+				Buckets: []float64{256, 512, 1024, 1800, 4096, 16384},
+			},
+		),
+		mpuManifestStorage: factory.NewCounterVec(
+			prometheus.CounterOpts{
+				Name: "gateway_mpu_manifest_storage_total",
+				Help: "MPU manifests by storage location (location=inline|fallback).",
+			},
+			[]string{"location"},
 		),
 	}
 }
@@ -550,6 +617,75 @@ func (m *Metrics) StartSystemMetricsCollector() {
 // Handler returns the HTTP handler for metrics endpoint.
 func (m *Metrics) Handler() http.Handler {
 	return promhttp.Handler()
+}
+
+// RecordMPUEncrypted increments the gateway_mpu_encrypted_total counter.
+func (m *Metrics) RecordMPUEncrypted(result string) {
+	if m == nil || m.mpuEncryptedTotal == nil {
+		return
+	}
+	m.mpuEncryptedTotal.WithLabelValues(result).Inc()
+}
+
+// RecordMPUPart increments the gateway_mpu_parts_total counter.
+func (m *Metrics) RecordMPUPart(result string) {
+	if m == nil || m.mpuPartsTotal == nil {
+		return
+	}
+	m.mpuPartsTotal.WithLabelValues(result).Inc()
+}
+
+// RecordMPUStateStoreOp records a Valkey state store operation.
+func (m *Metrics) RecordMPUStateStoreOp(op, result string, duration time.Duration) {
+	if m == nil {
+		return
+	}
+	if m.mpuStateStoreOps != nil {
+		m.mpuStateStoreOps.WithLabelValues(op, result).Inc()
+	}
+	if m.mpuStateStoreLatency != nil {
+		m.mpuStateStoreLatency.WithLabelValues(op).Observe(duration.Seconds())
+	}
+}
+
+// SetMPUValkeyUp sets the gateway_mpu_valkey_up gauge.
+func (m *Metrics) SetMPUValkeyUp(up bool) {
+	if m == nil || m.mpuValkeyUp == nil {
+		return
+	}
+	if up {
+		m.mpuValkeyUp.Set(1)
+	} else {
+		m.mpuValkeyUp.Set(0)
+	}
+}
+
+// SetMPUValkeyInsecure sets the gateway_mpu_valkey_insecure gauge.
+func (m *Metrics) SetMPUValkeyInsecure(insecure bool) {
+	if m == nil || m.mpuValkeyInsecure == nil {
+		return
+	}
+	if insecure {
+		m.mpuValkeyInsecure.Set(1)
+	} else {
+		m.mpuValkeyInsecure.Set(0)
+	}
+}
+
+// ObserveMPUManifestBytes records manifest serialised size.
+func (m *Metrics) ObserveMPUManifestBytes(n int) {
+	if m == nil || m.mpuManifestBytes == nil {
+		return
+	}
+	m.mpuManifestBytes.Observe(float64(n))
+}
+
+// RecordMPUManifestStorage increments the manifest storage location counter.
+func (m *Metrics) RecordMPUManifestStorage(location string) {
+	if m == nil || m.mpuManifestStorage == nil {
+		return
+	}
+	m.mpuManifestStorage.WithLabelValues(location).Inc()
 }
 
 // getExemplar extracts trace ID from context and returns prometheus Labels for exemplar.

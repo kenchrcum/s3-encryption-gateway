@@ -3,6 +3,9 @@ package api
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
+	"encoding/hex"
+	"encoding/json"
 	"encoding/xml"
 	"errors"
 	"fmt"
@@ -21,6 +24,7 @@ import (
 	"github.com/kenneth/s3-encryption-gateway/internal/config"
 	"github.com/kenneth/s3-encryption-gateway/internal/crypto"
 	"github.com/kenneth/s3-encryption-gateway/internal/metrics"
+	"github.com/kenneth/s3-encryption-gateway/internal/mpu"
 	"github.com/kenneth/s3-encryption-gateway/internal/s3"
 	"github.com/sirupsen/logrus"
 )
@@ -38,6 +42,7 @@ type Handler struct {
 	config           *config.Config
 	policyManager    *config.PolicyManager
 	engineCache      sync.Map
+	mpuStateStore    mpu.StateStore // nil when encrypted MPU is not configured
 }
 
 // NewHandler creates a new API handler (backward compatibility).
@@ -73,6 +78,88 @@ func NewHandlerWithFeatures(
 		h.clientFactory = s3.NewClientFactory(&config.Backend)
 	}
 	return h
+}
+
+// WithMPUStateStore attaches an encrypted multipart state store to the handler.
+// When non-nil, buckets with EncryptMultipartUploads=true will use this store.
+func (h *Handler) WithMPUStateStore(store mpu.StateStore) {
+	h.mpuStateStore = store
+}
+
+// bucketEncryptsMPU reports whether the bucket's CURRENT policy requires
+// encrypted multipart uploads. Only call this at CreateMultipartUpload time —
+// subsequent UploadPart / Complete / Abort must use uploadStateEncrypted so
+// that mid-upload policy flips do not affect in-flight uploads (ADR-0009
+// §Security Considerations: "Policy snapshot captured at Create").
+func (h *Handler) bucketEncryptsMPU(bucket string) bool {
+	if h.policyManager == nil {
+		return false
+	}
+	return h.policyManager.BucketEncryptsMultipart(bucket)
+}
+
+// uploadStateEncrypted fetches the Valkey UploadState for uploadID and returns
+// (state, true) when the upload was created with EncryptMultipartUploads=true.
+// Returns (nil, false) when the upload has no state record (plaintext MPU) or
+// when the infrastructure (state store / key manager) is absent.
+//
+// This is the correct decision predicate for UploadPart, CompleteMultipartUpload,
+// and AbortMultipartUpload — it reads the PolicySnapshot stored at Create time
+// rather than the live policy, preventing mid-upload policy flips from affecting
+// in-flight encrypted uploads.
+func (h *Handler) uploadStateEncrypted(ctx context.Context, uploadID string) (*mpu.UploadState, bool) {
+	if h.mpuStateStore == nil || h.keyManager == nil {
+		return nil, false
+	}
+	state, err := h.mpuStateStore.Get(ctx, uploadID)
+	if err != nil {
+		// ErrUploadNotFound is the normal path for non-encrypted uploads.
+		// Any other error is logged but treated as non-encrypted to avoid
+		// breaking plaintext uploads on transient Valkey hiccups.
+		return nil, false
+	}
+	return state, state.PolicySnapshot.EncryptMultipartUploads
+}
+
+// mpuEncryptionReady reports whether the infrastructure required for
+// encrypted MPU is available (state store + key manager). Returns (false,
+// reason) when anything is missing, letting callers produce a precise
+// 503 response instead of silently falling through to plaintext uploads.
+func (h *Handler) mpuEncryptionReady() (bool, string) {
+	if h.mpuStateStore == nil {
+		return false, "MPU state store not configured"
+	}
+	if h.keyManager == nil {
+		return false, "KeyManager not configured"
+	}
+	return true, ""
+}
+
+// mpuGuardMisconfig writes a 503 ServiceUnavailable response if the bucket's
+// policy requires encrypted MPU but the infrastructure (state store / key
+// manager) is not ready. Returns true when the request has been handled (i.e.
+// the caller should return immediately). Prevents silent security degradation.
+func (h *Handler) mpuGuardMisconfig(w http.ResponseWriter, r *http.Request, bucket, method string, start time.Time) bool {
+	if !h.bucketEncryptsMPU(bucket) {
+		return false
+	}
+	ready, reason := h.mpuEncryptionReady()
+	if ready {
+		return false
+	}
+	h.logger.WithFields(logrus.Fields{
+		"bucket": bucket,
+		"reason": reason,
+	}).Error("Bucket policy requires encrypted MPU but infrastructure is not ready; refusing with 503")
+	s3Err := &S3Error{
+		Code:       "ServiceUnavailable",
+		Message:    "Encrypted multipart uploads are configured for this bucket but the required infrastructure is not available: " + reason,
+		Resource:   r.URL.Path,
+		HTTPStatus: http.StatusServiceUnavailable,
+	}
+	s3Err.WriteXML(w)
+	h.metrics.RecordHTTPRequest(r.Context(), method, r.URL.Path, s3Err.HTTPStatus, time.Since(start), 0)
+	return true
 }
 
 func (h *Handler) currentKeyVersion(ctx context.Context) int {
@@ -758,10 +845,28 @@ func (h *Handler) handleGetObject(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if rangeHeader != nil {
-		// Check if object is encrypted and uses chunked format
+		// Determine the backend byte range to request. The decision depends on
+		// the encryption format of the object:
+		//
+		//  MPU-encrypted  → fetch entire concatenated ciphertext (backendRange=nil);
+		//                    decryptMPUObject decrypts all parts then slices the
+		//                    plaintext to the requested range.
+		//  Chunked (single-PUT) → translate plaintext range to encrypted chunk range.
+		//  Legacy / unencrypted  → forward the client range directly.
+		//
+		// IsEncrypted only knows MetaEncrypted; MPU objects carry MetaMPUEncrypted
+		// instead. Both must be detected before falling through to the forward path,
+		// otherwise the plaintext-space range is sent to the backend as a
+		// ciphertext-space range, fetching the wrong bytes.
 		headMeta, headErr := s3Client.HeadObject(ctx, bucket, key, versionID)
-		if headErr == nil && engine.IsEncrypted(headMeta) {
-			// Check if chunked format - if so, we can optimize by fetching only needed chunks
+		if headErr == nil && headMeta[crypto.MetaMPUEncrypted] == "true" {
+			// MPU-encrypted ranged GET: serve via a dedicated path that maps
+			// the plaintext range to backend ciphertext offsets from the
+			// manifest and fetches only those bytes.
+			h.serveMPURangedGet(w, r, ctx, bucket, key, versionID, headMeta, *rangeHeader, s3Client, start)
+			return
+		} else if headErr == nil && engine.IsEncrypted(headMeta) {
+			// Single-PUT chunked or legacy encrypted object.
 			if crypto.IsChunkedFormat(headMeta) {
 				// Get plaintext size for range parsing
 				plaintextSize, err := crypto.GetPlaintextSizeFromMetadata(headMeta)
@@ -773,7 +878,6 @@ func (h *Handler) handleGetObject(w http.ResponseWriter, r *http.Request) {
 						// Calculate encrypted byte range for needed chunks
 						encryptedStart, encryptedEnd, err := crypto.CalculateEncryptedRangeForPlaintextRange(headMeta, start, end)
 						if err == nil {
-							// Format as HTTP Range header
 							encryptedRange := fmt.Sprintf("bytes=%d-%d", encryptedStart, encryptedEnd)
 							backendRange = &encryptedRange
 							useRangeOptimization = true
@@ -796,11 +900,11 @@ func (h *Handler) handleGetObject(w http.ResponseWriter, r *http.Request) {
 					backendRange = nil
 				}
 			} else {
-				// Legacy format: must fetch full object
+				// Legacy format: must fetch full object, decrypt, then apply range.
 				backendRange = nil
 			}
 		} else {
-			// Not encrypted or HEAD failed: forward range to backend
+			// Not encrypted or HEAD failed: forward range to backend as-is.
 			backendRange = rangeHeader
 		}
 	}
@@ -818,6 +922,73 @@ func (h *Handler) handleGetObject(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer reader.Close()
+
+	// For MPU-encrypted objects, delegate to the MPU decrypt path.
+	if metadata[crypto.MetaMPUEncrypted] == "true" {
+		decryptedReader, err := h.decryptMPUObject(ctx, bucket, key, metadata, reader, s3Client)
+		if err != nil {
+			h.logger.WithError(err).WithFields(logrus.Fields{
+				"bucket": bucket,
+				"key":    key,
+			}).Error("Failed to decrypt MPU object")
+			s3Err := &S3Error{
+				Code:       "InternalError",
+				Message:    "Failed to decrypt multipart encrypted object",
+				Resource:   r.URL.Path,
+				HTTPStatus: http.StatusInternalServerError,
+			}
+			s3Err.WriteXML(w)
+			h.metrics.RecordHTTPRequest(r.Context(), "GET", r.URL.Path, s3Err.HTTPStatus, time.Since(start), 0)
+			return
+		}
+		// Read the first chunk up front so any AEAD authentication failure
+		// surfaces as a 5xx response rather than a 200 with partial/empty
+		// bytes. `io.Copy` discards the error after WriteHeader, so we must
+		// catch a tamper at the earliest point.
+		firstChunk := make([]byte, crypto.DefaultChunkSize)
+		n, firstErr := io.ReadFull(decryptedReader, firstChunk)
+		if firstErr != nil && firstErr != io.EOF && firstErr != io.ErrUnexpectedEOF {
+			h.logger.WithError(firstErr).WithFields(logrus.Fields{
+				"bucket": bucket,
+				"key":    key,
+			}).Error("MPU decrypt failed on first chunk (tamper or corruption)")
+			h.metrics.RecordEncryptionError(r.Context(), "decrypt", "mpu_tamper_detected")
+			s3Err := &S3Error{
+				Code:       "InternalError",
+				Message:    "Object integrity check failed",
+				Resource:   r.URL.Path,
+				HTTPStatus: http.StatusInternalServerError,
+			}
+			s3Err.WriteXML(w)
+			h.metrics.RecordHTTPRequest(r.Context(), "GET", r.URL.Path, s3Err.HTTPStatus, time.Since(start), 0)
+			return
+		}
+		firstChunk = firstChunk[:n]
+		// Forward safe metadata headers.
+		for k, v := range metadata {
+			if k != crypto.MetaMPUEncrypted && k != crypto.MetaFallbackMode && k != crypto.MetaFallbackPointer {
+				w.Header().Set(k, v)
+			}
+		}
+		w.WriteHeader(http.StatusOK)
+		written, _ := w.Write(firstChunk)
+		if firstErr == nil { // more data to stream
+			extra, copyErr := io.Copy(w, decryptedReader)
+			if copyErr != nil {
+				// Can't change the status code after WriteHeader; log and
+				// record a tamper metric so operators see the integrity
+				// failure even though the client already got 200 headers.
+				h.logger.WithError(copyErr).WithFields(logrus.Fields{
+					"bucket": bucket,
+					"key":    key,
+				}).Error("MPU decrypt failed mid-stream after 200 OK; connection terminated")
+				h.metrics.RecordEncryptionError(r.Context(), "decrypt", "mpu_tamper_detected_midstream")
+			}
+			written += int(extra)
+		}
+		h.metrics.RecordHTTPRequest(r.Context(), "GET", r.URL.Path, http.StatusOK, time.Since(start), int64(written))
+		return
+	}
 
 	// Decrypt if encrypted
 	decryptStart := time.Now()
@@ -1948,6 +2119,11 @@ func (h *Handler) handleCreateMultipartUpload(w http.ResponseWriter, r *http.Req
 		return
 	}
 
+	// Fail closed if policy requires encrypted MPU but infra is missing.
+	if h.mpuGuardMisconfig(w, r, bucket, "POST", start) {
+		return
+	}
+
 	ctx := r.Context()
 
 	// Get S3 client (may use client credentials if enabled)
@@ -1970,6 +2146,15 @@ func (h *Handler) handleCreateMultipartUpload(w http.ResponseWriter, r *http.Req
 		}
 	}
 
+	// If encrypted MPU is enabled, pre-set markers in metadata so the final
+	// object automatically carries the manifest pointer (metadata is frozen at
+	// CreateMultipartUpload time on most S3 backends).
+	if h.bucketEncryptsMPU(bucket) {
+		metadata[crypto.MetaMPUEncrypted] = "true"
+		metadata[crypto.MetaFallbackMode] = "mpu"
+		metadata[crypto.MetaFallbackPointer] = key + ".mpu-manifest"
+	}
+
 	uploadID, err := s3Client.CreateMultipartUpload(ctx, bucket, key, metadata)
 	if err != nil {
 		s3Err := TranslateError(err, bucket, key)
@@ -1981,6 +2166,29 @@ func (h *Handler) handleCreateMultipartUpload(w http.ResponseWriter, r *http.Req
 		h.metrics.RecordS3Error(r.Context(), "CreateMultipartUpload", bucket, s3Err.Code)
 		h.metrics.RecordHTTPRequest(r.Context(), "POST", r.URL.Path, s3Err.HTTPStatus, time.Since(start), 0)
 		return
+	}
+
+	// When EncryptMultipartUploads is enabled for this bucket, generate a
+	// per-upload DEK and persist state to Valkey before returning to the client.
+	if h.bucketEncryptsMPU(bucket) {
+		if storeErr := h.initMPUEncryptionState(ctx, uploadID, bucket, key); storeErr != nil {
+			// Roll back the backend upload that was already created.
+			_ = s3Client.AbortMultipartUpload(ctx, bucket, key, uploadID)
+			h.logger.WithError(storeErr).WithFields(logrus.Fields{
+				"bucket":   bucket,
+				"key":      key,
+				"uploadID": uploadID,
+			}).Error("Failed to initialise MPU encryption state; backend upload aborted")
+			s3Err := &S3Error{
+				Code:       "ServiceUnavailable",
+				Message:    "Multipart encryption state store unavailable",
+				Resource:   r.URL.Path,
+				HTTPStatus: http.StatusServiceUnavailable,
+			}
+			s3Err.WriteXML(w)
+			h.metrics.RecordHTTPRequest(r.Context(), "POST", r.URL.Path, s3Err.HTTPStatus, time.Since(start), 0)
+			return
+		}
 	}
 
 	// Return XML response with upload ID
@@ -2003,6 +2211,71 @@ func (h *Handler) handleCreateMultipartUpload(w http.ResponseWriter, r *http.Req
 
 	h.metrics.RecordS3Operation(r.Context(), "CreateMultipartUpload", bucket, time.Since(start))
 	h.metrics.RecordHTTPRequest(r.Context(), "POST", r.URL.Path, http.StatusOK, time.Since(start), 0)
+}
+
+// initMPUEncryptionState generates a DEK + IV prefix and persists UploadState
+// to Valkey. Called only when BucketEncryptsMultipart(bucket)==true.
+func (h *Handler) initMPUEncryptionState(ctx context.Context, uploadID, bucket, key string) error {
+	// Generate 32-byte DEK.
+	dek := make([]byte, 32)
+	if _, err := rand.Read(dek); err != nil {
+		return fmt.Errorf("failed to generate DEK: %w", err)
+	}
+	defer zeroBytes(dek)
+
+	// Generate 12-byte IV prefix.
+	var ivPrefix [12]byte
+	if _, err := rand.Read(ivPrefix[:]); err != nil {
+		return fmt.Errorf("failed to generate IV prefix: %w", err)
+	}
+
+	// A KeyManager is mandatory for encrypted MPU — bucketEncryptsMPU already
+	// enforces this, but guard again here so a future refactor cannot bypass it
+	// and silently store plaintext key material.
+	if h.keyManager == nil {
+		return fmt.Errorf("encrypted multipart uploads require a KeyManager; none is configured")
+	}
+
+	envelope, err := h.keyManager.WrapKey(ctx, dek, map[string]string{
+		"bucket":   bucket,
+		"key":      key,
+		"uploadId": uploadID,
+	})
+	if err != nil {
+		return fmt.Errorf("failed to wrap DEK: %w", err)
+	}
+	envJSON, err := json.Marshal(envelope)
+	if err != nil {
+		return fmt.Errorf("failed to marshal key envelope: %w", err)
+	}
+	wrappedDEK := string(envJSON)
+	kmsKeyID := envelope.KeyID
+	kmsProvider := envelope.Provider
+	kmsKeyVersion := envelope.KeyVersion
+
+	state := &mpu.UploadState{
+		UploadID:       uploadID,
+		Bucket:         bucket,
+		Key:            key,
+		UploadIDHash:   mpu.UploadIDHashB64(uploadID),
+		WrappedDEK:     wrappedDEK,
+		IVPrefixHex:    hex.EncodeToString(ivPrefix[:]),
+		Algorithm:      "AES256GCM",
+		ChunkSize:      crypto.DefaultChunkSize,
+		KMSKeyID:       kmsKeyID,
+		KMSProvider:    kmsProvider,
+		KMSKeyVersion:  kmsKeyVersion,
+		PolicySnapshot: mpu.PolicySnapshot{EncryptMultipartUploads: true},
+		CreatedAt:      time.Now().UTC(),
+	}
+	return h.mpuStateStore.Create(ctx, state)
+}
+
+// zeroBytes overwrites b with zeros.
+func zeroBytes(b []byte) {
+	for i := range b {
+		b[i] = 0
+	}
 }
 
 // CompleteMultipartUpload represents the XML structure for completing multipart uploads.
@@ -2185,6 +2458,11 @@ func (h *Handler) handleUploadPart(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Fail closed if policy requires encrypted MPU but infra is missing.
+	if h.mpuGuardMisconfig(w, r, bucket, "PUT", start) {
+		return
+	}
+
 	partNumber, err := strconv.ParseInt(partNumberStr, 10, 32)
 	if err != nil || partNumber < 1 {
 		s3Err := &S3Error{
@@ -2273,6 +2551,38 @@ func (h *Handler) handleUploadPart(w http.ResponseWriter, r *http.Request) {
 				contentLengthPtr = &encLen
 			}
 		}
+	} else if uploadState, isEnc := h.uploadStateEncrypted(ctx, uploadID); isEnc {
+		// Encrypted multipart path — decision based on PolicySnapshot stored at
+		// CreateMultipartUpload, not live policy (ADR-0009 §Security Considerations).
+		var plainLen int64
+		if cl := r.Header.Get("Content-Length"); cl != "" {
+			if v, e := strconv.ParseInt(cl, 10, 64); e == nil && v >= 0 {
+				plainLen = v
+			}
+		}
+
+		// Pass the pre-fetched state to avoid a second Valkey round-trip inside encryptMPUPart.
+		encReader, encLen, err := h.encryptMPUPartWithState(ctx, bucket, uploadID, int32(partNumber), r.Body, plainLen, uploadState)
+		if err != nil {
+			h.logger.WithError(err).WithFields(logrus.Fields{
+				"bucket":     bucket,
+				"key":        key,
+				"uploadID":   uploadID,
+				"partNumber": partNumber,
+			}).Error("Failed to encrypt MPU part")
+			s3Err := &S3Error{
+				Code:       "InternalError",
+				Message:    "Failed to encrypt multipart upload part",
+				Resource:   r.URL.Path,
+				HTTPStatus: http.StatusInternalServerError,
+			}
+			s3Err.WriteXML(w)
+			h.metrics.RecordHTTPRequest(r.Context(), "PUT", r.URL.Path, s3Err.HTTPStatus, time.Since(start), 0)
+			return
+		}
+		encryptedReader = encReader
+		encMetadata = make(map[string]string)
+		contentLengthPtr = &encLen
 	} else {
 		// Multipart upload: skip encryption but buffer data to make it seekable for AWS SDK
 		partData, err := io.ReadAll(r.Body)
@@ -2309,6 +2619,35 @@ func (h *Handler) handleUploadPart(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// After a successful UploadPart on an encrypted MPU, record the part metadata.
+	// Use uploadStateEncrypted again (second call) because uploadState is not in
+	// scope here — it was declared inside the else-if block above. The Valkey
+	// Get is lightweight and only runs for encrypted uploads.
+	if _, isEnc := h.uploadStateEncrypted(ctx, uploadID); isEnc && contentLengthPtr != nil {
+		var plainLen int64
+		if cl := r.Header.Get("Content-Length"); cl != "" {
+			if v, e := strconv.ParseInt(cl, 10, 64); e == nil && v >= 0 {
+				plainLen = v
+			}
+		}
+		chunkCount := int32((plainLen + int64(crypto.DefaultChunkSize) - 1) / int64(crypto.DefaultChunkSize))
+		pr := mpu.PartRecord{
+			PartNumber: int32(partNumber),
+			ETag:       etag,
+			PlainLen:   plainLen,
+			EncLen:     *contentLengthPtr,
+			ChunkCount: chunkCount,
+		}
+		if appendErr := h.mpuStateStore.AppendPart(ctx, uploadID, pr); appendErr != nil {
+			h.logger.WithError(appendErr).WithFields(logrus.Fields{
+				"bucket":     bucket,
+				"key":        key,
+				"uploadID":   uploadID,
+				"partNumber": partNumber,
+			}).Warn("Failed to persist MPU part record; state may be incomplete")
+		}
+	}
+
 	w.Header().Set("ETag", etag)
 	w.WriteHeader(http.StatusOK)
 	h.metrics.RecordS3Operation(r.Context(), "UploadPart", bucket, time.Since(start))
@@ -2342,6 +2681,11 @@ func (h *Handler) handleCompleteMultipartUpload(w http.ResponseWriter, r *http.R
 		}
 		s3Err.WriteXML(w)
 		h.metrics.RecordHTTPRequest(r.Context(), "POST", r.URL.Path, s3Err.HTTPStatus, time.Since(start), 0)
+		return
+	}
+
+	// Fail closed if policy requires encrypted MPU but infra is missing.
+	if h.mpuGuardMisconfig(w, r, bucket, "POST", start) {
 		return
 	}
 
@@ -2390,6 +2734,29 @@ func (h *Handler) handleCompleteMultipartUpload(w http.ResponseWriter, r *http.R
 		return
 	}
 
+	// For encrypted MPU: consult the PolicySnapshot stored at Create time so
+	// a policy flip mid-upload cannot cause the manifest to be skipped or
+	// written for an upload that was never encrypted (ADR-0009).
+	_, completeIsEnc := h.uploadStateEncrypted(ctx, uploadID)
+	if completeIsEnc {
+		if manifestErr := h.writeMPUManifestObject(ctx, uploadID, bucket, key, s3Client); manifestErr != nil {
+			h.logger.WithError(manifestErr).WithFields(logrus.Fields{
+				"bucket":   bucket,
+				"key":      key,
+				"uploadID": uploadID,
+			}).Error("Failed to write MPU manifest companion object")
+			s3Err := &S3Error{
+				Code:       "InternalError",
+				Message:    "Failed to write multipart encryption manifest",
+				Resource:   r.URL.Path,
+				HTTPStatus: http.StatusInternalServerError,
+			}
+			s3Err.WriteXML(w)
+			h.metrics.RecordHTTPRequest(r.Context(), "POST", r.URL.Path, s3Err.HTTPStatus, time.Since(start), 0)
+			return
+		}
+	}
+
 	etag, err := s3Client.CompleteMultipartUpload(ctx, bucket, key, uploadID, parts, lockInput)
 	if err != nil {
 		s3Err := TranslateError(err, bucket, key)
@@ -2402,6 +2769,14 @@ func (h *Handler) handleCompleteMultipartUpload(w http.ResponseWriter, r *http.R
 		h.metrics.RecordS3Error(r.Context(), "CompleteMultipartUpload", bucket, s3Err.Code)
 		h.metrics.RecordHTTPRequest(r.Context(), "POST", r.URL.Path, s3Err.HTTPStatus, time.Since(start), 0)
 		return
+	}
+
+	// Clean up Valkey state after successful completion.
+	if completeIsEnc {
+		if delErr := h.mpuStateStore.Delete(ctx, uploadID); delErr != nil {
+			h.logger.WithError(delErr).WithField("uploadID", uploadID).
+				Warn("Failed to delete MPU state after completion")
+		}
 	}
 
 	// Return XML response
@@ -2457,6 +2832,11 @@ func (h *Handler) handleAbortMultipartUpload(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
+	// Fail closed if policy requires encrypted MPU but infra is missing.
+	if h.mpuGuardMisconfig(w, r, bucket, "DELETE", start) {
+		return
+	}
+
 	ctx := r.Context()
 
 	// Get S3 client (may use client credentials if enabled)
@@ -2481,9 +2861,496 @@ func (h *Handler) handleAbortMultipartUpload(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
+	// Delete Valkey state for encrypted MPU aborts using the PolicySnapshot so
+	// a mid-upload policy flip cannot cause the state to be left orphaned.
+	if _, abortIsEnc := h.uploadStateEncrypted(ctx, uploadID); abortIsEnc {
+		if delErr := h.mpuStateStore.Delete(ctx, uploadID); delErr != nil {
+			h.logger.WithError(delErr).WithFields(logrus.Fields{
+				"bucket":   bucket,
+				"key":      key,
+				"uploadID": uploadID,
+			}).Warn("mpu.abort.orphan: failed to delete MPU state after abort")
+		}
+	}
+
 	w.WriteHeader(http.StatusNoContent)
 	h.metrics.RecordS3Operation(r.Context(), "AbortMultipartUpload", bucket, time.Since(start))
 	h.metrics.RecordHTTPRequest(r.Context(), "DELETE", r.URL.Path, http.StatusNoContent, time.Since(start), 0)
+}
+
+// encryptMPUPart encrypts a single multipart part using the per-upload DEK
+// schedule stored in Valkey. Returns an io.Reader of ciphertext and the exact
+// encrypted byte count so the S3 SDK can set Content-Length correctly.
+// encryptMPUPart fetches upload state from Valkey then encrypts one part.
+// Prefer encryptMPUPartWithState when the state has already been fetched to
+// avoid a redundant Valkey round-trip.
+func (h *Handler) encryptMPUPart(ctx context.Context, bucket, uploadID string, partNumber int32, body io.Reader, plainLen int64) (io.Reader, int64, error) {
+	state, err := h.mpuStateStore.Get(ctx, uploadID)
+	if err != nil {
+		return nil, 0, fmt.Errorf("encryptMPUPart: get state: %w", err)
+	}
+	return h.encryptMPUPartWithState(ctx, bucket, uploadID, partNumber, body, plainLen, state)
+}
+
+// encryptMPUPartWithState encrypts one MPU part using a pre-fetched UploadState,
+// avoiding a redundant Valkey Get when the caller already holds the state.
+func (h *Handler) encryptMPUPartWithState(ctx context.Context, bucket, uploadID string, partNumber int32, body io.Reader, plainLen int64, state *mpu.UploadState) (io.Reader, int64, error) {
+	ivPrefix, err := mpu.IVPrefixFromHex(state.IVPrefixHex)
+	if err != nil {
+		return nil, 0, fmt.Errorf("encryptMPUPart: decode iv prefix: %w", err)
+	}
+	dek, err := h.unwrapMPUDEK(ctx, state, bucket, uploadID)
+	if err != nil {
+		return nil, 0, fmt.Errorf("encryptMPUPart: unwrap DEK: %w", err)
+	}
+	defer zeroBytes(dek)
+
+	uploadIDHash := crypto.UploadIDHash(uploadID)
+	encReader, encLen, err := crypto.NewMPUPartEncryptReader(ctx, body, dek, uploadIDHash, ivPrefix, partNumber, state.ChunkSize, plainLen)
+	if err != nil {
+		return nil, 0, fmt.Errorf("encryptMPUPart: build encrypter: %w", err)
+	}
+	return encReader, encLen, nil
+}
+
+// serveMPURangedGet handles a ranged GET on an MPU-encrypted object.
+// It fetches and decrypts the manifest, maps the plaintext range to the
+// minimum backend byte range, fetches only those bytes, decrypts the affected
+// chunks, and writes an HTTP 206 Partial Content response.
+func (h *Handler) serveMPURangedGet(
+	w http.ResponseWriter,
+	r *http.Request,
+	ctx context.Context,
+	bucket, key string,
+	versionID *string,
+	headMeta map[string]string,
+	rangeHeader string,
+	s3Client s3.Client,
+	start time.Time,
+) {
+	// ── 1. Fetch and decrypt manifest ────────────────────────────────────────
+	manifestKey := headMeta[crypto.MetaFallbackPointer]
+	if manifestKey == "" {
+		manifestKey = key + ".mpu-manifest"
+	}
+	manifestReader, manifestMeta, err := s3Client.GetObject(ctx, bucket, manifestKey, nil, nil)
+	if err != nil {
+		s3Err := TranslateError(err, bucket, manifestKey)
+		s3Err.WriteXML(w)
+		h.metrics.RecordHTTPRequest(r.Context(), "GET", r.URL.Path, s3Err.HTTPStatus, time.Since(start), 0)
+		return
+	}
+	defer manifestReader.Close()
+
+	engine, err := h.getEncryptionEngine(bucket)
+	if err != nil {
+		h.logger.WithError(err).Error("serveMPURangedGet: get engine")
+		(&S3Error{Code: "InternalError", Message: "Failed to load encryption configuration", Resource: r.URL.Path, HTTPStatus: http.StatusInternalServerError}).WriteXML(w)
+		h.metrics.RecordHTTPRequest(r.Context(), "GET", r.URL.Path, http.StatusInternalServerError, time.Since(start), 0)
+		return
+	}
+	manifestPlainReader, _, err := engine.Decrypt(manifestReader, manifestMeta)
+	if err != nil {
+		h.logger.WithError(err).Error("serveMPURangedGet: decrypt manifest")
+		(&S3Error{Code: "InternalError", Message: "Failed to decrypt manifest", Resource: r.URL.Path, HTTPStatus: http.StatusInternalServerError}).WriteXML(w)
+		h.metrics.RecordHTTPRequest(r.Context(), "GET", r.URL.Path, http.StatusInternalServerError, time.Since(start), 0)
+		return
+	}
+	manifestJSON, err := io.ReadAll(manifestPlainReader)
+	if err != nil {
+		h.logger.WithError(err).Error("serveMPURangedGet: read manifest")
+		(&S3Error{Code: "InternalError", Message: "Failed to read manifest", Resource: r.URL.Path, HTTPStatus: http.StatusInternalServerError}).WriteXML(w)
+		h.metrics.RecordHTTPRequest(r.Context(), "GET", r.URL.Path, http.StatusInternalServerError, time.Since(start), 0)
+		return
+	}
+	manifest, err := crypto.UnmarshalMultipartManifest(manifestJSON)
+	if err != nil {
+		h.logger.WithError(err).Error("serveMPURangedGet: parse manifest")
+		(&S3Error{Code: "InternalError", Message: "Invalid manifest", Resource: r.URL.Path, HTTPStatus: http.StatusInternalServerError}).WriteXML(w)
+		h.metrics.RecordHTTPRequest(r.Context(), "GET", r.URL.Path, http.StatusInternalServerError, time.Since(start), 0)
+		return
+	}
+
+	// ── 2. Parse plaintext range ─────────────────────────────────────────────
+	pStart, pEnd, err := crypto.ParseHTTPRangeHeader(rangeHeader, manifest.TotalPlainSize)
+	if err != nil {
+		w.Header().Set("Content-Range", fmt.Sprintf("bytes */%d", manifest.TotalPlainSize))
+		w.WriteHeader(http.StatusRequestedRangeNotSatisfiable)
+		h.metrics.RecordHTTPRequest(r.Context(), "GET", r.URL.Path, http.StatusRequestedRangeNotSatisfiable, time.Since(start), 0)
+		return
+	}
+
+	// ── 3. Map plaintext range → backend ciphertext range ───────────────────
+	rangeResult, err := manifest.EncRangeForPlaintextRange(pStart, pEnd)
+	if err != nil {
+		h.logger.WithError(err).Error("serveMPURangedGet: calc enc range")
+		(&S3Error{Code: "InternalError", Message: "Range calculation failed", Resource: r.URL.Path, HTTPStatus: http.StatusInternalServerError}).WriteXML(w)
+		h.metrics.RecordHTTPRequest(r.Context(), "GET", r.URL.Path, http.StatusInternalServerError, time.Since(start), 0)
+		return
+	}
+
+	// ── 4. Fetch only the needed ciphertext bytes ────────────────────────────
+	encRangeHdr := fmt.Sprintf("bytes=%d-%d", rangeResult.EncStart, rangeResult.EncEnd)
+	objReader, _, err := s3Client.GetObject(ctx, bucket, key, versionID, &encRangeHdr)
+	if err != nil {
+		s3Err := TranslateError(err, bucket, key)
+		s3Err.WriteXML(w)
+		h.metrics.RecordHTTPRequest(r.Context(), "GET", r.URL.Path, s3Err.HTTPStatus, time.Since(start), 0)
+		return
+	}
+	defer objReader.Close()
+
+	ciphertext, err := io.ReadAll(objReader)
+	if err != nil {
+		h.logger.WithError(err).Error("serveMPURangedGet: read ciphertext")
+		(&S3Error{Code: "InternalError", Message: "Failed to read object", Resource: r.URL.Path, HTTPStatus: http.StatusInternalServerError}).WriteXML(w)
+		h.metrics.RecordHTTPRequest(r.Context(), "GET", r.URL.Path, http.StatusInternalServerError, time.Since(start), 0)
+		return
+	}
+
+	// ── 5. Unwrap DEK ────────────────────────────────────────────────────────
+	dek, err := h.unwrapMPUDEKFromManifest(ctx, manifest, bucket, key)
+	if err != nil {
+		h.logger.WithError(err).Error("serveMPURangedGet: unwrap DEK")
+		(&S3Error{Code: "InternalError", Message: "Key unwrap failed", Resource: r.URL.Path, HTTPStatus: http.StatusInternalServerError}).WriteXML(w)
+		h.metrics.RecordHTTPRequest(r.Context(), "GET", r.URL.Path, http.StatusInternalServerError, time.Since(start), 0)
+		return
+	}
+	defer zeroBytes(dek)
+
+	ivPrefix, err := hexToIVPrefix(manifest.IVPrefix)
+	if err != nil {
+		h.logger.WithError(err).Error("serveMPURangedGet: decode iv prefix")
+		(&S3Error{Code: "InternalError", Message: "Manifest corrupt", Resource: r.URL.Path, HTTPStatus: http.StatusInternalServerError}).WriteXML(w)
+		h.metrics.RecordHTTPRequest(r.Context(), "GET", r.URL.Path, http.StatusInternalServerError, time.Since(start), 0)
+		return
+	}
+	uploadIDHash, err := decodeBase64ToFixed32(manifest.UploadIDHash)
+	if err != nil {
+		h.logger.WithError(err).Error("serveMPURangedGet: decode upload id hash")
+		(&S3Error{Code: "InternalError", Message: "Manifest corrupt", Resource: r.URL.Path, HTTPStatus: http.StatusInternalServerError}).WriteXML(w)
+		h.metrics.RecordHTTPRequest(r.Context(), "GET", r.URL.Path, http.StatusInternalServerError, time.Since(start), 0)
+		return
+	}
+
+	// ── 6. Decrypt affected chunks ───────────────────────────────────────────
+	// ciphertext starts at byte rangeResult.EncStart which is the first byte of
+	// chunk rangeResult.ChunkStart in part rangeResult.PartStartIdx.
+	// Iterate through affected parts/chunks, consuming precise byte counts.
+	const encTagSize = 16
+	encChunkSize := manifest.ChunkSize + encTagSize
+
+	var (
+		plaintext     []byte
+		bytesConsumed int
+	)
+
+	for pi := rangeResult.PartStartIdx; pi <= rangeResult.PartEndIdx; pi++ {
+		part := manifest.Parts[pi]
+		firstChunk := int32(0)
+		if pi == rangeResult.PartStartIdx {
+			firstChunk = rangeResult.ChunkStart
+		}
+		lastChunk := part.ChunkCount - 1
+		if pi == rangeResult.PartEndIdx {
+			lastChunk = rangeResult.ChunkEnd
+		}
+
+		// Precise byte count for these chunks within the part.
+		var partCipherLen int
+		isLastPartOfRange := pi == rangeResult.PartEndIdx
+		if isLastPartOfRange && lastChunk == part.ChunkCount-1 {
+			// Consuming through the last chunk of this part: use EncLen to get
+			// the exact byte count (last chunk may be shorter than ChunkSize).
+			partEncStart := int64(firstChunk) * int64(encChunkSize)
+			partCipherLen = int(part.EncLen - partEncStart)
+		} else {
+			partCipherLen = int(lastChunk-firstChunk+1) * encChunkSize
+		}
+
+		if bytesConsumed+partCipherLen > len(ciphertext) {
+			partCipherLen = len(ciphertext) - bytesConsumed
+		}
+
+		partCipher := ciphertext[bytesConsumed : bytesConsumed+partCipherLen]
+		plain, err := crypto.DecryptMPUPartRange(partCipher, dek, uploadIDHash, ivPrefix, part.PartNumber, manifest.ChunkSize, firstChunk)
+		if err != nil {
+			h.logger.WithError(err).WithFields(logrus.Fields{
+				"bucket":     bucket,
+				"key":        key,
+				"part":       part.PartNumber,
+				"firstChunk": firstChunk,
+			}).Error("serveMPURangedGet: tamper detected")
+			h.metrics.RecordEncryptionError(r.Context(), "decrypt", "mpu_tamper_detected")
+			(&S3Error{Code: "InternalError", Message: "Object integrity check failed", Resource: r.URL.Path, HTTPStatus: http.StatusInternalServerError}).WriteXML(w)
+			h.metrics.RecordHTTPRequest(r.Context(), "GET", r.URL.Path, http.StatusInternalServerError, time.Since(start), 0)
+			return
+		}
+		plaintext = append(plaintext, plain...)
+		bytesConsumed += partCipherLen
+	}
+
+	// ── 7. Slice to exact plaintext range ────────────────────────────────────
+	// plaintext starts at the beginning of ChunkStart in PartStartIdx.
+	var bufPlainStart int64
+	for i := 0; i < rangeResult.PartStartIdx; i++ {
+		bufPlainStart += manifest.Parts[i].PlainLen
+	}
+	bufPlainStart += int64(rangeResult.ChunkStart) * int64(manifest.ChunkSize)
+
+	sliceStart := pStart - bufPlainStart
+	sliceEnd := pEnd - bufPlainStart
+	if sliceEnd >= int64(len(plaintext)) {
+		sliceEnd = int64(len(plaintext)) - 1
+	}
+	plaintext = plaintext[sliceStart : sliceEnd+1]
+
+	// ── 8. Write HTTP 206 response ───────────────────────────────────────────
+	w.Header().Set("Content-Range", fmt.Sprintf("bytes %d-%d/%d", pStart, pEnd, manifest.TotalPlainSize))
+	w.Header().Set("Content-Length", fmt.Sprintf("%d", len(plaintext)))
+	w.Header().Set("Content-Type", "application/octet-stream")
+	w.WriteHeader(http.StatusPartialContent)
+	written, _ := io.Copy(w, bytes.NewReader(plaintext))
+	h.metrics.RecordHTTPRequest(r.Context(), "GET", r.URL.Path, http.StatusPartialContent, time.Since(start), written)
+}
+
+// writeMPUManifestObject builds the MultipartManifest from Valkey state and
+// writes it as a companion object at <key>.mpu-manifest. The final object's
+// metadata carries x-amz-meta-encrypted-mpu=true and the pointer set at
+// CreateMultipartUpload time.
+func (h *Handler) writeMPUManifestObject(ctx context.Context, uploadID, bucket, key string, s3Client s3.Client) error {
+	state, err := h.mpuStateStore.Get(ctx, uploadID)
+	if err != nil {
+		return fmt.Errorf("writeMPUManifest: get state: %w", err)
+	}
+
+	// Sort parts by part number for determinism.
+	sortedParts := sortedPartRecords(state.Parts)
+	mpuParts := make([]crypto.MPUPartRecord, len(sortedParts))
+	var totalPlain int64
+	for i, p := range sortedParts {
+		mpuParts[i] = crypto.MPUPartRecord{
+			PartNumber: p.PartNumber,
+			ETag:       p.ETag,
+			PlainLen:   p.PlainLen,
+			EncLen:     p.EncLen,
+			ChunkCount: p.ChunkCount,
+		}
+		totalPlain += p.PlainLen
+	}
+
+	manifest := &crypto.MultipartManifest{
+		Version:        1,
+		Algorithm:      state.Algorithm,
+		ChunkSize:      state.ChunkSize,
+		IVPrefix:       state.IVPrefixHex,
+		UploadIDHash:   state.UploadIDHash,
+		WrappedDEK:     state.WrappedDEK,
+		KMSKeyID:       state.KMSKeyID,
+		KMSProvider:    state.KMSProvider,
+		KMSKeyVersion:  state.KMSKeyVersion,
+		Parts:          mpuParts,
+		TotalPlainSize: totalPlain,
+	}
+
+	manifestJSON, err := manifest.Marshal()
+	if err != nil {
+		return fmt.Errorf("writeMPUManifest: marshal: %w", err)
+	}
+
+	// Encrypt the manifest before writing so iv_prefix, part layout, and the
+	// wrapped DEK are not exposed in plaintext on the backend.
+	engine, err := h.getEncryptionEngine(bucket)
+	if err != nil {
+		return fmt.Errorf("writeMPUManifest: get engine: %w", err)
+	}
+	encReader, encMeta, err := engine.Encrypt(bytes.NewReader(manifestJSON), map[string]string{
+		"x-amz-meta-encryption-mpu-manifest": "true",
+	})
+	if err != nil {
+		return fmt.Errorf("writeMPUManifest: encrypt manifest: %w", err)
+	}
+
+	// Buffer the encrypted output so we can set Content-Length precisely.
+	encBytes, err := io.ReadAll(encReader)
+	if err != nil {
+		return fmt.Errorf("writeMPUManifest: read encrypted manifest: %w", err)
+	}
+
+	companionKey := key + ".mpu-manifest"
+	encLen := int64(len(encBytes))
+	return s3Client.PutObject(ctx, bucket, companionKey, bytes.NewReader(encBytes), encMeta, &encLen, "", nil)
+}
+
+// unwrapMPUDEK unwraps the DEK stored in UploadState using the KeyManager.
+// Returns an error if the KeyManager is absent — encrypted MPU state must
+// never be readable without KMS cooperation (fail-closed).
+func (h *Handler) unwrapMPUDEK(ctx context.Context, state *mpu.UploadState, bucket, uploadID string) ([]byte, error) {
+	if h.keyManager == nil {
+		return nil, fmt.Errorf("cannot decrypt MPU part: no KeyManager configured")
+	}
+	var env crypto.KeyEnvelope
+	if err := json.Unmarshal([]byte(state.WrappedDEK), &env); err != nil {
+		return nil, fmt.Errorf("unmarshal key envelope: %w", err)
+	}
+	return h.keyManager.UnwrapKey(ctx, &env, map[string]string{
+		"bucket":   bucket,
+		"uploadId": uploadID,
+	})
+}
+
+// decryptMPUObject fetches and decrypts the manifest companion object, then
+// returns a streaming io.Reader that decrypts the MPU ciphertext one AEAD
+// chunk at a time. Memory overhead is O(ChunkSize) regardless of object size.
+//
+// The caller retains ownership of reader and must close it after the returned
+// reader is fully consumed (the caller's defer reader.Close() handles this).
+func (h *Handler) decryptMPUObject(ctx context.Context, bucket, key string, metadata map[string]string, reader io.ReadCloser, s3Client s3.Client) (io.Reader, error) {
+	// Fetch and decrypt the manifest companion object.
+	manifestKey := metadata[crypto.MetaFallbackPointer]
+	if manifestKey == "" {
+		manifestKey = key + ".mpu-manifest"
+	}
+	manifestReader, manifestMeta, err := s3Client.GetObject(ctx, bucket, manifestKey, nil, nil)
+	if err != nil {
+		return nil, fmt.Errorf("decryptMPUObject: fetch manifest %q: %w", manifestKey, err)
+	}
+	defer manifestReader.Close()
+
+	engine, err := h.getEncryptionEngine(bucket)
+	if err != nil {
+		return nil, fmt.Errorf("decryptMPUObject: get engine: %w", err)
+	}
+	manifestPlainReader, _, err := engine.Decrypt(manifestReader, manifestMeta)
+	if err != nil {
+		return nil, fmt.Errorf("decryptMPUObject: decrypt manifest: %w", err)
+	}
+	manifestJSON, err := io.ReadAll(manifestPlainReader)
+	if err != nil {
+		return nil, fmt.Errorf("decryptMPUObject: read manifest: %w", err)
+	}
+	manifest, err := crypto.UnmarshalMultipartManifest(manifestJSON)
+	if err != nil {
+		return nil, fmt.Errorf("decryptMPUObject: parse manifest: %w", err)
+	}
+
+	dek, err := h.unwrapMPUDEKFromManifest(ctx, manifest, bucket, key)
+	if err != nil {
+		return nil, fmt.Errorf("decryptMPUObject: unwrap DEK: %w", err)
+	}
+	// dek is owned by the streaming reader from this point — do NOT zero here.
+
+	ivPrefix, err := hexToIVPrefix(manifest.IVPrefix)
+	if err != nil {
+		zeroBytes(dek)
+		return nil, fmt.Errorf("decryptMPUObject: decode iv prefix: %w", err)
+	}
+	uploadIDHash, err := decodeBase64ToFixed32(manifest.UploadIDHash)
+	if err != nil {
+		zeroBytes(dek)
+		return nil, fmt.Errorf("decryptMPUObject: decode upload id hash: %w", err)
+	}
+
+	// Return a streaming reader — no full-object buffering.
+	// dek is zeroed when the streaming reader encounters EOF or the caller
+	// discards it (via the wrapper below).
+	inner, err := crypto.NewMPUDecryptReader(reader, manifest, dek, uploadIDHash, ivPrefix)
+	if err != nil {
+		zeroBytes(dek)
+		return nil, fmt.Errorf("decryptMPUObject: create decrypt reader: %w", err)
+	}
+	// Wrap with a closer that zeros the DEK when the stream ends or is abandoned.
+	return &mpuDecryptCloser{Reader: inner, dek: dek}, nil
+}
+
+// mpuDecryptCloser wraps an io.Reader and zeros the DEK when the stream is
+// exhausted or explicitly closed.
+type mpuDecryptCloser struct {
+	io.Reader
+	dek    []byte
+	zeroed bool
+}
+
+func (c *mpuDecryptCloser) Read(p []byte) (int, error) {
+	n, err := c.Reader.Read(p)
+	if err == io.EOF && !c.zeroed {
+		zeroBytes(c.dek)
+		c.zeroed = true
+	}
+	return n, err
+}
+
+func (c *mpuDecryptCloser) Close() error {
+	if !c.zeroed {
+		zeroBytes(c.dek)
+		c.zeroed = true
+	}
+	return nil
+}
+
+// unwrapMPUDEKFromManifest unwraps the DEK stored in the manifest using the
+// KeyManager. Returns an error if the KeyManager is absent — the wrapped DEK
+// in the manifest must remain opaque without KMS cooperation.
+func (h *Handler) unwrapMPUDEKFromManifest(ctx context.Context, manifest *crypto.MultipartManifest, bucket, key string) ([]byte, error) {
+	if h.keyManager == nil {
+		return nil, fmt.Errorf("cannot decrypt MPU object: no KeyManager configured")
+	}
+	var env crypto.KeyEnvelope
+	if err := json.Unmarshal([]byte(manifest.WrappedDEK), &env); err != nil {
+		return nil, fmt.Errorf("unmarshal key envelope: %w", err)
+	}
+	return h.keyManager.UnwrapKey(ctx, &env, map[string]string{
+		"bucket": bucket,
+		"key":    key,
+	})
+}
+
+// hexToIVPrefix converts a hex string to a [12]byte IV prefix.
+func hexToIVPrefix(h string) ([12]byte, error) {
+	b, err := hex.DecodeString(h)
+	if err != nil {
+		return [12]byte{}, fmt.Errorf("decode hex: %w", err)
+	}
+	if len(b) != 12 {
+		return [12]byte{}, fmt.Errorf("expected 12 bytes, got %d", len(b))
+	}
+	var out [12]byte
+	copy(out[:], b)
+	return out, nil
+}
+
+// decodeBase64ToFixed32 decodes a base64 or base64url string into a [32]byte array.
+func decodeBase64ToFixed32(s string) ([32]byte, error) {
+	var out [32]byte
+	b, err := crypto.DecodeBase64Loose(s)
+	if err != nil {
+		return out, err
+	}
+	if len(b) != 32 {
+		return out, fmt.Errorf("expected 32 bytes, got %d", len(b))
+	}
+	copy(out[:], b)
+	return out, nil
+}
+
+// getS3ClientFromBucket returns an S3 client (uses clientFactory if available).
+func (h *Handler) getS3ClientFromBucket(ctx context.Context, bucket string) (s3.Client, error) {
+	if h.clientFactory != nil {
+		return h.clientFactory.GetClient()
+	}
+	return h.s3Client, nil
+}
+
+// sortedPartRecords returns parts sorted by PartNumber ascending.
+func sortedPartRecords(parts []mpu.PartRecord) []mpu.PartRecord {
+	sorted := make([]mpu.PartRecord, len(parts))
+	copy(sorted, parts)
+	for i := 1; i < len(sorted); i++ {
+		for j := i; j > 0 && sorted[j].PartNumber < sorted[j-1].PartNumber; j-- {
+			sorted[j], sorted[j-1] = sorted[j-1], sorted[j]
+		}
+	}
+	return sorted
 }
 
 // handleListParts handles listing parts of a multipart upload.
@@ -2513,6 +3380,11 @@ func (h *Handler) handleListParts(w http.ResponseWriter, r *http.Request) {
 		}
 		s3Err.WriteXML(w)
 		h.metrics.RecordHTTPRequest(r.Context(), "GET", r.URL.Path, s3Err.HTTPStatus, time.Since(start), 0)
+		return
+	}
+
+	// Fail closed if policy requires encrypted MPU but infra is missing.
+	if h.mpuGuardMisconfig(w, r, bucket, "GET", start) {
 		return
 	}
 

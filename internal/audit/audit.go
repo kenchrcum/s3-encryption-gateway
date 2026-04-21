@@ -21,6 +21,14 @@ const (
 	EventTypeKeyRotation EventType = "key_rotation"
 	// EventTypeAccess represents an access operation.
 	EventTypeAccess EventType = "access"
+
+	// V0.6-SEC-3 MPU audit event types.
+	EventTypeMPUCreate         EventType = "mpu.create"
+	EventTypeMPUPart           EventType = "mpu.part"
+	EventTypeMPUComplete       EventType = "mpu.complete"
+	EventTypeMPUAbort          EventType = "mpu.abort"
+	EventTypeMPUTamperDetected EventType = "mpu.tamper_detected"
+	EventTypeMPUValkeyUnavail  EventType = "mpu.valkey_unavailable"
 )
 
 // AuditEvent represents a single audit log event.

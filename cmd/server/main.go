@@ -20,6 +20,7 @@ import (
 	"github.com/kenneth/s3-encryption-gateway/internal/debug"
 	"github.com/kenneth/s3-encryption-gateway/internal/metrics"
 	"github.com/kenneth/s3-encryption-gateway/internal/middleware"
+	mpupkg "github.com/kenneth/s3-encryption-gateway/internal/mpu"
 	"github.com/kenneth/s3-encryption-gateway/internal/s3"
 	"github.com/sirupsen/logrus"
 
@@ -399,7 +400,16 @@ func main() {
 			"provider": strings.ToLower(cfg.Encryption.KeyManager.Provider),
 		}).Info("External key manager initialized")
 	} else {
-		logger.Info("Using single password mode (no key rotation)")
+		// Password-only mode: construct a PasswordKeyManager so that encrypted
+		// multipart uploads (EncryptMultipartUploads=true) can wrap per-upload
+		// DEKs with PBKDF2+AES-256-GCM instead of storing them in plaintext.
+		// This provides equivalent confidentiality to single-PUT chunked encryption.
+		pkm, pkmErr := crypto.NewPasswordKeyManager(activePassword)
+		if pkmErr != nil {
+			logger.WithError(pkmErr).Fatal("Failed to initialize password key manager")
+		}
+		keyManager = pkm
+		logger.Info("Using single password mode (no key rotation); PasswordKeyManager active for MPU DEK wrapping")
 	}
 
 	// Initialize compression engine if enabled
@@ -516,6 +526,18 @@ func main() {
 
 	// Initialize API handler with Phase 5 features
 	handler := api.NewHandlerWithFeatures(s3Client, encryptionEngine, logger, m, keyManager, objectCache, auditLogger, cfg, policyManager)
+
+	// Initialise Valkey state store for encrypted multipart uploads when any
+	// bucket policy enables EncryptMultipartUploads. Fail-closed: if Valkey is
+	// unreachable at startup and encrypted MPU is required, refuse to start.
+	if cfg.MultipartState.Valkey.Addr != "" {
+		mpuStore, err := mpupkg.NewValkeyStateStore(context.Background(), cfg.MultipartState.Valkey)
+		if err != nil {
+			logger.WithError(err).Fatal("Failed to initialise MPU Valkey state store")
+		}
+		handler.WithMPUStateStore(mpuStore)
+		logger.WithField("addr", cfg.MultipartState.Valkey.Addr).Info("MPU Valkey state store initialised")
+	}
 
 	// Initialize configuration hot-reload (only if config file is specified)
 	var configReloader *config.ConfigReloader

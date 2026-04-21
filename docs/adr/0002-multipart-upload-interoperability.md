@@ -3,6 +3,10 @@
 ## Status
 Accepted
 
+> **Superseded in part by ADR 0009** for buckets with `EncryptMultipartUploads=true`.
+> The XML/validation layer described here remains unchanged. Encryption semantics
+> for opted-in buckets are now governed by ADR 0009 (v0.6+).
+
 ## Context
 
 The S3 Encryption Gateway supports multipart uploads for S3 API compatibility, but **multipart uploads are not encrypted** due to fundamental architectural limitations. When multipart uploads are enabled, the gateway must handle them securely while ensuring users understand the security implications.

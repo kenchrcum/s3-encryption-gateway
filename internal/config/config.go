@@ -34,8 +34,9 @@ type Config struct {
 	Tracing       TracingConfig     `yaml:"tracing"`
 	Metrics       MetricsConfig     `yaml:"metrics"`
 	Logging       LoggingConfig     `yaml:"logging"`
-	Admin         AdminConfig       `yaml:"admin"`
-	PolicyFiles   []string          `yaml:"policies" env:"POLICIES"`
+	Admin          AdminConfig          `yaml:"admin"`
+	PolicyFiles    []string             `yaml:"policies" env:"POLICIES"`
+	MultipartState MultipartStateConfig `yaml:"multipart_state"`
 }
 
 // BackendConfig holds S3 backend configuration.
@@ -277,6 +278,48 @@ type AdminRateLimitConfig struct {
 	RequestsPerMinute int `yaml:"requests_per_minute" env:"ADMIN_RATE_LIMIT_RPM"`
 }
 
+// MultipartStateConfig holds configuration for the multipart-upload encryption state store.
+type MultipartStateConfig struct {
+	Valkey ValkeyConfig `yaml:"valkey"`
+}
+
+// ValkeyConfig holds the connection settings for the Valkey state store.
+type ValkeyConfig struct {
+	Addr   string `yaml:"addr" env:"VALKEY_ADDR"`   // e.g. "valkey.internal:6379"
+	// Username for Valkey 6.0+ ACL auth (optional).
+	Username string `yaml:"username" env:"VALKEY_USERNAME"`
+	// PasswordEnv is the name of the environment variable that holds the
+	// plaintext password. Never the literal password.
+	PasswordEnv string `yaml:"password_env" env:"VALKEY_PASSWORD_ENV"`
+	DB          int    `yaml:"db" env:"VALKEY_DB"`
+	TLS         ValkeyTLSConfig `yaml:"tls"`
+	// InsecureAllowPlaintext permits a non-TLS Valkey connection.
+	// Development only. A startup warning and metric are emitted when true.
+	InsecureAllowPlaintext bool          `yaml:"insecure_allow_plaintext" env:"VALKEY_INSECURE_ALLOW_PLAINTEXT"`
+	TTLSeconds             int           `yaml:"ttl_seconds" env:"VALKEY_TTL_SECONDS"`
+	DialTimeout            time.Duration `yaml:"dial_timeout" env:"VALKEY_DIAL_TIMEOUT"`
+	ReadTimeout            time.Duration `yaml:"read_timeout" env:"VALKEY_READ_TIMEOUT"`
+	WriteTimeout           time.Duration `yaml:"write_timeout" env:"VALKEY_WRITE_TIMEOUT"`
+	PoolSize               int           `yaml:"pool_size" env:"VALKEY_POOL_SIZE"`
+	MinIdleConns           int           `yaml:"min_idle_conns" env:"VALKEY_MIN_IDLE_CONNS"`
+}
+
+// ValkeyTLSConfig holds TLS settings for the Valkey connection.
+type ValkeyTLSConfig struct {
+	Enabled            bool   `yaml:"enabled" env:"VALKEY_TLS_ENABLED"`
+	CAFile             string `yaml:"ca_file" env:"VALKEY_TLS_CA_FILE"`
+	CertFile           string `yaml:"cert_file" env:"VALKEY_TLS_CERT_FILE"`
+	KeyFile            string `yaml:"key_file" env:"VALKEY_TLS_KEY_FILE"`
+	InsecureSkipVerify bool   `yaml:"insecure_skip_verify" env:"VALKEY_TLS_INSECURE_SKIP_VERIFY"`
+	// MinVersion is the minimum TLS version: "1.2" or "1.3" (default "1.3").
+	MinVersion string `yaml:"min_version" env:"VALKEY_TLS_MIN_VERSION"`
+}
+
+const (
+	// ValkeyDefaultTTLSeconds is the default state TTL (7 days).
+	ValkeyDefaultTTLSeconds = 7 * 24 * 60 * 60
+)
+
 // LoadConfig loads configuration from a file and environment variables.
 func LoadConfig(path string) (*Config, error) {
 	config := &Config{
@@ -354,6 +397,20 @@ func LoadConfig(path string) (*Config, error) {
 			},
 			RateLimit: AdminRateLimitConfig{
 				RequestsPerMinute: 30,
+			},
+		},
+		MultipartState: MultipartStateConfig{
+			Valkey: ValkeyConfig{
+				TTLSeconds:   ValkeyDefaultTTLSeconds,
+				DialTimeout:  2 * time.Second,
+				ReadTimeout:  1 * time.Second,
+				WriteTimeout: 1 * time.Second,
+				PoolSize:     16,
+				MinIdleConns: 2,
+				TLS: ValkeyTLSConfig{
+					Enabled:    true,
+					MinVersion: "1.3",
+				},
 			},
 		},
 	}

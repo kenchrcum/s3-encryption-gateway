@@ -15,6 +15,7 @@ import (
 	"github.com/gorilla/mux"
 	"github.com/kenneth/s3-encryption-gateway/internal/config"
 	"github.com/kenneth/s3-encryption-gateway/internal/crypto"
+	"github.com/kenneth/s3-encryption-gateway/internal/mpu"
 	"github.com/kenneth/s3-encryption-gateway/internal/s3"
 	"github.com/sirupsen/logrus"
 )
@@ -113,6 +114,11 @@ func (h *Handler) handleUploadPartCopy(w http.ResponseWriter, r *http.Request) {
 		}
 		s3Err.WriteXML(w)
 		h.metrics.RecordHTTPRequest(r.Context(), "PUT", r.URL.Path, s3Err.HTTPStatus, time.Since(start), 0)
+		return
+	}
+
+	// Fail closed if policy requires encrypted MPU but infra is missing.
+	if h.mpuGuardMisconfig(w, r, bucket, "PUT", start) {
 		return
 	}
 
@@ -290,21 +296,29 @@ func (h *Handler) handleUploadPartCopy(w http.ResponseWriter, r *http.Request) {
 		maxLegacyCap = effectiveMaxLegacyCopySourceBytes(h.config)
 	)
 
-	switch sourceClass.Class {
-	case SourceClassPlaintext:
-		copyResult, strategyErr = s3Client.UploadPartCopy(ctx, bucket, key, uploadID, int32(partNumber),
-			srcBucket, srcKey, srcVersionID, srcRange)
-		if strategyErr == nil {
-			bytesCopied = plaintextCopiedBytes(srcRange, sourceClass.Size)
+	// When the destination is an encrypted MPU, the backend-native UploadPartCopy
+	// fast path is disabled. All source classes are decrypted and re-encrypted
+	// through the destination's per-upload DEK schedule (ADR 0009 §Consequences).
+	if h.bucketEncryptsMPU(bucket) {
+		copyResult, bytesCopied, strategyErr = h.uploadPartCopyReencryptMPU(ctx, s3Client, bucket, key, uploadID,
+			int32(partNumber), srcBucket, srcKey, srcVersionID, srcRange, sourceClass, maxLegacyCap)
+	} else {
+		switch sourceClass.Class {
+		case SourceClassPlaintext:
+			copyResult, strategyErr = s3Client.UploadPartCopy(ctx, bucket, key, uploadID, int32(partNumber),
+				srcBucket, srcKey, srcVersionID, srcRange)
+			if strategyErr == nil {
+				bytesCopied = plaintextCopiedBytes(srcRange, sourceClass.Size)
+			}
+
+		case SourceClassChunked:
+			copyResult, bytesCopied, strategyErr = h.uploadPartCopyChunked(ctx, s3Client, bucket, key, uploadID, int32(partNumber),
+				srcBucket, srcKey, srcVersionID, srcRange)
+
+		case SourceClassLegacy:
+			copyResult, bytesCopied, strategyErr = h.uploadPartCopyLegacy(ctx, s3Client, bucket, key, uploadID, int32(partNumber),
+				srcBucket, srcKey, srcVersionID, srcRange, sourceClass.Size, maxLegacyCap)
 		}
-
-	case SourceClassChunked:
-		copyResult, bytesCopied, strategyErr = h.uploadPartCopyChunked(ctx, s3Client, bucket, key, uploadID, int32(partNumber),
-			srcBucket, srcKey, srcVersionID, srcRange)
-
-	case SourceClassLegacy:
-		copyResult, bytesCopied, strategyErr = h.uploadPartCopyLegacy(ctx, s3Client, bucket, key, uploadID, int32(partNumber),
-			srcBucket, srcKey, srcVersionID, srcRange, sourceClass.Size, maxLegacyCap)
 	}
 
 	if strategyErr != nil {
@@ -657,4 +671,149 @@ func versionIDValue(v *string) string {
 		return ""
 	}
 	return *v
+}
+
+// uploadPartCopyReencryptMPU handles UploadPartCopy when the destination bucket
+// has EncryptMultipartUploads=true. It decrypts the source (using the per-class
+// strategy) and re-encrypts through the destination's per-upload DEK schedule.
+// The backend-native UploadPartCopy fast path is intentionally disabled here
+// because it would write unencrypted bytes to an encrypted MPU destination.
+func (h *Handler) uploadPartCopyReencryptMPU(
+	ctx context.Context,
+	s3Client s3.Client,
+	dstBucket, dstKey, uploadID string,
+	partNumber int32,
+	srcBucket, srcKey string,
+	srcVersionID *string,
+	srcRange *s3.CopyPartRange,
+	sourceClass *CopySourceMetadata,
+	maxLegacyCap int64,
+) (*s3.CopyPartResult, int64, error) {
+	// Step 1: Obtain the plaintext bytes from the source using the per-class decrypt strategy.
+	var plaintextData []byte
+	var err error
+
+	switch sourceClass.Class {
+	case SourceClassPlaintext:
+		var rangeHdr *string
+		if srcRange != nil {
+			rh := fmt.Sprintf("bytes=%d-%d", srcRange.First, srcRange.Last)
+			rangeHdr = &rh
+		}
+		r, _, err := s3Client.GetObject(ctx, srcBucket, srcKey, srcVersionID, rangeHdr)
+		if err != nil {
+			return nil, 0, fmt.Errorf("uploadPartCopyReencryptMPU: get plaintext source: %w", err)
+		}
+		defer r.Close()
+		plaintextData, err = io.ReadAll(io.LimitReader(r, maxLegacyCap+1))
+		if err != nil {
+			return nil, 0, fmt.Errorf("uploadPartCopyReencryptMPU: read plaintext source: %w", err)
+		}
+		if int64(len(plaintextData)) > maxLegacyCap {
+			return nil, 0, errLegacySourceTooLarge
+		}
+
+	case SourceClassChunked:
+		srcEngine, err := h.getEncryptionEngine(srcBucket)
+		if err != nil {
+			return nil, 0, fmt.Errorf("uploadPartCopyReencryptMPU: get src engine: %w", err)
+		}
+		srcMeta, err := s3Client.HeadObject(ctx, srcBucket, srcKey, srcVersionID)
+		if err != nil {
+			return nil, 0, err
+		}
+		plaintextSize, _ := crypto.GetPlaintextSizeFromMetadata(srcMeta)
+		var pStart, pEnd int64
+		if srcRange != nil {
+			pStart, pEnd = srcRange.First, srcRange.Last
+			if plaintextSize > 0 && pEnd >= plaintextSize {
+				pEnd = plaintextSize - 1
+			}
+		} else {
+			if plaintextSize <= 0 {
+				return nil, 0, fmt.Errorf("uploadPartCopyReencryptMPU: cannot determine plaintext size")
+			}
+			pEnd = plaintextSize - 1
+		}
+		encStart, encEnd, err := crypto.CalculateEncryptedRangeForPlaintextRange(srcMeta, pStart, pEnd)
+		if err != nil {
+			return nil, 0, fmt.Errorf("uploadPartCopyReencryptMPU: calc enc range: %w", err)
+		}
+		rh := fmt.Sprintf("bytes=%d-%d", encStart, encEnd)
+		r, _, err := s3Client.GetObject(ctx, srcBucket, srcKey, srcVersionID, &rh)
+		if err != nil {
+			return nil, 0, fmt.Errorf("uploadPartCopyReencryptMPU: get chunked source: %w", err)
+		}
+		defer r.Close()
+		decR, _, err := srcEngine.DecryptRange(r, srcMeta, pStart, pEnd)
+		if err != nil {
+			return nil, 0, fmt.Errorf("uploadPartCopyReencryptMPU: decrypt chunked source: %w", err)
+		}
+		plaintextData, err = io.ReadAll(decR)
+		if err != nil {
+			return nil, 0, fmt.Errorf("uploadPartCopyReencryptMPU: read decrypted chunked source: %w", err)
+		}
+
+	case SourceClassLegacy:
+		srcEngine, err := h.getEncryptionEngine(srcBucket)
+		if err != nil {
+			return nil, 0, fmt.Errorf("uploadPartCopyReencryptMPU: get src engine: %w", err)
+		}
+		r, srcMeta, err := s3Client.GetObject(ctx, srcBucket, srcKey, srcVersionID, nil)
+		if err != nil {
+			return nil, 0, err
+		}
+		defer r.Close()
+		decR, _, err := srcEngine.Decrypt(r, srcMeta)
+		if err != nil {
+			return nil, 0, fmt.Errorf("uploadPartCopyReencryptMPU: decrypt legacy source: %w", err)
+		}
+		plaintextData, err = io.ReadAll(io.LimitReader(decR, maxLegacyCap+1))
+		if err != nil {
+			return nil, 0, fmt.Errorf("uploadPartCopyReencryptMPU: read decrypted legacy: %w", err)
+		}
+		if int64(len(plaintextData)) > maxLegacyCap {
+			return nil, 0, errLegacySourceTooLarge
+		}
+		if srcRange != nil {
+			start, end := srcRange.First, srcRange.Last
+			if end >= int64(len(plaintextData)) {
+				end = int64(len(plaintextData)) - 1
+			}
+			plaintextData = plaintextData[start : end+1]
+		}
+	}
+
+	// Step 2: Re-encrypt via the destination MPU DEK schedule.
+	encReader, encLen, err := h.encryptMPUPart(ctx, dstBucket, uploadID, partNumber, bytes.NewReader(plaintextData), int64(len(plaintextData)))
+	if err != nil {
+		return nil, 0, fmt.Errorf("uploadPartCopyReencryptMPU: re-encrypt: %w", err)
+	}
+
+	etag, err := s3Client.UploadPart(ctx, dstBucket, dstKey, uploadID, partNumber, encReader, &encLen)
+	if err != nil {
+		return nil, 0, fmt.Errorf("uploadPartCopyReencryptMPU: upload re-encrypted part: %w", err)
+	}
+
+	// Persist the part record.
+	chunkCount := int32((int64(len(plaintextData)) + int64(crypto.DefaultChunkSize) - 1) / int64(crypto.DefaultChunkSize))
+	if appendErr := h.mpuStateStore.AppendPart(ctx, uploadID, mpu.PartRecord{
+		PartNumber: partNumber,
+		ETag:       etag,
+		PlainLen:   int64(len(plaintextData)),
+		EncLen:     encLen,
+		ChunkCount: chunkCount,
+	}); appendErr != nil {
+		if h.logger != nil {
+			h.logger.WithError(appendErr).WithFields(logrus.Fields{
+				"uploadID":   uploadID,
+				"partNumber": partNumber,
+			}).Warn("Failed to persist re-encrypted MPU part record")
+		}
+	}
+
+	return &s3.CopyPartResult{
+		ETag:         etag,
+		LastModified: time.Now(),
+	}, int64(len(plaintextData)), nil
 }

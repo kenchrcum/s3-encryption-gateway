@@ -44,3 +44,6 @@ config.local.yaml
 # Logs
 *.log
 logs/server
+
+.serena
+.claude

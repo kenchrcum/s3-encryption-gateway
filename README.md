@@ -627,17 +627,62 @@ rate_limit:
 
 ### Multipart Upload Encryption
 
-**⚠️ Important Security Notice**: Multipart uploads are **not encrypted** by the S3 Encryption Gateway due to fundamental architectural limitations.
+**v0.6+**: Encrypted multipart uploads are opt-in per bucket (ADR 0009). When enabled,
+each multipart upload is encrypted with a dedicated per-upload Data Encryption Key (DEK),
+and every part is AEAD-encrypted with deterministically derived per-chunk IVs using
+HKDF-SHA256. The finalization manifest is stored as a companion object and the final
+object carries a metadata pointer.
 
-- **Why not encrypted**: S3 concatenates multipart upload parts server-side. Encrypting each part individually creates multiple invalid encrypted streams when combined.
-- **Security impact**: Data uploaded via multipart operations is stored unencrypted on the S3 backend.
-- **Recommended alternatives**:
-  - Use client-side encryption before sending data to the gateway
-  - Encrypt files at the application level before upload
-  - Use single-part uploads for sensitive data
-  - Consider using a different encryption strategy for large files
+#### Enabling encrypted multipart uploads
 
-For encrypted multipart uploads, implement encryption in your application or S3 client before sending data to the gateway.
+Encrypted multipart uploads require a **Valkey** (Redis-compatible) instance for
+in-flight state storage. Configure it in your gateway config and opt-in per bucket
+policy:
+
+```yaml
+multipart_state:
+  valkey:
+    addr: "valkey.internal:6379"
+    password_env: "VALKEY_PASSWORD"
+    tls:
+      enabled: true
+      ca_file: "/etc/gateway/valkey-ca.pem"
+    ttl_seconds: 604800  # 7 days
+```
+
+```yaml
+# policy/my-bucket.yaml
+id: my-encrypted-bucket
+buckets:
+  - "my-important-bucket"
+encrypt_multipart_uploads: true
+```
+
+Default is `false` for backward compatibility. v0.7 will flip the default to `true`
+after a production soak period.
+
+#### Security properties
+
+- **Per-upload DEK**: A fresh 32-byte AES-256-GCM key is generated for each
+  `CreateMultipartUpload`. The DEK is wrapped by the configured KeyManager and
+  stored in Valkey (never in plaintext).
+- **Deterministic IVs**: Per-chunk IVs are derived via
+  `HKDF-Expand(SHA-256, dek, salt=sha256(uploadId), info=ivPrefix||BE32(part)||BE32(chunk))`.
+  Retrying a failed part yields byte-identical ciphertext.
+- **At-rest verification**: Run `GET` on the raw backend bytes to confirm ciphertext.
+- **Tamper detection**: AES-GCM authentication tags are verified on every chunk
+  during `GET`. A modified part causes 500 with an audit event.
+
+#### Disabling multipart uploads (fail-closed)
+
+Deployments that cannot run Valkey can disable multipart uploads entirely:
+
+```yaml
+server:
+  disable_multipart_uploads: true  # Set via SERVER_DISABLE_MULTIPART_UPLOADS env var
+```
+
+This enforces a 5 GiB single-PUT ceiling but guarantees all data is encrypted.
 
 ### Large File Handling
 
@@ -646,24 +691,6 @@ For files larger than S3 object size limits (AWS S3: 5TB, other providers vary):
 - **Split objects are encrypted correctly**: When large files are split into multiple objects by the client, each object is encrypted individually
 - **Naming convention**: Use client-side splitting with naming like `file.part1`, `file.part2`, etc.
 - **Encryption consistency**: Each split object gets its own encryption parameters (salt, IV) but maintains the same security guarantees
-- **Multipart within splits**: If individual split objects still require multipart uploads, those parts are not encrypted (same limitation as above)
-
-### Disabling Multipart Uploads
-
-For maximum security, you can disable multipart uploads entirely:
-
-```yaml
-server:
-  disable_multipart_uploads: true  # Set via SERVER_DISABLE_MULTIPART_UPLOADS env var
-```
-
-**When enabled:**
-- ✅ **All uploads are encrypted** (no unencrypted multipart data)
-- ❌ **Multipart uploads are rejected** with HTTP 501 Not Implemented
-- ✅ **Single-part uploads work normally**
-- ⚠️ **Large files must be split** into multiple single-part objects
-
-This is a security vs. compatibility trade-off. Most S3 clients support single-part uploads for large files through automatic splitting.
 
 ### Encryption Details
 
@@ -671,7 +698,7 @@ This is a security vs. compatibility trade-off. Most S3 clients support single-p
 - **Key Derivation**: PBKDF2 with 100,000+ iterations
 - **Encryption Mode**: Chunked encryption with per-chunk IVs for streaming support
 - **Range Requests**: Highly optimized - fetches only needed encrypted chunks (99.9%+ reduction in transfer/decryption)
-- **Multipart Limitation**: Multipart uploads bypass encryption due to S3 concatenation behavior
+- **Multipart**: Encrypted per-part with HKDF-derived IVs (opt-in per bucket, requires Valkey — v0.6+)
 
 ## Compatible Backends
 
@@ -697,7 +724,7 @@ Using a backend not listed here? The gateway works with any service that impleme
 - **AWS KMS adapter** — native envelope encryption with AWS-managed keys
 - **HashiCorp Vault Transit** — key management via Vault's Transit secrets engine
 - **Structured audit logging** — compliance-ready audit trails with configurable sinks
-- **Multipart encryption** — encrypted multipart uploads (currently unencrypted due to S3 concatenation constraints)
+- **Multipart encryption** — encrypted multipart uploads with per-upload DEK and Valkey state (shipped in v0.6, ADR 0009)
 
 ### Future
 
