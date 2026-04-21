@@ -1,4 +1,4 @@
-.PHONY: build build-fips test test-fips test-conformance test-conformance-local test-conformance-minio test-conformance-external test-soak test-load test-load-range test-load-multipart test-load-soak test-load-minio test-load-garage test-load-prometheus test-load-baseline test-load-external test-chaos test-comprehensive test-isolation-check lint clean run docker-build docker-push help
+.PHONY: build build-fips test test-fips test-conformance test-conformance-local test-conformance-minio test-conformance-external test-load test-load-range test-load-multipart test-load-soak test-load-minio test-load-garage test-load-prometheus test-load-baseline test-rotation test-fuzz test-comprehensive test-isolation-check lint clean run docker-build docker-push help
 
 # Variables
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo "dev")
@@ -61,12 +61,6 @@ test-conformance-external:
 # Mechanical enforcement of the Docker-only deployment model.
 test-isolation-check:
 	@bash scripts/test-isolation.sh
-
-# ── Legacy/deprecated targets (kept for one minor version) ───────────────────
-# Run integration tests (requires Docker) — DEPRECATED; use test-conformance-minio
-test-integration:
-	@echo "[DEPRECATED] Use 'make test-conformance-minio' instead."
-	@go test -v -tags=integration ./test/... -run TestS3Gateway
 
 # ── Tier-2 load tests (in-process, Docker via Testcontainers) ─────────────────
 #
@@ -146,11 +140,7 @@ test-load-baseline:
 		2>&1 | tee testdata/baselines/soak_$(shell date +%Y%m%d_%H%M%S).log
 	@echo "Baseline log written to testdata/baselines/"
 
-# Run key rotation conformance tests.
-# Rotation tests live in the tier-2 conformance suite (test/conformance/rotation_test.go)
-# and run against every registered provider.  The old shell-script demo
-# (test/rotation_test.sh) is retained as documentation but is no longer
-# part of the automated test pipeline.
+# Run key rotation conformance tests (tier-2, all registered providers).
 test-rotation:
 	@echo "Running key rotation conformance tests (all registered providers)..."
 	@go test -tags=conformance -race -v -run 'TestConformance/.*/Rotation_' ./test/conformance/...
@@ -159,15 +149,6 @@ test-rotation:
 test-fuzz:
 	@echo "Running fuzz tests (regression mode)..."
 	@go test -v ./internal/crypto -run=Fuzz -fuzztime=1s
-
-# Build the legacy load test binary (optional; kept for external/manual soak use).
-# The automated test-load* targets no longer require this binary.
-build-loadtest:
-	@echo "Building legacy load test binary (cmd/loadtest)..."
-	@go build -o bin/loadtest ./cmd/loadtest
-
-# Run all tests including integration
-test-all: test test-integration
 
 # Run comprehensive test suite.
 # Requires only Docker (no docker-compose up, no pre-existing binaries).
@@ -179,16 +160,6 @@ test-comprehensive:
 	@$(MAKE) test-conformance-local
 	@echo "3. Checking test isolation (Docker-only model)..."
 	@$(MAKE) test-isolation-check
-
-# DEPRECATED targets — kept as aliases for one minor version.
-test-comprehensive-legacy:
-	@echo "[DEPRECATED] Use 'make test-comprehensive' instead."
-	@echo "1. Running code tests..."
-	@go test ./internal/* -v &> comprehensive_step_1.log
-	@echo "2. Running fuzz tests (regression mode)..."
-	@$(MAKE) test-fuzz &> comprehensive_step_2.log
-	@echo "3. Running integration tests..."
-	@go test -v ./test &> comprehensive_step_3.log
 
 # Run tests with coverage
 test-coverage: test
@@ -263,7 +234,6 @@ help:
 	@echo "  test-conformance-minio  - Conformance: MinIO only (PR gate)"
 	@echo "  test-conformance-external - Conformance: external providers with credentials"
 	@echo "  test-isolation-check    - Check test/ does not reference docker-compose / hard-coded ports"
-	@echo "  test-integration   - [DEPRECATED] Use test-conformance-minio"
 	@echo "  test-load          - CI load gate: range + multipart, small scale (5 s, 100 KiB)"
 	@echo "  test-load-range    - CI load gate: range-read concurrency only"
 	@echo "  test-load-multipart- CI load gate: multipart upload concurrency only"
@@ -273,8 +243,6 @@ help:
 	@echo "  test-load-baseline - Soak run with log capture to testdata/baselines/"
 	@echo "  test-load-prometheus-Soak run with custom duration (set SOAK_DURATION)"
 	@echo "  test-rotation      - Run key rotation conformance tests (tier-2, all providers)"
-	@echo "  build-loadtest     - Build load test binary"
-	@echo "  test-all           - Run all tests including integration"
 	@echo "  test-comprehensive - Run comprehensive test suite (tier-1 + local conformance + isolation check)"
 	@echo "  test-coverage      - Run tests with HTML coverage report"
 	@echo "  lint               - Run linter"

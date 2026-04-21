@@ -113,6 +113,13 @@ func TestConformance(t *testing.T) {
 			// latency is low enough for meaningful QPS assertions.
 			{"Load_RangeRead", provider.CapLoadTest, testRangeLoad},
 			{"Load_Multipart", provider.CapLoadTest | provider.CapMultipartUpload, testMultipartLoad},
+
+			// Chaos tests — in-process ToxicServer, no real S3 backend used.
+			// Gated on CapLoadTest so they only run on local providers (once
+			// per provider is sufficient; the backend is a fake anyway).
+			{"Chaos_Throttling", provider.CapLoadTest, testChaosThrottling},
+			{"Chaos_Backend500", provider.CapLoadTest, testChaosBackend500},
+			{"Chaos_NetworkTimeout", provider.CapLoadTest, testChaosNetworkTimeout},
 		}
 
 			for _, tc := range cases {

@@ -33,13 +33,8 @@ forbidden_patterns=(
   '"127\.0\.0\.1:9998"'   # hard-coded Cosmian HTTP admin port
 )
 
-# Exclusions: these files are explicitly allowed to reference old patterns
-# during the migration period (tagged TODO(V0.6-QA-4)).
-excluded_files=(
-  "test/minio.go"         # legacy shim — to be deleted after harness rewrite
-  "test/garage.go"        # legacy shim — to be deleted after harness rewrite
-  "test/mpu_fixtures.go"  # legacy shim — to be migrated in Phase 3
-)
+# No file-level exclusions — all legacy shims have been deleted.
+excluded_files=()
 
 # The provider/ and harness/ sub-packages are the canonical implementation
 # and may contain the patterns as documentation/comments; exclude them.
