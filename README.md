@@ -26,15 +26,7 @@ The S3 Encryption Gateway is a transparent HTTP proxy that sits between your app
                  text                               text   └─────────────────┘
 ```
 
-- **Transparent**: Point your S3 endpoint URL at the gateway — that's it
-- **AES-256-GCM or ChaCha20-Poly1305**: Authenticated encryption with per-object keys
-- **Full S3 API compatibility**: PUT, GET, HEAD, DELETE, List, multipart uploads, range requests
-- **Encrypted multipart uploads** (v0.6+, opt-in): Per-upload DEK + HKDF-SHA256 per-chunk IVs + AEAD manifest; ranged `GET` across part boundaries; end-to-end tamper detection ([ADR 0009](docs/adr/0009-encrypted-multipart-uploads.md))
-- **Multi-provider**: Works with AWS S3, MinIO, Wasabi, Hetzner, Ceph, Cloudflare R2, and more
-- **Production features**: Prometheus metrics, health checks, TLS, rate limiting, compression
-- **FIPS-compliant build profile** (`-tags=fips`): AES-256-GCM + HKDF-SHA256 + PBKDF2-HMAC-SHA256 only
-- **KMS integration**: Envelope encryption with Cosmian KMIP (AWS KMS and Vault Transit planned)
-- **Streaming**: Chunked encryption for large files with optimized range request handling
+**Transparent**: Point your S3 endpoint URL at the gateway — that's it. No application changes required.
 
 ## Who Needs This?
 
@@ -62,6 +54,290 @@ Full database backups in plaintext on object storage wasn't acceptable. But modi
 
 So we built a transparent proxy that solves the problem once, for every application, without touching a single line of application code. The S3 Encryption Gateway is running in production, protecting data across multiple environments and storage backends.
 
+---
+
+## Features
+
+### Object Encryption
+
+All objects are encrypted before being sent to the backend and decrypted on retrieval. Encryption is transparent — any S3 client works without modification.
+
+- **AES-256-GCM** (default) or **ChaCha20-Poly1305**: Authenticated encryption with per-object keys
+- **Key derivation**: PBKDF2-HMAC-SHA256 with 100,000+ iterations
+- **Chunked streaming**: Large files are encrypted in chunks with per-chunk IVs, enabling efficient range requests
+- **Range requests**: Fetches only the encrypted chunks covering the requested plaintext byte range — 99.9%+ reduction in transferred bytes compared to fetching the full object
+- **FIPS-compliant profile**: Build with `-tags=fips` to restrict to AES-256-GCM + HKDF-SHA256 + PBKDF2-HMAC-SHA256 (all FIPS-140 approved)
+
+### Encrypted Multipart Uploads
+
+Large objects uploaded via the S3 multipart API are encrypted end-to-end. Each upload gets its own key; each chunk gets a deterministic, collision-free IV derived via HKDF-SHA256.
+
+- **Per-upload DEK**: Fresh 32-byte AES-256-GCM key generated at `CreateMultipartUpload`
+- **DEK wrapping**: Via the configured `KeyManager` (Cosmian KMIP, HSM, or built-in password-based `PasswordKeyManager`)
+- **Per-chunk IV**: `HKDF-Expand(SHA-256, dek, salt=sha256(uploadId), info=ivPrefix‖BE32(part)‖BE32(chunk))` — deterministic and collision-free
+- **AEAD manifest**: Encrypted companion object at `<key>.mpu-manifest`; main object metadata carries a pointer
+- **Ranged GET across part boundaries**: Precise byte-range fetch via `EncRangeForPlaintextRange`; only the chunks covering the requested plaintext range are fetched and decrypted
+- **Tamper detection**: AES-GCM tag failure on any chunk returns 500 and emits an `mpu.tamper_detected` audit event; first-chunk tamper returns 500 before any body is written
+- **State store**: Valkey (or any Redis-protocol-compatible store); 7-day TTL; one hash per active upload
+- **FIPS**: AES-256-GCM + HKDF-SHA256 — both FIPS-140 approved (works under `-tags=fips`)
+- **Opt-in per bucket** via policy; requires Valkey for in-flight state
+
+See [ADR 0009](docs/adr/0009-encrypted-multipart-uploads.md) for the full design rationale.
+
+#### Enabling encrypted multipart uploads
+
+Encrypted multipart uploads require a **Valkey** (or Redis-protocol-compatible) instance for in-flight state storage. Enable per bucket via policy and configure the state store in the gateway config:
+
+```yaml
+# config.yaml
+multipart_state:
+  valkey:
+    addr: "valkey.internal:6379"
+    password_env: "VALKEY_PASSWORD"  # env var name (not the literal password)
+    tls:
+      enabled: true
+      ca_file: "/etc/gateway/valkey-ca.pem"
+      cert_file: "/etc/gateway/valkey-client.pem"
+      key_file:  "/etc/gateway/valkey-client-key.pem"
+    ttl_seconds: 604800  # 7 days — refreshed on every UploadPart
+    pool_size: 16
+```
+
+```yaml
+# policy/my-bucket.yaml
+id: my-encrypted-bucket
+buckets:
+  - "my-important-bucket"
+encrypt_multipart_uploads: true
+```
+
+All Valkey settings are also available as environment variables (`VALKEY_ADDR`, `VALKEY_TLS_ENABLED`, `VALKEY_TLS_CA_FILE`, `VALKEY_TTL_SECONDS`, etc.).
+
+The default is `false` for backward compatibility. v0.7 will flip the default to `true` after a production soak period.
+
+#### Fail-closed guarantees
+
+The gateway refuses to silently degrade security under any of these conditions:
+
+| Situation | Behaviour |
+|---|---|
+| `encrypt_multipart_uploads: true` on any policy + Valkey address not configured at startup | Process exits with a `Fatal` log — **no silent fallback to plaintext** |
+| Valkey reachable at startup but transient failure mid-upload | 503 ServiceUnavailable on the affected request; client retries are safe because the IV schedule is deterministic |
+| `UploadPart` succeeds on backend but `AppendPart` to Valkey fails | 503 ServiceUnavailable; client retries overwrite the same part idempotently |
+| Policy is flipped mid-upload | In-flight uploads use the `PolicySnapshot` captured at `CreateMultipartUpload`; the flip only affects new uploads |
+| No `KeyManager` and an encrypted-MPU request arrives | 503 ServiceUnavailable with reason `"KeyManager not configured"` |
+| Plaintext Valkey + production config (`insecure_allow_plaintext: false`) | Startup refuses; emits a `gateway_mpu_valkey_insecure=1` gauge if overridden |
+
+The dedicated escape hatch for deployments that cannot run Valkey at all:
+
+```yaml
+server:
+  disable_multipart_uploads: true  # env: SERVER_DISABLE_MULTIPART_UPLOADS
+```
+
+This enforces a 5 GiB single-PUT ceiling but guarantees all data is encrypted and requires no state infrastructure.
+
+#### Deploying Valkey with the Helm chart
+
+The Helm chart bundles an optional Valkey subchart which is off by default:
+
+```yaml
+# values.yaml
+valkey:
+  enabled: true
+  architecture: standalone  # or "cluster" for HA
+  auth:
+    enabled: false           # enable + mount a secret for production
+```
+
+When `valkey.enabled=true`, the deployment template auto-wires `VALKEY_ADDR` to the subchart's `<release>-valkey:6379` service. You can also point at an external Valkey cluster via the `config.multipartState.valkey` values stanza — the two paths are mutually exclusive.
+
+> **Cost note for Wasabi / Glacier / S3 IA users:** The Valkey state store exists precisely to avoid writing state objects to S3 — which on backends with minimum-storage-duration policies (Wasabi: 90 days on Pay-Go; Glacier / Standard-IA / One Zone-IA: 30–180 days) would incur significant phantom-storage charges. Your *data* objects still land on whichever backend you choose; only the ephemeral per-upload state lives in Valkey.
+
+### External Key Management (KMS)
+
+The gateway supports external Key Management Systems for envelope encryption with key rotation support. Currently **Cosmian KMIP** is fully implemented and tested.
+
+- **Envelope encryption**: A unique Data Encryption Key (DEK) is generated per object, then wrapped with the KMS master key
+- **Key rotation**: The `dual_read_window` setting allows reading objects encrypted with previous key versions during rotation
+- **Fallback support**: Objects encrypted with the password (before KMS was enabled) can still be decrypted
+- **Health checks**: KMS health is automatically checked via the `/ready` endpoint
+
+#### Quick start with Cosmian KMS
+
+1. Start Cosmian KMS:
+
+```bash
+docker run -d --rm --name cosmian-kms \
+  -p 5696:5696 -p 9998:9998 --entrypoint cosmian_kms \
+  ghcr.io/cosmian/kms:5.14.1
+```
+
+2. Create a wrapping key via the Cosmian KMS UI (http://localhost:9998/ui) and note the key ID.
+
+3. Configure the gateway:
+
+```yaml
+encryption:
+  password: "fallback-password-123456"  # Used for pre-existing objects encrypted with password
+  key_manager:
+    enabled: true
+    provider: "cosmian"
+    dual_read_window: 1  # Allow reading with previous 1 key version during rotation
+    cosmian:
+      endpoint: "http://localhost:9998/kmip/2_1"
+      timeout: "10s"
+      keys:
+        - id: "your-key-id-from-cosmian"
+          version: 1
+```
+
+Or via environment variables:
+
+```bash
+export KEY_MANAGER_ENABLED=true
+export KEY_MANAGER_PROVIDER=cosmian
+export KEY_MANAGER_DUAL_READ_WINDOW=1
+export COSMIAN_KMS_ENDPOINT=http://localhost:9998/kmip/2_1
+export COSMIAN_KMS_TIMEOUT=10s
+export COSMIAN_KMS_KEYS="your-key-id:1"  # Format: "key1:version1,key2:version2"
+```
+
+#### Protocol options
+
+**JSON/HTTP (recommended, tested in CI)**:
+- Full URL: `http://localhost:9998/kmip/2_1` or `https://kms.example.com/kmip/2_1`
+- Base URL also works: `http://localhost:9998` (path `/kmip/2_1` is auto-appended)
+- No client certificates required for HTTP; `ca_cert` recommended for HTTPS
+
+**Binary KMIP (advanced, requires TLS)**:
+- Endpoint format: `localhost:5696` or `kms.example.com:5696`
+- Requires `ca_cert`, `client_cert`, and `client_key`
+- Not fully tested in CI — use with caution
+
+See [`docs/KMS_COMPATIBILITY.md`](docs/KMS_COMPATIBILITY.md) for detailed documentation. AWS KMS and Vault Transit adapters are planned for v1.0.
+
+### Compression
+
+Optional pre-encryption compression reduces storage costs and transfer times for compressible data.
+
+```yaml
+compression:
+  enabled: false
+  min_size: 1024
+  content_types: ["text/", "application/json", "application/xml"]
+  algorithm: "gzip"
+  level: 6
+```
+
+### Rate Limiting
+
+Token-bucket rate limiting protects against abuse.
+
+```yaml
+rate_limit:
+  enabled: true
+  limit: 100      # requests per window
+  window: "60s"
+```
+
+### Caching
+
+Optional in-memory response cache reduces backend traffic for frequently read objects.
+
+```yaml
+cache:
+  enabled: false
+  max_size: 104857600     # 100 MB
+  max_items: 1000
+  default_ttl: "5m"
+```
+
+### Audit Logging
+
+Structured audit events for every S3 operation, with configurable sinks.
+
+```yaml
+audit:
+  enabled: false
+  max_events: 10000
+  sink:
+    type: "stdout"      # stdout, file, or http
+    file_path: ""
+    endpoint: ""
+    batch_size: 100
+    flush_interval: "5s"
+```
+
+Multipart-specific audit events: `mpu.create`, `mpu.part`, `mpu.complete`, `mpu.abort`, `mpu.tamper_detected`, `mpu.valkey_unavailable`.
+
+### Monitoring & Observability
+
+#### Health endpoints
+
+- `GET /health` — general health status
+- `GET /ready` (alias `/readyz`) — readiness probe with per-dependency status:
+
+```json
+{
+  "status": "ready",
+  "checks": {
+    "kms":    "ok",
+    "valkey": "ok"
+  }
+}
+```
+
+Returns HTTP 503 with `status: "not_ready"` if any configured dependency fails its health check.
+
+- `GET /live` — liveness probe
+- `GET /metrics` — Prometheus metrics
+
+#### Prometheus metrics
+
+- **HTTP**: request counts, durations, bytes transferred
+- **S3 operations**: operation counts, durations, error rates
+- **Encryption**: encryption/decryption counts, durations, throughput
+- **System**: active connections, goroutines, memory usage
+
+Key metric names: `http_requests_total`, `encryption_operations_total`, `active_connections`, `goroutines_total`, `memory_alloc_bytes`.
+
+Seven metrics track the multipart-encryption hot path:
+
+| Metric | Type | Labels | Emitted on |
+|---|---|---|---|
+| `gateway_mpu_encrypted_total` | counter | `result` | Every `CompleteMultipartUpload` on encrypted buckets |
+| `gateway_mpu_parts_total` | counter | `result` | Every `UploadPart` on encrypted buckets |
+| `gateway_mpu_state_store_ops_total` | counter | `op`, `result` | Every Valkey op |
+| `gateway_mpu_state_store_latency_seconds` | histogram | `op` | Every Valkey op |
+| `gateway_mpu_valkey_up` | gauge | — | Ready-check HealthCheck |
+| `gateway_mpu_valkey_insecure` | gauge | — | Startup, if TLS is disabled |
+| `gateway_mpu_manifest_bytes` | histogram | — | Every `CompleteMultipartUpload` |
+
+### TLS
+
+The gateway can terminate TLS directly.
+
+```yaml
+tls:
+  enabled: true
+  cert_file: /path/to/cert.pem
+  key_file: /path/to/key.pem
+```
+
+All responses also include security headers: `X-Frame-Options`, `X-Content-Type-Options`, `Strict-Transport-Security`, `Content-Security-Policy`, and others.
+
+### Admin API
+
+Bearer-authenticated admin endpoints on a separate port:
+
+| Endpoint | Purpose |
+|---|---|
+| `POST /admin/mpu/abort/{uploadId}` | Force-abort an in-flight upload and delete its Valkey state |
+| `GET /admin/mpu/list` | List active uploads (bucket, key, creation time) |
+
+---
+
 ## Quick Start
 
 ### Prerequisites
@@ -81,7 +357,7 @@ docker run -p 8080:8080 \
   s3-encryption-gateway:latest
 ```
 
-Now point any S3 client at the gateway instead of directly at S3:
+Point any S3 client at the gateway instead of directly at S3:
 
 ```bash
 # Before: direct to S3 (unencrypted)
@@ -90,8 +366,6 @@ aws s3 cp backup.sql s3://my-bucket/ --endpoint-url https://s3.amazonaws.com
 # After: through the gateway (encrypted)
 aws s3 cp backup.sql s3://my-bucket/ --endpoint-url http://localhost:8080
 ```
-
-That's it. Your data is now encrypted client-side before it reaches the storage backend.
 
 ### Kubernetes (Helm)
 
@@ -117,20 +391,18 @@ nano .env  # Edit with your configuration
 docker-compose up -d
 ```
 
-See [Docker Deployment](#docker-deployment) below for full details.
+Access MinIO Console at http://localhost:9001. Gateway API at http://localhost:8080.
 
 ### Building from Source
 
 ```bash
-# Build the binary
 make build
-
-# Or build directly
+# or
 go build -o bin/s3-encryption-gateway ./cmd/server
-
-# Run
 ./bin/s3-encryption-gateway
 ```
+
+---
 
 ## Configuration
 
@@ -178,13 +450,13 @@ audit:
   max_events: 10000
   sink:
     type: "stdout"      # stdout, file, or http
-    file_path: ""       # if type=file
-    endpoint: ""        # if type=http
+    file_path: ""
+    endpoint: ""
     batch_size: 100
     flush_interval: "5s"
 ```
 
-Or use environment variables:
+Environment variables are also supported for every setting:
 
 ```bash
 export LISTEN_ADDR=":8080"
@@ -194,95 +466,16 @@ export BACKEND_ACCESS_KEY="your-access-key"
 export BACKEND_SECRET_KEY="your-secret-key"
 export BACKEND_USE_PATH_STYLE=false
 export ENCRYPTION_PASSWORD="your-encryption-password"
-# Optional algorithm configuration
-export ENCRYPTION_PREFERRED_ALGORITHM="AES256-GCM"   # or "ChaCha20-Poly1305"
+export ENCRYPTION_PREFERRED_ALGORITHM="AES256-GCM"
 export ENCRYPTION_SUPPORTED_ALGORITHMS="AES256-GCM,ChaCha20-Poly1305"
-# Compression
 export COMPRESSION_ENABLED=false
-export COMPRESSION_MIN_SIZE=1024
-export COMPRESSION_CONTENT_TYPES="text/,application/json,application/xml"
-export COMPRESSION_ALGORITHM=gzip
-export COMPRESSION_LEVEL=6
-# Rate limiting
 export RATE_LIMIT_ENABLED=false
-export RATE_LIMIT_REQUESTS=100
-export RATE_LIMIT_WINDOW="60s"
-# Cache
 export CACHE_ENABLED=false
-export CACHE_MAX_SIZE=104857600
-export CACHE_MAX_ITEMS=1000
-export CACHE_DEFAULT_TTL="5m"
-# Audit
 export AUDIT_ENABLED=false
-export AUDIT_MAX_EVENTS=10000
-export AUDIT_SINK_TYPE="stdout"
-export AUDIT_SINK_FILE_PATH="/var/log/s3-gateway/audit.json" # if type=file
-export AUDIT_SINK_ENDPOINT="http://log-collector:8080"       # if type=http
-export AUDIT_SINK_BATCH_SIZE=100
-export AUDIT_SINK_FLUSH_INTERVAL="5s"
+export TLS_ENABLED=false
 ```
 
-### Running
-
-```bash
-# Run locally
-make run
-
-# Or run directly
-./bin/s3-encryption-gateway
-```
-
-## Docker Deployment
-
-### Build Docker Image
-
-```bash
-make docker-build
-```
-
-### Docker Compose
-
-For local development and testing, use the provided Docker Compose setup:
-
-```bash
-# Copy the example configuration
-cp docker-compose.example.yml docker-compose.yml
-cp docker-compose.env.example .env
-
-# Edit .env with your configuration
-nano .env
-
-# Start the services
-docker-compose up -d
-
-# View logs
-docker-compose logs -f gateway
-```
-
-**Services included:**
-- **MinIO**: S3-compatible backend storage for development/testing
-- **S3 Encryption Gateway**: The encryption proxy running on port 8080
-
-**Configuration:**
-- Edit `.env` to customize backend, encryption, and other settings
-- The gateway automatically connects to MinIO backend
-- Access MinIO Console at http://localhost:9001
-- Gateway API available at http://localhost:8080
-
-**Example .env configuration:**
-```bash
-# Required: Set a secure encryption password
-ENCRYPTION_PASSWORD=your-secure-password-here
-
-# Optional: Configure backend (defaults to local MinIO)
-BACKEND_ENDPOINT=http://localhost:9000
-BACKEND_ACCESS_KEY=minioadmin
-BACKEND_SECRET_KEY=minioadmin123
-
-# Optional: Enable features
-COMPRESSION_ENABLED=true
-CACHE_ENABLED=true
-```
+---
 
 ## Use Cases
 
@@ -346,101 +539,7 @@ The gateway helps satisfy encryption requirements across multiple compliance fra
 - **GDPR Art. 32** — Technical measures for data protection (encryption at rest)
 - **PCI DSS Req. 3** — Protect stored cardholder data
 
-## External Key Manager (KMS) - Cosmian KMIP
-
-The gateway supports external Key Management Systems (KMS) for envelope encryption with key rotation support. Currently, **Cosmian KMIP** is fully implemented and tested.
-
-### Quick Start with Cosmian KMS
-
-1. **Start Cosmian KMS** (using Docker for local testing):
-
-```bash
-docker run -d --rm --name cosmian-kms \
-  -p 5696:5696 -p 9998:9998 --entrypoint cosmian_kms \
-  ghcr.io/cosmian/kms:5.14.1
-```
-
-2. **Create a wrapping key** via the Cosmian KMS UI (http://localhost:9998/ui) and note the key ID.
-
-3. **Configure the gateway** to use Cosmian KMS:
-
-```yaml
-encryption:
-  password: "fallback-password-123456"  # Used for pre-existing objects encrypted with password
-  key_manager:
-    enabled: true
-    provider: "cosmian"
-    dual_read_window: 1  # Allow reading with previous 1 key version during rotation
-    cosmian:
-      # RECOMMENDED: JSON/HTTP endpoint (tested and verified in CI)
-      # Full URL format (recommended for clarity):
-      endpoint: "http://localhost:9998/kmip/2_1"
-      # Base URL format (also works - path /kmip/2_1 is auto-appended):
-      # endpoint: "http://localhost:9998"
-      # ADVANCED: Binary KMIP endpoint (requires proper TLS/client certificates)
-      # endpoint: "localhost:5696"  # Requires ca_cert, client_cert, client_key
-      timeout: "10s"
-      keys:
-        - id: "your-key-id-from-cosmian"  # Replace with actual key ID from Cosmian KMS UI
-          version: 1
-      # TLS configuration (required for HTTPS or binary KMIP in production)
-      # For HTTP (testing): TLS not required
-      # For HTTPS (production): ca_cert required
-      # For binary KMIP: ca_cert, client_cert, client_key all required
-      # ca_cert: "/path/to/ca.pem"
-      # client_cert: "/path/to/client.crt"
-      # client_key: "/path/to/client.key"
-      # insecure_skip_verify: false  # Only for testing (not recommended)
-```
-
-Or via environment variables:
-
-```bash
-export KEY_MANAGER_ENABLED=true
-export KEY_MANAGER_PROVIDER=cosmian
-export KEY_MANAGER_DUAL_READ_WINDOW=1
-# RECOMMENDED: JSON/HTTP endpoint (tested and verified)
-# Full URL format (recommended):
-export COSMIAN_KMS_ENDPOINT=http://localhost:9998/kmip/2_1
-# Base URL format (also works - path /kmip/2_1 is auto-appended):
-# export COSMIAN_KMS_ENDPOINT=http://localhost:9998
-# ADVANCED: Binary KMIP (requires TLS certificates)
-# export COSMIAN_KMS_ENDPOINT=localhost:5696
-export COSMIAN_KMS_TIMEOUT=10s
-export COSMIAN_KMS_KEYS="your-key-id:1"  # Format: "key1:version1,key2:version2"
-```
-
-### How It Works
-
-- **Envelope Encryption**: The gateway generates a unique Data Encryption Key (DEK) for each object, then wraps it with the KMS master key
-- **Key Rotation**: The `dual_read_window` setting allows reading objects encrypted with previous key versions during rotation
-- **Fallback Support**: Objects encrypted with the password (before KMS was enabled) can still be decrypted
-- **Health Checks**: KMS health is automatically checked via the `/ready` endpoint
-
-### Protocol Options
-
-**JSON/HTTP (Recommended - Tested)**:
-- Endpoint format (full URL, recommended): `http://localhost:9998/kmip/2_1` or `https://kms.example.com/kmip/2_1`
-- Endpoint format (base URL, also works): `http://localhost:9998` (path `/kmip/2_1` is automatically appended)
-- No TLS client certificates required for HTTP (testing)
-- TLS certificates required for HTTPS (production: `ca_cert` recommended)
-- Fully tested and verified in CI
-
-**Binary KMIP (Advanced - Requires TLS)**:
-- Endpoint format: `localhost:5696` or `kms.example.com:5696`
-- Requires proper TLS configuration: `ca_cert`, `client_cert`, and `client_key`
-- Not fully tested in CI - use with caution
-- Suitable for production deployments with proper certificate management
-
-### Production Deployment
-
-For production deployments:
-- **JSON/HTTP with HTTPS**: Use `https://kms.example.com/kmip/2_1` with `ca_cert` for server verification
-- **Binary KMIP**: Requires full TLS setup (`ca_cert`, `client_cert`, `client_key`) for mutual TLS
-- Set `insecure_skip_verify: false` (or omit it)
-- Configure multiple keys for rotation: `[{id: "key-v1", version: 1}, {id: "key-v2", version: 2}]`
-
-See [`docs/KMS_COMPATIBILITY.md`](docs/KMS_COMPATIBILITY.md) for detailed documentation and implementation status. AWS KMS and Vault Transit adapters are planned for v1.0.
+---
 
 ## Architecture
 
@@ -482,314 +581,7 @@ sequenceDiagram
   Gateway-->>Client: plaintext
 ```
 
-## Kubernetes Deployment
-
-The gateway includes Helm charts for easy Kubernetes deployment. See the [Helm chart documentation](helm/s3-encryption-gateway/README.md) for detailed deployment instructions.
-
-### Quick Deploy
-
-1. Create secrets:
-
-```bash
-kubectl create secret generic s3-encryption-gateway-secrets \
-  --from-literal=backend-access-key=YOUR_KEY \
-  --from-literal=backend-secret-key=YOUR_SECRET \
-  --from-literal=encryption-password=YOUR_PASSWORD
-```
-
-2. Deploy using Helm:
-
-```bash
-helm install s3-encryption-gateway ./helm/s3-encryption-gateway
-```
-
-Or apply manifests directly:
-
-```bash
-kubectl apply -f k8s/
-```
-
-## API Usage
-
-The gateway is fully compatible with the S3 API. Use any S3 client or SDK:
-
-### Using AWS CLI
-
-```bash
-# Configure endpoint
-aws configure set s3.endpoint_url http://localhost:8080
-
-# Upload file
-aws s3 cp file.txt s3://my-bucket/my-key
-
-# Download file
-aws s3 cp s3://my-bucket/my-key file.txt
-
-# List objects
-aws s3 ls s3://my-bucket/ --endpoint-url http://localhost:8080
-```
-
-### Using curl
-
-```bash
-# Upload object
-curl -X PUT http://localhost:8080/my-bucket/my-key \
-  -H "Content-Type: text/plain" \
-  --data "Hello, World!"
-
-# Download object
-curl http://localhost:8080/my-bucket/my-key
-
-# Delete object
-curl -X DELETE http://localhost:8080/my-bucket/my-key
-
-# List objects
-curl "http://localhost:8080/my-bucket?prefix=test"
-```
-
-### Supported Operations
-
-- **Core Operations**: PUT, GET, HEAD, DELETE, List Objects
-- **Advanced Features**: Multipart uploads, range requests, presigned URLs
-- **Compatibility**: Works with all standard S3 clients and SDKs
-
-## Monitoring & Observability
-
-### Health Checks
-
-The gateway provides health check endpoints:
-
-- `/health` - General health status
-- `/ready` - Readiness probe (for Kubernetes)
-- `/live` - Liveness probe (for Kubernetes)
-- `/metrics` - Prometheus metrics
-
-### Metrics
-
-Comprehensive Prometheus metrics are exported with reduced label cardinality:
-
-- **HTTP Metrics**: Request counts, durations, bytes transferred
-- **S3 Operations**: Operation counts, durations, error rates
-- **Encryption**: Encryption/decryption counts, durations, throughput
-- **System Metrics**: Active connections, goroutines, memory usage
-
-Key metrics:
-- `http_requests_total` - Total HTTP requests
-- `encryption_operations_total` - Total encryption operations
-- `active_connections` - Current active connections
-- `goroutines_total` - Number of goroutines
-- `memory_alloc_bytes` - Memory allocated
-
-## Security Features
-
-### TLS/HTTPS Support
-
-The gateway supports TLS/HTTPS encryption. Enable it in configuration:
-
-```yaml
-tls:
-  enabled: true
-  cert_file: /path/to/cert.pem
-  key_file: /path/to/key.pem
-```
-
-Or via environment variables:
-```bash
-export TLS_ENABLED=true
-export TLS_CERT_FILE=/path/to/cert.pem
-export TLS_KEY_FILE=/path/to/key.pem
-```
-
-### Security Headers
-The gateway automatically sets security headers on all responses:
-- `X-Frame-Options: DENY`
-- `X-Content-Type-Options: nosniff`
-- `X-XSS-Protection: 1; mode=block`
-- `Strict-Transport-Security` (for TLS connections)
-- `Content-Security-Policy: default-src 'self'`
-- `Referrer-Policy: strict-origin-when-cross-origin`
-
-### Rate Limiting
-Rate limiting can be enabled to protect against abuse:
-
-```yaml
-rate_limit:
-  enabled: true
-  limit: 100      # Requests per window
-  window: "60s"   # Time window
-```
-
-## Security Considerations
-
-- **Encryption Password**: Store encryption passwords securely using secrets management (Kubernetes Secrets, HashiCorp Vault, etc.)
-- **Backend Credentials**: Use IAM roles, service accounts, or secure credential storage systems
-- **Network Security**: Deploy behind TLS termination (e.g., Kubernetes Ingress) or enable built-in TLS
-- **Access Control**: Restrict gateway access to authorized clients using network policies, firewalls, or API gateways
-- **Rate Limiting**: Enable rate limiting in production environments to prevent abuse and ensure fair resource usage
-
-### Multipart Upload Encryption
-
-**v0.6+**: Encrypted multipart uploads are opt-in per bucket and fully
-functional. See [ADR 0009](docs/adr/0009-encrypted-multipart-uploads.md) for
-the full design rationale.
-
-| Property | Value |
-|---|---|
-| Per-upload key | Fresh 32-byte AES-256-GCM DEK at `CreateMultipartUpload` |
-| DEK wrapping | Via configured `KeyManager` (Cosmian KMIP, HSM, or built-in `PasswordKeyManager` that uses PBKDF2-HMAC-SHA256 + AES-256-GCM against the gateway encryption password) |
-| Per-chunk IV | `HKDF-Expand(SHA-256, dek, salt=sha256(uploadId), info=ivPrefix‖BE32(part)‖BE32(chunk))` — deterministic, collision-free |
-| State store | Valkey (or any Redis-protocol-compatible store); 7-day TTL; one hash per active upload |
-| Manifest | AEAD-encrypted companion object at `<key>.mpu-manifest`; main object metadata carries a pointer |
-| Ranged GET | Precise byte-range fetch via `EncRangeForPlaintextRange`; only the chunks covering the requested plaintext range are fetched and decrypted |
-| Tamper detection | AES-GCM tag failure on any chunk returns 500 and emits an `mpu.tamper_detected` audit event; first-chunk tamper returns 500 before any body is written |
-| FIPS | AES-256-GCM + HKDF-SHA256 — both FIPS-140 approved (works under `-tags=fips`) |
-
-#### Enabling encrypted multipart uploads
-
-Encrypted multipart uploads require a **Valkey** (or Redis-protocol-compatible)
-instance for in-flight state storage. Enable per bucket via policy and configure
-the state store in the gateway config:
-
-```yaml
-# config.yaml
-multipart_state:
-  valkey:
-    addr: "valkey.internal:6379"
-    password_env: "VALKEY_PASSWORD"  # env var name (not the literal password)
-    tls:
-      enabled: true
-      ca_file: "/etc/gateway/valkey-ca.pem"
-      cert_file: "/etc/gateway/valkey-client.pem"
-      key_file:  "/etc/gateway/valkey-client-key.pem"
-    ttl_seconds: 604800  # 7 days — refreshed on every UploadPart
-    pool_size: 16
-```
-
-```yaml
-# policy/my-bucket.yaml
-id: my-encrypted-bucket
-buckets:
-  - "my-important-bucket"
-encrypt_multipart_uploads: true
-```
-
-All Valkey settings are also available as environment variables
-(`VALKEY_ADDR`, `VALKEY_TLS_ENABLED`, `VALKEY_TLS_CA_FILE`,
-`VALKEY_TTL_SECONDS`, etc.) so Kubernetes deployments can wire the subchart
-service name via the Helm chart without mounting a config file.
-
-The default is `false` for backward compatibility. v0.7 will flip the default
-to `true` after a production soak period.
-
-#### Fail-closed guarantees
-
-The gateway refuses to silently degrade security under any of these conditions:
-
-| Situation | Behaviour |
-|---|---|
-| `encrypt_multipart_uploads: true` on any policy + Valkey address not configured at startup | Process exits with a `Fatal` log — **no silent fallback to plaintext** |
-| Valkey reachable at startup but transient failure mid-upload (e.g. `LOADING`, `READONLY`, timeout) | 503 ServiceUnavailable on the affected request; client retries are safe because the IV schedule is deterministic |
-| `UploadPart` succeeds on backend but `AppendPart` to Valkey fails | 503 ServiceUnavailable; client retries overwrite the same part idempotently |
-| Policy is flipped mid-upload | In-flight uploads use the `PolicySnapshot` captured at `CreateMultipartUpload`; the flip only affects new uploads |
-| No `KeyManager` and an encrypted-MPU request arrives | 503 ServiceUnavailable with reason `"KeyManager not configured"` |
-| Plaintext Valkey + production config (`insecure_allow_plaintext: false`) | Startup refuses; emits a `gateway_mpu_valkey_insecure=1` gauge if overridden |
-
-The dedicated escape hatch for deployments that cannot run Valkey at all:
-
-```yaml
-server:
-  disable_multipart_uploads: true  # env: SERVER_DISABLE_MULTIPART_UPLOADS
-```
-
-This enforces a 5 GiB single-PUT ceiling but guarantees all data is encrypted
-and requires no state infrastructure.
-
-#### Deploying Valkey with the Helm chart
-
-The Helm chart bundles an optional Valkey subchart
-(https://valkey.io/valkey-helm/) which is off by default:
-
-```yaml
-# values.yaml
-valkey:
-  enabled: true
-  architecture: standalone  # or "cluster" for HA
-  auth:
-    enabled: false           # enable + mount a secret for production
-```
-
-When `valkey.enabled=true`, the deployment template auto-wires `VALKEY_ADDR`
-to the subchart's `<release>-valkey:6379` service. Operators can also point
-at an external Valkey cluster via the `config.multipartState.valkey` values
-stanza — the two paths are mutually exclusive.
-
-> **Cost note for Wasabi / Glacier / S3 IA users:** The Valkey state store
-> exists precisely to avoid writing state objects to S3 — which on backends
-> with minimum-storage-duration policies (Wasabi: 90 days on Pay-Go; Glacier /
-> Standard-IA / One Zone-IA: 30–180 days) would incur significant phantom-
-> storage charges. Your *data* objects still land on whichever backend you
-> choose; only the ephemeral per-upload state lives in Valkey.
-
-#### Observability
-
-Seven Prometheus metrics track the multipart-encryption hot path:
-
-| Metric | Type | Labels | Emitted on |
-|---|---|---|---|
-| `gateway_mpu_encrypted_total` | counter | `result` | Every `CompleteMultipartUpload` on encrypted buckets |
-| `gateway_mpu_parts_total` | counter | `result` | Every `UploadPart` on encrypted buckets |
-| `gateway_mpu_state_store_ops_total` | counter | `op`, `result` | Every Valkey op (Get/Create/AppendPart/Delete) |
-| `gateway_mpu_state_store_latency_seconds` | histogram | `op` | Every Valkey op |
-| `gateway_mpu_valkey_up` | gauge | — | Ready-check HealthCheck |
-| `gateway_mpu_valkey_insecure` | gauge | — | Startup, if TLS is disabled |
-| `gateway_mpu_manifest_bytes` | histogram | — | Every `CompleteMultipartUpload` |
-
-Audit events emitted under the `mpu.*` event type: `mpu.create`, `mpu.part`,
-`mpu.complete`, `mpu.abort`, `mpu.tamper_detected`, `mpu.valkey_unavailable`.
-
-The `/readyz` endpoint (and its `/ready` alias) reports per-dependency status:
-
-```json
-{
-  "status": "ready",
-  "checks": {
-    "kms":    "ok",
-    "valkey": "ok"
-  }
-}
-```
-
-— and returns HTTP 503 with `status: "not_ready"` if any configured dependency
-fails its health check.
-
-#### Admin endpoints
-
-The admin API (bearer-auth, separate port) exposes two MPU operations:
-
-| Endpoint | Purpose |
-|---|---|
-| `POST /admin/mpu/abort/{uploadId}` | Force-abort an in-flight upload: calls backend `AbortMultipartUpload` (best-effort) and deletes the Valkey state key |
-| `GET /admin/mpu/list` | List active uploads via `SCAN mpu:*` with bucket, key, creation time — useful for diagnosing stuck uploads |
-
-### Large File Handling
-
-For files larger than S3 object size limits (AWS S3: 5TB, other providers vary):
-
-- **Split objects are encrypted correctly**: When large files are split into multiple objects by the client, each object is encrypted individually
-- **Naming convention**: Use client-side splitting with naming like `file.part1`, `file.part2`, etc.
-- **Encryption consistency**: Each split object gets its own encryption parameters (salt, IV) but maintains the same security guarantees
-
-### Encryption Details
-
-- **Algorithm**: AES-256-GCM (default) or ChaCha20-Poly1305 (non-FIPS only)
-- **Key Derivation**: PBKDF2-HMAC-SHA256 with 100,000+ iterations
-- **Encryption Mode**: Chunked AEAD with per-chunk IVs for streaming support
-- **Range Requests**: Highly optimized — fetches only needed encrypted chunks (99.9%+ reduction in transfer/decryption), including across multipart part boundaries
-- **Multipart**: Encrypted per-part with HKDF-SHA256-derived IVs; opt-in per
-  bucket; requires Valkey for in-flight state. Full round-trip including
-  ranged `GET` and end-to-end tamper detection (v0.6+, ADR 0009)
-- **FIPS**: AES-256-GCM + HKDF-SHA256 + PBKDF2-HMAC-SHA256 are all FIPS-140
-  approved; build with `-tags=fips`
+---
 
 ## Compatible Backends
 
@@ -806,7 +598,19 @@ The gateway works with any S3-compatible storage service. Tested and compatible 
 | DigitalOcean Spaces | Compatible | S3-compatible API |
 | Backblaze B2 | Compatible | S3-compatible API |
 
-Using a backend not listed here? The gateway works with any service that implements the S3 API. [Open an issue](https://github.com/kenchrcum/s3-encryption-gateway/issues) to let us know about your experience.
+Using a backend not listed here? [Open an issue](https://github.com/kenchrcum/s3-encryption-gateway/issues) to let us know about your experience.
+
+---
+
+## Security Considerations
+
+- **Encryption password**: Store securely using a secrets manager (Kubernetes Secrets, HashiCorp Vault, etc.)
+- **Backend credentials**: Use IAM roles, service accounts, or secure credential storage
+- **Network security**: Deploy behind TLS termination or enable built-in TLS
+- **Access control**: Restrict gateway access using network policies, firewalls, or API gateways
+- **Rate limiting**: Enable in production to prevent abuse
+
+---
 
 ## Roadmap
 
@@ -818,10 +622,7 @@ Using a backend not listed here? The gateway works with any service that impleme
 
 ### Shipped in v0.6
 
-- **Multipart encryption** — encrypted multipart uploads with per-upload DEK,
-  HKDF-derived per-chunk IVs, AEAD manifest companion, ranged GET across part
-  boundaries, end-to-end tamper detection, Valkey state store, Helm subchart
-  wiring (ADR 0009)
+- **Encrypted multipart uploads** — per-upload DEK, HKDF-derived per-chunk IVs, AEAD manifest, ranged GET across part boundaries, end-to-end tamper detection, Valkey state store, Helm subchart wiring (ADR 0009)
 - **Pluggable KeyManager interface** (ADR 0004)
 - **FIPS-compliant crypto profile** (ADR 0005, `-tags=fips`)
 - **Multipart copy** (ADR 0006)
@@ -836,6 +637,8 @@ Using a backend not listed here? The gateway works with any service that impleme
 - Multi-arch images with SBOM and SLSA provenance
 
 See [`docs/ROADMAP.md`](docs/ROADMAP.md) for the complete roadmap.
+
+---
 
 ## Contributing
 
@@ -858,11 +661,13 @@ We welcome contributions! Please see [`docs/DEVELOPMENT_GUIDE.md`](docs/DEVELOPM
 4. Run tests and linter (`make test && make lint`)
 5. Submit a pull request
 
+---
+
 ## License
 
-MIT License - see [LICENSE](LICENSE) file for details.
+MIT License — see [LICENSE](LICENSE) file for details.
 
 ## Support
 
-- **Issues**: Report bugs or request features on [GitHub Issues](https://github.com/kenchrcum/s3-encryption-gateway/issues)
-- **Documentation**: See the [`docs/`](docs/) directory for detailed guides
+- **Issues**: [GitHub Issues](https://github.com/kenchrcum/s3-encryption-gateway/issues)
+- **Documentation**: [`docs/`](docs/) directory
