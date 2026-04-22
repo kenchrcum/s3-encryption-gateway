@@ -62,11 +62,12 @@ type hsmKeyManager struct {
 
 // NewHSMKeyManager creates a [KeyManager] backed by a PKCS#11 HSM.
 //
-// This constructor is a skeleton; it returns [ErrProviderUnavailable] until the
-// PKCS#11 integration is implemented in v1.0.
+// This constructor is a skeleton; it returns an hsmKeyManager whose operations
+// all return [ErrProviderUnavailable] until the PKCS#11 integration is
+// implemented in v1.0.
 func NewHSMKeyManager(cfg HSMConfig) (KeyManager, error) {
 	// TODO(hsm): validate cfg, load PKCS#11 module, open session, find key
-	return nil, fmt.Errorf("%w: HSM adapter not yet implemented — see docs/adr/0004-hsm-adapter-contract.md", ErrProviderUnavailable)
+	return &hsmKeyManager{cfg: cfg}, nil
 }
 
 // Provider implements [KeyManager].
