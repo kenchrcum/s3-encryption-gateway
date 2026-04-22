@@ -203,6 +203,8 @@ github.com/opencontainers/image-spec v1.1.1 h1:y0fUlFfIZhPF1W537XOLg0/fcx6zcHCJw
 github.com/opencontainers/image-spec v1.1.1/go.mod h1:qpqAh3Dmcf36wStyyWU+kCeDgrGnAve2nCC8+7h8Q0M=
 github.com/ovh/kmip-go v0.7.2 h1:O+gK7el92gpC57WzYGeyAPySeMPIDEWDUeT1IvkdrF0=
 github.com/ovh/kmip-go v0.7.2/go.mod h1:0UZqQCIlZ4/W+cYFbmtRwZ4if582CjlEvy86Xx+ob8E=
+github.com/ovh/kmip-go v0.8.0 h1:hJfz6pN96dh6/gcHBGoUlkb0nARh9hum7A0estGBpTk=
+github.com/ovh/kmip-go v0.8.0/go.mod h1:vZDmUCBchiQzWWr1v7EmotrKwQkpGATikl/zNgonjDo=
 github.com/pmezard/go-difflib v1.0.0 h1:4DBwDE0NGyQoBHbLQYPwSUPoCMWR5BEzIk/f1lZbAQM=
 github.com/pmezard/go-difflib v1.0.0/go.mod h1:iKH77koFhYxTK1pcRnkKkqfTogsbg7gZNVY4sRDYZ/4=
 github.com/power-devops/perfstat v0.0.0-20240221224432-82ca36839d55 h1:o4JXh1EVt9k/+g42oCprj/FisM4qX9L3sZB3upGN2ZU=
