@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"sync"
 	"sync/atomic"
 	"syscall"
 	"testing"
@@ -68,12 +69,15 @@ encryption:
 
 	// Set up callback tracking
 	var callbackCalled int64
+	var callbackMu sync.Mutex
 	var firstCallbackOld, firstCallbackNew *Config
 	reloader.SetOnReloadCallback(func(old, new *Config) error {
 		callCount := atomic.AddInt64(&callbackCalled, 1)
 		if callCount == 1 { // Capture first call
+			callbackMu.Lock()
 			firstCallbackOld = old
 			firstCallbackNew = new
+			callbackMu.Unlock()
 		}
 		return nil
 	})
@@ -108,10 +112,14 @@ compression:
 
 	// Check that callback was called at least once
 	assert.True(t, atomic.LoadInt64(&callbackCalled) >= 1, "Callback should have been called at least once")
-	assert.NotNil(t, firstCallbackOld)
-	assert.NotNil(t, firstCallbackNew)
-	assert.Equal(t, "info", firstCallbackOld.LogLevel)
-	assert.Equal(t, "debug", firstCallbackNew.LogLevel)
+	callbackMu.Lock()
+	localOld := firstCallbackOld
+	localNew := firstCallbackNew
+	callbackMu.Unlock()
+	assert.NotNil(t, localOld)
+	assert.NotNil(t, localNew)
+	assert.Equal(t, "info", localOld.LogLevel)
+	assert.Equal(t, "debug", localNew.LogLevel)
 }
 
 func TestConfigReloader_SIGHUP(t *testing.T) {
