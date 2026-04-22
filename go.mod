@@ -1,8 +1,9 @@
 module github.com/kenneth/s3-encryption-gateway
 
-go 1.25.0
+go 1.25.5
 
 require (
+	github.com/alicebob/miniredis/v2 v2.37.0
 	github.com/aws/aws-sdk-go-v2 v1.41.6
 	github.com/aws/aws-sdk-go-v2/config v1.32.16
 	github.com/aws/aws-sdk-go-v2/credentials v1.19.15
@@ -10,12 +11,16 @@ require (
 	github.com/aws/smithy-go v1.25.0
 	github.com/fsnotify/fsnotify v1.9.0
 	github.com/gorilla/mux v1.8.1
-	github.com/ovh/kmip-go v0.7.2
+	github.com/ovh/kmip-go v0.8.0
 	github.com/prometheus/client_golang v1.23.2
 	github.com/prometheus/common v0.67.5
+	github.com/redis/go-redis/v9 v9.18.0
 	github.com/ryanuber/go-glob v1.0.0
 	github.com/sirupsen/logrus v1.9.4
 	github.com/stretchr/testify v1.11.1
+	github.com/testcontainers/testcontainers-go v0.42.0
+	github.com/testcontainers/testcontainers-go/modules/minio v0.42.0
+	github.com/testcontainers/testcontainers-go/modules/redis v0.42.0
 	go.opentelemetry.io/otel v1.43.0
 	go.opentelemetry.io/otel/exporters/jaeger v1.17.0
 	go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc v1.43.0
@@ -31,7 +36,6 @@ require (
 	dario.cat/mergo v1.0.2 // indirect
 	github.com/Azure/go-ansiterm v0.0.0-20250102033503-faa5f7b0171c // indirect
 	github.com/Microsoft/go-winio v0.6.2 // indirect
-	github.com/alicebob/miniredis/v2 v2.37.0 // indirect
 	github.com/aws/aws-sdk-go-v2/aws/protocol/eventstream v1.7.9 // indirect
 	github.com/aws/aws-sdk-go-v2/feature/ec2/imds v1.18.22 // indirect
 	github.com/aws/aws-sdk-go-v2/internal/configsources v1.4.22 // indirect
@@ -91,11 +95,7 @@ require (
 	github.com/power-devops/perfstat v0.0.0-20240221224432-82ca36839d55 // indirect
 	github.com/prometheus/client_model v0.6.2 // indirect
 	github.com/prometheus/procfs v0.16.1 // indirect
-	github.com/redis/go-redis/v9 v9.18.0 // indirect
 	github.com/shirou/gopsutil/v4 v4.26.3 // indirect
-	github.com/testcontainers/testcontainers-go v0.42.0 // indirect
-	github.com/testcontainers/testcontainers-go/modules/minio v0.42.0 // indirect
-	github.com/testcontainers/testcontainers-go/modules/redis v0.42.0 // indirect
 	github.com/tklauser/go-sysconf v0.3.16 // indirect
 	github.com/tklauser/numcpus v0.11.0 // indirect
 	github.com/yuin/gopher-lua v1.1.1 // indirect
