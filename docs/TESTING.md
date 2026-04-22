@@ -65,7 +65,7 @@ no `docker-compose up` is needed.
 # MinIO only (fastest — matches the PR gate).
 make test-conformance-minio
 
-# All local providers (MinIO + Garage).
+# All local providers (MinIO + Garage + RustFS + SeaweedFS).
 make test-conformance-local
 
 # All registered providers (local always; external when creds are set).
@@ -73,6 +73,17 @@ make test-conformance
 
 # External providers only (needs vendor credentials in env).
 make test-conformance-external
+```
+
+Individual local providers can be skipped via environment variables:
+
+```bash
+# Skip a provider for a single run.
+GATEWAY_TEST_SKIP_RUSTFS=1    make test-conformance-local
+GATEWAY_TEST_SKIP_SEAWEEDFS=1 make test-conformance-local
+
+# Skip multiple providers.
+GATEWAY_TEST_SKIP_RUSTFS=1 GATEWAY_TEST_SKIP_SEAWEEDFS=1 make test-conformance-local
 ```
 
 ### Tier 2 — CI equivalents
@@ -83,7 +94,7 @@ make test
 make test-conformance-minio
 make test-isolation-check
 
-# What the main-push gate runs (adds Garage).
+# What the main-push gate runs (adds Garage + RustFS + SeaweedFS).
 make test-comprehensive
 ```
 
@@ -98,6 +109,12 @@ go test -tags=soak -timeout 1h ./test/soak/...
 
 # Chaos tests.
 go test -tags=chaos -timeout 30m ./test/chaos/...
+
+# Per-provider soak targets.
+make test-load-minio
+make test-load-garage
+make test-load-rustfs
+make test-load-seaweedfs
 ```
 
 ---
@@ -108,18 +125,47 @@ The `provider.Capabilities` bitmask controls which conformance tests run
 against each backend. Tests call `t.Skipf` when the tested capability is
 absent from the provider's bitmap.
 
-| Constant                   | Meaning                                              |
-|----------------------------|------------------------------------------------------|
-| `CapObjectLock`            | S3 Object Lock / WORM retention                      |
-| `CapObjectTagging`         | PutObjectTagging / GetObjectTagging                  |
-| `CapMultipartUpload`       | S3 multipart upload API                              |
-| `CapMultipartCopy`         | UploadPartCopy                                       |
-| `CapVersioning`            | Bucket versioning                                    |
-| `CapServerSideEncryption`  | Backend-native SSE (not gateway encryption)          |
-| `CapPresignedURL`          | Pre-signed GET / PUT URLs                            |
-| `CapConditionalWrites`     | If-None-Match / If-Match on PUT                      |
-| `CapBatchDelete`           | DeleteObjects (XML multi-delete)                     |
-| `CapKMSIntegration`        | Cosmian KMS integration works with this backend      |
+| Constant                   | Meaning                                                           |
+|----------------------------|-------------------------------------------------------------------|
+| `CapObjectLock`            | S3 Object Lock / WORM retention                                   |
+| `CapObjectTagging`         | PutObjectTagging / GetObjectTagging                               |
+| `CapMultipartUpload`       | S3 multipart upload API                                           |
+| `CapMultipartCopy`         | UploadPartCopy                                                    |
+| `CapVersioning`            | Bucket versioning                                                 |
+| `CapServerSideEncryption`  | Backend-native SSE (not gateway encryption)                       |
+| `CapPresignedURL`          | Pre-signed GET / PUT URLs                                         |
+| `CapConditionalWrites`     | If-None-Match / If-Match on PUT                                   |
+| `CapBatchDelete`           | DeleteObjects (XML multi-delete)                                  |
+| `CapKMSIntegration`        | Cosmian KMS integration works with this backend                   |
+| `CapInlinePutTagging`      | x-amz-tagging header accepted on PutObject (vs. ?tagging only)   |
+| `CapEncryptedMPU`          | Run encrypted multipart upload conformance tests (needs Valkey)   |
+| `CapLoadTest`              | Backend is suitable for in-process load/soak tests                |
+
+---
+
+## Local provider reference
+
+The following Testcontainers-backed providers are registered by default.  Each
+can be disabled with the corresponding environment variable.
+
+| Provider   | Image                           | Skip env var                    | Notes                                              |
+|------------|---------------------------------|---------------------------------|----------------------------------------------------|
+| `minio`    | `minio/minio:RELEASE.2024-...`  | `GATEWAY_TEST_SKIP_MINIO=1`     | Primary reference; PR gate uses this provider only |
+| `garage`   | `dxflrs/garage:v2.3.0`          | `GATEWAY_TEST_SKIP_GARAGE=1`    | Rust-based; requires bootstrap via admin REST API  |
+| `rustfs`   | `rustfs/rustfs:latest`          | `GATEWAY_TEST_SKIP_RUSTFS=1`    | Alpha-quality; capability bitmap is conservative   |
+| `seaweedfs`| `chrislusf/seaweedfs:latest`    | `GATEWAY_TEST_SKIP_SEAWEEDFS=1` | Blob-store-backed S3 gateway; single-node CI mode  |
+
+**RustFS note**: RustFS is explicitly labelled "Do NOT use in production" by
+its authors as of 2026.  The provider is included to test gateway behaviour
+against an actively-developed implementation and to provide early signal on
+compatibility.  Failing RustFS tests are not a PR gate blocker; they are
+tracked separately.
+
+**SeaweedFS note**: SeaweedFS uses a blob-store-backed S3 gateway
+architecture.  It does not support conditional PUTs (`If-None-Match`) or
+`CapKMSIntegration` (cross-container KMS networking is not wired up).
+Object Lock is structurally supported but requires a lock-enabled bucket
+created at bucket-creation time; the current harness does not do this.
 
 ---
 
@@ -183,12 +229,12 @@ Use capability bits. The `TestConformance_NoProviderNameLiterals` AST check in
 
 ## CI matrix
 
-| Trigger       | Tier 1 | MinIO conformance | Local conformance | External conformance | Tier 3 |
-|---------------|--------|-------------------|-------------------|----------------------|--------|
-| PR            | ✅     | ✅                | –                 | –                    | –      |
-| `main` push   | ✅     | ✅                | ✅ (Garage)       | –                    | –      |
-| Nightly       | ✅     | ✅                | ✅                | ✅ (with creds)      | –      |
-| Release tag   | ✅     | ✅                | ✅                | ✅                   | ✅     |
+| Trigger       | Tier 1 | MinIO conformance | Local conformance                    | External conformance | Tier 3 |
+|---------------|--------|-------------------|--------------------------------------|----------------------|--------|
+| PR            | ✅     | ✅                | –                                    | –                    | –      |
+| `main` push   | ✅     | ✅                | ✅ (Garage + RustFS + SeaweedFS)     | –                    | –      |
+| Nightly       | ✅     | ✅                | ✅ (all four local providers)        | ✅ (with creds)      | –      |
+| Release tag   | ✅     | ✅                | ✅                                   | ✅                   | ✅     |
 
 ---
 

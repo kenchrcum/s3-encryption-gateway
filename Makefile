@@ -1,4 +1,4 @@
-.PHONY: build build-fips test test-fips test-conformance test-conformance-local test-conformance-minio test-conformance-external test-conformance-kms test-load test-load-range test-load-multipart test-load-soak test-load-minio test-load-garage test-load-prometheus test-load-baseline test-rotation test-fuzz test-comprehensive test-isolation-check lint clean run docker-build docker-push help
+.PHONY: build build-fips test test-fips test-conformance test-conformance-local test-conformance-minio test-conformance-external test-conformance-kms test-load test-load-range test-load-multipart test-load-soak test-load-minio test-load-garage test-load-rustfs test-load-seaweedfs test-load-prometheus test-load-baseline test-rotation test-fuzz test-comprehensive test-isolation-check lint clean run docker-build docker-push help
 
 # Variables
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo "dev")
@@ -32,30 +32,37 @@ test-fips:
 
 # ── Tier-2 conformance targets (require Docker via Testcontainers) ──────────
 #
-# test-conformance       All registered providers (local always, external when
-#                        credentials are set).
-# test-conformance-local Local providers only (MinIO + Garage); skips external.
-# test-conformance-minio MinIO only — fastest signal, used as the PR gate.
+# test-conformance         All registered providers (local always, external when
+#                          credentials are set).
+# test-conformance-local   Local providers only (MinIO + Garage + RustFS +
+#                          SeaweedFS); skips external.
+# test-conformance-minio   MinIO only — fastest signal, used as the PR gate.
 # test-conformance-external External providers whose credential env vars are set;
 #                            local providers skipped.
+#
+# Local provider skip env vars:
+#   GATEWAY_TEST_SKIP_MINIO=1       skip MinIO
+#   GATEWAY_TEST_SKIP_GARAGE=1      skip Garage
+#   GATEWAY_TEST_SKIP_RUSTFS=1      skip RustFS
+#   GATEWAY_TEST_SKIP_SEAWEEDFS=1   skip SeaweedFS
 
 test-conformance:
 	@echo "Running conformance tests (all registered providers)..."
 	@go test -tags=conformance -race -v ./test/conformance/...
 
 test-conformance-local:
-	@echo "Running conformance tests (local providers only)..."
+	@echo "Running conformance tests (local providers only: MinIO + Garage + RustFS + SeaweedFS)..."
 	@GATEWAY_TEST_SKIP_EXTERNAL=1 \
 		go test -tags=conformance -race -v ./test/conformance/...
 
 test-conformance-minio:
 	@echo "Running conformance tests (MinIO only)..."
-	@GATEWAY_TEST_SKIP_GARAGE=1 GATEWAY_TEST_SKIP_RUSTFS=1 GATEWAY_TEST_SKIP_EXTERNAL=1 \
+	@GATEWAY_TEST_SKIP_GARAGE=1 GATEWAY_TEST_SKIP_RUSTFS=1 GATEWAY_TEST_SKIP_SEAWEEDFS=1 GATEWAY_TEST_SKIP_EXTERNAL=1 \
 		go test -tags=conformance -race -v ./test/conformance/...
 
 test-conformance-external:
 	@echo "Running conformance tests (external providers with credentials)..."
-	@GATEWAY_TEST_SKIP_MINIO=1 GATEWAY_TEST_SKIP_GARAGE=1 GATEWAY_TEST_SKIP_RUSTFS=1 \
+	@GATEWAY_TEST_SKIP_MINIO=1 GATEWAY_TEST_SKIP_GARAGE=1 GATEWAY_TEST_SKIP_RUSTFS=1 GATEWAY_TEST_SKIP_SEAWEEDFS=1 \
 		go test -tags=conformance -race -v ./test/conformance/...
 
 # KMS integration conformance test — starts a Cosmian KMS container alongside
@@ -64,7 +71,7 @@ test-conformance-external:
 # to skip the KMS container if the image is unavailable.
 test-conformance-kms:
 	@echo "Running KMS integration conformance tests (MinIO + Cosmian KMS)..."
-	@GATEWAY_TEST_SKIP_GARAGE=1 GATEWAY_TEST_SKIP_RUSTFS=1 GATEWAY_TEST_SKIP_EXTERNAL=1 \
+	@GATEWAY_TEST_SKIP_GARAGE=1 GATEWAY_TEST_SKIP_RUSTFS=1 GATEWAY_TEST_SKIP_SEAWEEDFS=1 GATEWAY_TEST_SKIP_EXTERNAL=1 \
 		go test -tags=conformance -race -v \
 		-run 'TestConformance/.*/KMS_' ./test/conformance/...
 
@@ -123,16 +130,30 @@ test-load-soak:
 # Soak MinIO only.
 test-load-minio:
 	@echo "Running full-scale soak load tests (MinIO only)..."
-	@GATEWAY_TEST_SKIP_GARAGE=1 GATEWAY_TEST_SKIP_RUSTFS=1 GATEWAY_TEST_SKIP_EXTERNAL=1 \
+	@GATEWAY_TEST_SKIP_GARAGE=1 GATEWAY_TEST_SKIP_RUSTFS=1 GATEWAY_TEST_SKIP_SEAWEEDFS=1 GATEWAY_TEST_SKIP_EXTERNAL=1 \
 		$(SOAK_ENV) go test -tags=conformance -v -timeout 0 \
 		-run 'TestConformance/minio/Load_' ./test/conformance/...
 
 # Soak Garage only.
 test-load-garage:
 	@echo "Running full-scale soak load tests (Garage only)..."
-	@GATEWAY_TEST_SKIP_MINIO=1 GATEWAY_TEST_SKIP_RUSTFS=1 GATEWAY_TEST_SKIP_EXTERNAL=1 \
+	@GATEWAY_TEST_SKIP_MINIO=1 GATEWAY_TEST_SKIP_RUSTFS=1 GATEWAY_TEST_SKIP_SEAWEEDFS=1 GATEWAY_TEST_SKIP_EXTERNAL=1 \
 		$(SOAK_ENV) go test -tags=conformance -v -timeout 0 \
 		-run 'TestConformance/garage/Load_' ./test/conformance/...
+
+# Soak RustFS only.
+test-load-rustfs:
+	@echo "Running full-scale soak load tests (RustFS only)..."
+	@GATEWAY_TEST_SKIP_MINIO=1 GATEWAY_TEST_SKIP_GARAGE=1 GATEWAY_TEST_SKIP_SEAWEEDFS=1 GATEWAY_TEST_SKIP_EXTERNAL=1 \
+		$(SOAK_ENV) go test -tags=conformance -v -timeout 0 \
+		-run 'TestConformance/rustfs/Load_' ./test/conformance/...
+
+# Soak SeaweedFS only.
+test-load-seaweedfs:
+	@echo "Running full-scale soak load tests (SeaweedFS only)..."
+	@GATEWAY_TEST_SKIP_MINIO=1 GATEWAY_TEST_SKIP_GARAGE=1 GATEWAY_TEST_SKIP_RUSTFS=1 GATEWAY_TEST_SKIP_EXTERNAL=1 \
+		$(SOAK_ENV) go test -tags=conformance -v -timeout 0 \
+		-run 'TestConformance/seaweedfs/Load_' ./test/conformance/...
 
 # Soak with custom duration override.
 # Usage: make test-load-prometheus SOAK_DURATION=5m
@@ -240,7 +261,7 @@ help:
 	@echo "  test-fips          - Run tests with FIPS build tag"
 	@echo "  test-fuzz          - Run fuzz tests (regression mode)"
 	@echo "  test-conformance   - Run tier-2 conformance tests (all providers; requires Docker)"
-	@echo "  test-conformance-local  - Conformance: local providers (MinIO + Garage)"
+	@echo "  test-conformance-local  - Conformance: local providers (MinIO + Garage + RustFS + SeaweedFS)"
 	@echo "  test-conformance-minio  - Conformance: MinIO only (PR gate)"
 	@echo "  test-conformance-external - Conformance: external providers with credentials"
 	@echo "  test-conformance-kms     - Conformance: KMS envelope encryption (MinIO + Cosmian KMS)"
@@ -251,6 +272,8 @@ help:
 	@echo "  test-load-soak     - Full soak: both tests, 60 s, 10 workers, 50 MiB objects"
 	@echo "  test-load-minio    - Full soak: MinIO provider only"
 	@echo "  test-load-garage   - Full soak: Garage provider only"
+	@echo "  test-load-rustfs   - Full soak: RustFS provider only"
+	@echo "  test-load-seaweedfs- Full soak: SeaweedFS provider only"
 	@echo "  test-load-baseline - Soak run with log capture to testdata/baselines/"
 	@echo "  test-load-prometheus-Soak run with custom duration (set SOAK_DURATION)"
 	@echo "  test-rotation      - Run key rotation conformance tests (tier-2, all providers)"

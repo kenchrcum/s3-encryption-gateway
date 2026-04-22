@@ -1,0 +1,147 @@
+package provider
+
+// SeaweedFS provider for the conformance test suite.
+//
+// SeaweedFS runs as a single-node S3-compatible server via the `weed server
+// -s3` sub-command.  An S3 identity config is injected via shell entrypoint
+// so that credential-authenticated requests work without a running filer
+// config.
+//
+// Image: chrislusf/seaweedfs:latest (Docker Hub)
+// S3 port: 8333
+//
+// Known gaps (not reflected in capabilities):
+//   - Object Lock requires a lock-enabled bucket created at bucket-creation
+//     time; the current test harness does not create buckets that way.
+//   - Conditional PUT (If-None-Match) is not reliably implemented upstream.
+//   - KMS integration: SeaweedFS and Cosmian KMS are started in separate
+//     Docker networks within Testcontainers; cross-container KMS calls would
+//     require a shared network configuration that is not yet wired up.
+//
+// Skip env var: GATEWAY_TEST_SKIP_SEAWEEDFS=1
+
+import (
+	"context"
+	"fmt"
+	"os"
+	"testing"
+	"time"
+
+	"github.com/kenneth/s3-encryption-gateway/internal/config"
+	tc "github.com/testcontainers/testcontainers-go"
+	"github.com/testcontainers/testcontainers-go/wait"
+)
+
+func init() {
+	if os.Getenv("GATEWAY_TEST_SKIP_SEAWEEDFS") == "" {
+		Register(&seaweedfsProvider{})
+	}
+}
+
+type seaweedfsProvider struct{}
+
+func (p *seaweedfsProvider) Name() string { return "seaweedfs" }
+
+func (p *seaweedfsProvider) Capabilities() Capabilities {
+	return CapMultipartUpload |
+		CapMultipartCopy |
+		CapObjectTagging |
+		CapInlinePutTagging |
+		CapPresignedURL |
+		CapBatchDelete |
+		CapVersioning |
+		CapEncryptedMPU |
+		CapLoadTest
+}
+
+func (p *seaweedfsProvider) CleanupPolicy() CleanupPolicy { return CleanupPolicyDelete }
+
+func (p *seaweedfsProvider) BackendConfig(inst Instance) config.BackendConfig {
+	return config.BackendConfig{
+		Endpoint:     inst.Endpoint,
+		Region:       inst.Region,
+		AccessKey:    inst.AccessKey,
+		SecretKey:    inst.SecretKey,
+		Provider:     "s3",
+		UseSSL:       false,
+		UsePathStyle: true,
+	}
+}
+
+// seaweedS3Config is the JSON identity config written into the container by
+// the shell entrypoint.  It grants a single admin identity full read/write
+// access to all buckets.
+const seaweedS3Config = `{"identities":[{"name":"admin","credentials":[{"accessKey":"seaweedadmin","secretKey":"seaweedadmin"}],"actions":["Admin","Read","Write","List","Tagging"]}]}`
+
+func (p *seaweedfsProvider) Start(ctx context.Context, t *testing.T) Instance {
+	t.Helper()
+
+	const (
+		s3Port    = "8333/tcp"
+		accessKey = "seaweedadmin"
+		secretKey = "seaweedadmin"
+	)
+
+	// The shell entrypoint writes the S3 identity config file then launches
+	// weed server with the S3 gateway enabled.
+	//
+	//   -master.volumeSizeLimitMB=64   caps volume pre-allocation to 64 MiB
+	//                                  (default is 30 GiB — CI-hostile)
+	//   -volume.max=5                  limits the number of pre-allocated
+	//                                  volumes; prevents "no free volumes"
+	//                                  errors when many buckets are created
+	//                                  in parallel
+	shellCmd := fmt.Sprintf(
+		`mkdir -p /etc/seaweedfs && `+
+			`printf '%%s' %q > /etc/seaweedfs/s3.json && `+
+			`weed server -s3 `+
+			`-s3.config=/etc/seaweedfs/s3.json `+
+			`-master.volumeSizeLimitMB=64 `+
+			`-volume.max=5`,
+		seaweedS3Config,
+	)
+
+	req := tc.ContainerRequest{
+		Image:        "chrislusf/seaweedfs:latest",
+		ExposedPorts: []string{s3Port},
+		Entrypoint:   []string{"/bin/sh", "-c"},
+		Cmd:          []string{shellCmd},
+		// Any S3 request that reaches the gateway returns < 500, even if
+		// the response is 403 (auth error) or 404 (bucket not found).
+		WaitingFor: wait.ForHTTP("/").
+			WithPort(s3Port).
+			WithStatusCodeMatcher(func(status int) bool { return status < 500 }).
+			WithStartupTimeout(90 * time.Second),
+	}
+
+	c, err := tc.GenericContainer(ctx, tc.GenericContainerRequest{
+		ContainerRequest: req,
+		Started:          true,
+	})
+	if err != nil {
+		t.Skipf("seaweedfs provider: failed to start container (Docker unavailable?): %v", err)
+		return Instance{}
+	}
+	t.Cleanup(func() { _ = c.Terminate(context.Background()) })
+
+	host, err := c.Host(ctx)
+	if err != nil {
+		t.Fatalf("seaweedfs provider: host: %v", err)
+	}
+	s3Mapped, err := c.MappedPort(ctx, s3Port)
+	if err != nil {
+		t.Fatalf("seaweedfs provider: s3 port: %v", err)
+	}
+
+	bucket := fmt.Sprintf("conf-%s-%d", p.Name(), time.Now().UnixNano())
+	inst := Instance{
+		Endpoint:     fmt.Sprintf("http://%s:%s", host, s3Mapped.Port()),
+		Region:       "us-east-1",
+		AccessKey:    accessKey,
+		SecretKey:    secretKey,
+		Bucket:       bucket,
+		ProviderName: p.Name(),
+	}
+	createBucketS3(ctx, t, inst)
+	return inst
+}
