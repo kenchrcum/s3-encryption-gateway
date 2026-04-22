@@ -3,12 +3,18 @@ package provider
 // RustFS provider for the conformance test suite.
 //
 // RustFS is a Rust-based S3-compatible object storage server.
-// Image: rustfs/rustfs:latest (Docker Hub)
+// Image: rustfs/rustfs:latest (Docker Hub, always latest)
 //
 // WARNING: RustFS is currently in active development and explicitly labelled
 // "Do NOT use in production" by its authors. We test against it to catch
-// regressions early and to help the project improve.  The capability bitmap
-// is conservative; expand it as the implementation matures.
+// regressions early and to help the project improve.
+//
+// Health endpoint: GET /health (returns 200+JSON); NOT /minio/health/live
+// (that path returns 403 on RustFS).
+//
+// Known gaps confirmed by full conformance run (2026-04-22):
+//   - Object Lock: bucket accepts the configuration but mode/hold headers are
+//     not persisted — CapObjectLock is absent.
 //
 // Skip env var: GATEWAY_TEST_SKIP_RUSTFS=1
 
@@ -35,20 +41,29 @@ type rustfsProvider struct{}
 
 func (p *rustfsProvider) Name() string { return "rustfs" }
 
-// Capabilities returns a conservative bitmap reflecting RustFS's current
-// known-working feature set.  RustFS uses the same health and credential
-// conventions as MinIO, so basic CRUD + multipart + tagging work; however
-// several advanced features (Object Lock, conditional writes, versioning) are
-// not yet fully tested or documented upstream.
+// Capabilities returns the verified capability bitmap for RustFS based on
+// a full conformance run.  The following capabilities are intentionally absent:
 //
-// Expand this bitmap as conformance tests confirm additional features pass.
+//   - CapObjectLock: RustFS accepts the Object Lock configuration at bucket
+//     creation time but does not enforce the mode/hold headers — both
+//     ObjectLock_Retention and ObjectLock_LegalHold return empty header values.
+//     Re-enable once the upstream implementation is complete.
+//
+//   - CapVersioning: not exercised by a dedicated conformance test today;
+//     will be added when a Versioning test case is introduced.
+//
+//   - CapServerSideEncryption: the gateway performs its own client-side
+//     encryption; backend SSE is not tested in the conformance suite.
+//
+//   - CapConditionalWrites: not yet verified for RustFS.
 func (p *rustfsProvider) Capabilities() Capabilities {
-	return CapMultipartUpload |
+	return CapObjectTagging |
+		CapMultipartUpload |
 		CapMultipartCopy |
-		CapObjectTagging |
-		CapInlinePutTagging |
 		CapPresignedURL |
 		CapBatchDelete |
+		CapKMSIntegration |
+		CapInlinePutTagging |
 		CapEncryptedMPU |
 		CapLoadTest
 }
@@ -84,25 +99,23 @@ func (p *rustfsProvider) Start(ctx context.Context, t *testing.T) Instance {
 			"RUSTFS_ACCESS_KEY": accessKey,
 			"RUSTFS_SECRET_KEY": secretKey,
 		},
-		// Positional argument: data directory.  tmpfs mount eliminates the
-		// host chown requirement (RustFS runs as UID 10001).
+		// Use the image's own /data directory (already owned by UID 10001
+		// inside the image).  Do NOT mount anything at /data or /logs —
+		// any overlay (tmpfs, bind, named volume) replaces the image
+		// directory with a root-owned mount, causing EACCES for UID 10001.
+		// The container's writable layer is ephemeral and disappears on
+		// Terminate(), which is exactly what we want for CI.
 		Cmd: []string{
 			"--access-key", accessKey,
 			"--secret-key", secretKey,
 			"/data",
 		},
-		Mounts: tc.ContainerMounts{
-			{
-				// Anonymous tmpfs — no host path, no ownership friction.
-				Source: tc.GenericTmpfsMountSource{},
-				Target: "/data",
-			},
-		},
-		// RustFS exposes the same MinIO health endpoint path.
-		WaitingFor: wait.ForHTTP("/minio/health/live").
+		// RustFS health endpoint — returns 200 + JSON when ready.
+		// (Unlike MinIO, /minio/health/live returns 403 on RustFS.)
+		WaitingFor: wait.ForHTTP("/health").
 			WithPort(s3Port).
 			WithStatusCodeMatcher(func(status int) bool { return status == http.StatusOK }).
-			WithStartupTimeout(90 * time.Second),
+			WithStartupTimeout(60 * time.Second),
 	}
 
 	c, err := tc.GenericContainer(ctx, tc.GenericContainerRequest{

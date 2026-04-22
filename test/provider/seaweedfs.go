@@ -10,13 +10,16 @@ package provider
 // Image: chrislusf/seaweedfs:latest (Docker Hub)
 // S3 port: 8333
 //
-// Known gaps (not reflected in capabilities):
-//   - Object Lock requires a lock-enabled bucket created at bucket-creation
-//     time; the current test harness does not create buckets that way.
-//   - Conditional PUT (If-None-Match) is not reliably implemented upstream.
-//   - KMS integration: SeaweedFS and Cosmian KMS are started in separate
-//     Docker networks within Testcontainers; cross-container KMS calls would
-//     require a shared network configuration that is not yet wired up.
+// Known gaps confirmed by full conformance run (2026-04-22):
+//   - Object Lock (CapObjectLock absent): SeaweedFS accepts the
+//     ObjectLockConfiguration at bucket-creation time but does not persist or
+//     return x-amz-object-lock-mode / x-amz-object-lock-legal-hold — identical
+//     behaviour to RustFS.  ObjectLock_BypassRefused passes; Retention and
+//     LegalHold fail.
+//   - Conditional PUT (CapConditionalWrites absent): If-None-Match / If-Match
+//     on PUT not verified.
+//   - CapServerSideEncryption absent: the gateway performs its own client-side
+//     encryption; backend SSE is not tested in the conformance suite.
 //
 // Skip env var: GATEWAY_TEST_SKIP_SEAWEEDFS=1
 
@@ -42,14 +45,28 @@ type seaweedfsProvider struct{}
 
 func (p *seaweedfsProvider) Name() string { return "seaweedfs" }
 
+// Capabilities returns the verified capability bitmap for SeaweedFS based on
+// a full conformance run.  The following capabilities are intentionally absent:
+//
+//   - CapObjectLock: SeaweedFS accepts the ObjectLockConfiguration at bucket
+//     creation time but does not persist or return the mode/hold headers —
+//     ObjectLock_Retention and ObjectLock_LegalHold both fail with empty
+//     header values.  ObjectLock_BypassRefused passes.
+//     Re-enable once upstream Object Lock enforcement is complete.
+//
+//   - CapConditionalWrites: If-None-Match / If-Match on PUT not verified.
+//
+//   - CapServerSideEncryption: the gateway performs its own client-side
+//     encryption; backend SSE is not tested in the conformance suite.
 func (p *seaweedfsProvider) Capabilities() Capabilities {
-	return CapMultipartUpload |
+	return CapObjectTagging |
+		CapMultipartUpload |
 		CapMultipartCopy |
-		CapObjectTagging |
-		CapInlinePutTagging |
+		CapVersioning |
 		CapPresignedURL |
 		CapBatchDelete |
-		CapVersioning |
+		CapKMSIntegration |
+		CapInlinePutTagging |
 		CapEncryptedMPU |
 		CapLoadTest
 }

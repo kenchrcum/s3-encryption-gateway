@@ -161,11 +161,31 @@ against an actively-developed implementation and to provide early signal on
 compatibility.  Failing RustFS tests are not a PR gate blocker; they are
 tracked separately.
 
-**SeaweedFS note**: SeaweedFS uses a blob-store-backed S3 gateway
-architecture.  It does not support conditional PUTs (`If-None-Match`) or
-`CapKMSIntegration` (cross-container KMS networking is not wired up).
-Object Lock is structurally supported but requires a lock-enabled bucket
-created at bucket-creation time; the current harness does not do this.
+Confirmed capability gaps (full conformance run 2026-04-22):
+- **Object Lock** (`CapObjectLock` absent): RustFS accepts the `ObjectLockConfiguration`
+  at bucket-creation time but does not persist or return the
+  `x-amz-object-lock-mode` / `x-amz-object-lock-legal-hold` response headers.
+  Re-enable `CapObjectLock` once the upstream implementation is complete.
+
+All other capabilities pass, including KMS envelope encryption, encrypted MPU,
+UploadPartCopy, tagging, presigned URLs, load tests, and chaos tests.
+
+**SeaweedFS note**: SeaweedFS uses a blob-store-backed S3 gateway architecture.
+
+Confirmed capability gaps (full conformance run 2026-04-22):
+- **Object Lock** (`CapObjectLock` absent): SeaweedFS accepts the
+  `ObjectLockConfiguration` at bucket-creation time but does not persist or
+  return the `x-amz-object-lock-mode` / `x-amz-object-lock-legal-hold`
+  response headers — identical behaviour to RustFS.  `ObjectLock_BypassRefused`
+  passes; `ObjectLock_Retention` and `ObjectLock_LegalHold` fail.
+- **Conditional writes** (`CapConditionalWrites` absent): `If-None-Match` /
+  `If-Match` on PUT not verified against SeaweedFS.
+
+`CapKMSIntegration` **passes** — KMS envelope encryption works correctly.
+All other capabilities pass, including encrypted MPU, UploadPartCopy,
+versioning, tagging, presigned URLs, load tests, and chaos tests.
+Note: `Load_Multipart` throughput (~15 req/s) is significantly lower than
+MinIO/RustFS (~30 req/s) due to SeaweedFS's multi-component architecture.
 
 ---
 
