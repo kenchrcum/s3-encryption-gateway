@@ -109,6 +109,13 @@ func TestConformance(t *testing.T) {
 		{"EncryptedMPU_AtRest", provider.CapEncryptedMPU, testEncryptedMPU_AtRest},
 		{"EncryptedMPU_AbortCleansState", provider.CapEncryptedMPU, testEncryptedMPUAbortCleansState},
 
+			// KMS envelope encryption integration test.
+			// Starts a Cosmian KMS container and verifies the full wrap/unwrap path
+			// with the in-process gateway. Gated on CapKMSIntegration so it only
+			// runs on local Testcontainer providers (MinIO, Garage) where the
+			// in-process gateway can reach the KMS container.
+			{"KMS_EnvelopeEncryption", provider.CapKMSIntegration, testKMSIntegration},
+
 			// In-process load tests (range concurrency + multipart throughput).
 			// Only run against local providers (MinIO, Garage) where per-request
 			// latency is low enough for meaningful QPS assertions.

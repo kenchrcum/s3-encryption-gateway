@@ -35,6 +35,7 @@ func (p *minioProvider) Capabilities() Capabilities {
 		CapConditionalWrites |
 		CapBatchDelete |
 		CapEncryptedMPU |
+		CapKMSIntegration |
 		CapLoadTest
 }
 

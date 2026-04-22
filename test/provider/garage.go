@@ -39,6 +39,7 @@ func (p *garageProvider) Capabilities() Capabilities {
 		CapBatchDelete |
 		CapVersioning |
 		CapEncryptedMPU |
+		CapKMSIntegration |
 		CapLoadTest
 }
 

@@ -1,4 +1,4 @@
-.PHONY: build build-fips test test-fips test-conformance test-conformance-local test-conformance-minio test-conformance-external test-load test-load-range test-load-multipart test-load-soak test-load-minio test-load-garage test-load-prometheus test-load-baseline test-rotation test-fuzz test-comprehensive test-isolation-check lint clean run docker-build docker-push help
+.PHONY: build build-fips test test-fips test-conformance test-conformance-local test-conformance-minio test-conformance-external test-conformance-kms test-load test-load-range test-load-multipart test-load-soak test-load-minio test-load-garage test-load-prometheus test-load-baseline test-rotation test-fuzz test-comprehensive test-isolation-check lint clean run docker-build docker-push help
 
 # Variables
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo "dev")
@@ -57,6 +57,16 @@ test-conformance-external:
 	@echo "Running conformance tests (external providers with credentials)..."
 	@GATEWAY_TEST_SKIP_MINIO=1 GATEWAY_TEST_SKIP_GARAGE=1 GATEWAY_TEST_SKIP_RUSTFS=1 \
 		go test -tags=conformance -race -v ./test/conformance/...
+
+# KMS integration conformance test — starts a Cosmian KMS container alongside
+# the S3 backend and exercises the full DEK wrap/unwrap path.
+# Uses MinIO as the S3 backend (fastest signal); set GATEWAY_TEST_SKIP_COSMIAN=1
+# to skip the KMS container if the image is unavailable.
+test-conformance-kms:
+	@echo "Running KMS integration conformance tests (MinIO + Cosmian KMS)..."
+	@GATEWAY_TEST_SKIP_GARAGE=1 GATEWAY_TEST_SKIP_RUSTFS=1 GATEWAY_TEST_SKIP_EXTERNAL=1 \
+		go test -tags=conformance -race -v \
+		-run 'TestConformance/.*/KMS_' ./test/conformance/...
 
 # Mechanical enforcement of the Docker-only deployment model.
 test-isolation-check:
@@ -233,6 +243,7 @@ help:
 	@echo "  test-conformance-local  - Conformance: local providers (MinIO + Garage)"
 	@echo "  test-conformance-minio  - Conformance: MinIO only (PR gate)"
 	@echo "  test-conformance-external - Conformance: external providers with credentials"
+	@echo "  test-conformance-kms     - Conformance: KMS envelope encryption (MinIO + Cosmian KMS)"
 	@echo "  test-isolation-check    - Check test/ does not reference docker-compose / hard-coded ports"
 	@echo "  test-load          - CI load gate: range + multipart, small scale (5 s, 100 KiB)"
 	@echo "  test-load-range    - CI load gate: range-read concurrency only"
