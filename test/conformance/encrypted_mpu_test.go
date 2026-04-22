@@ -5,8 +5,13 @@ package conformance
 import (
 	"bytes"
 	"context"
+	"io"
 	"testing"
 
+	"github.com/aws/aws-sdk-go-v2/aws"
+	awsconfig "github.com/aws/aws-sdk-go-v2/config"
+	"github.com/aws/aws-sdk-go-v2/credentials"
+	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/kenneth/s3-encryption-gateway/test/harness"
 	"github.com/kenneth/s3-encryption-gateway/test/provider"
 )
@@ -62,6 +67,99 @@ func testEncryptedMPURoundTrip(t *testing.T, inst provider.Instance) {
 	got := get(t, gw, inst.Bucket, key)
 	if !bytes.Equal(got, want) {
 		t.Errorf("encrypted MPU round-trip: got %d bytes, want %d bytes", len(got), len(want))
+	}
+}
+
+// testEncryptedMPU_AtRest is the headline security smoke test for the encrypted
+// multipart upload feature (V0.6-SEC-3 / ADR-0009). It:
+//
+//  1. Uploads a 2-part object through the gateway with EncryptMultipartUploads=true.
+//  2. Reads the raw bytes **directly from the backend** (bypassing the gateway)
+//     using an AWS SDK client pointed at the backend endpoint.
+//  3. Asserts that the raw bytes do NOT contain the plaintext marker "SECRET".
+//
+// If this test fails it means the encrypted-MPU code path is writing plaintext
+// to the backend — the core security goal of V0.6-SEC-3 is not met.
+func testEncryptedMPU_AtRest(t *testing.T, inst provider.Instance) {
+	t.Helper()
+	ctx := context.Background()
+
+	vk := provider.StartValkey(ctx, t)
+	gw := harness.StartGateway(t, inst,
+		harness.WithValkeyAddr(vk.Addr),
+		harness.WithEncryptedMPUForBucket(inst.Bucket),
+	)
+
+	// Use a distinctive plaintext marker so we can unambiguously detect leakage.
+	marker := []byte("SECRET_PLAINTEXT_MARKER")
+	part1Data := bytes.Repeat(marker, (5*1024*1024)/len(marker)+1)
+	part1Data = part1Data[:5*1024*1024]
+	part2Data := append([]byte("TAIL_"), marker...)
+
+	key := uniqueKey(t)
+	uploadID := initiateMultipartUpload(t, gw, inst.Bucket, key)
+	t.Cleanup(func() { abortMultipartUpload(t, gw, inst.Bucket, key, uploadID) })
+
+	etag1 := uploadPart(t, gw, inst.Bucket, key, uploadID, 1, part1Data)
+	etag2 := uploadPart(t, gw, inst.Bucket, key, uploadID, 2, part2Data)
+	completeMultipartUpload(t, gw, inst.Bucket, key, uploadID, []mpuPart{
+		{1, etag1},
+		{2, etag2},
+	})
+
+	// Build a raw S3 client that talks DIRECTLY to the backend — not through the
+	// gateway — so we see the actual ciphertext stored on disk.
+	var endpointOpts []func(*awsconfig.LoadOptions) error
+	if inst.Endpoint != "" {
+		endpointOpts = append(endpointOpts,
+			awsconfig.WithEndpointResolverWithOptions(
+				aws.EndpointResolverWithOptionsFunc(func(service, region string, opts ...interface{}) (aws.Endpoint, error) {
+					return aws.Endpoint{URL: inst.Endpoint, HostnameImmutable: true}, nil
+				}),
+			),
+		)
+	}
+	rawCfg, err := awsconfig.LoadDefaultConfig(ctx,
+		append([]func(*awsconfig.LoadOptions) error{
+			awsconfig.WithRegion(inst.Region),
+			awsconfig.WithCredentialsProvider(
+				credentials.NewStaticCredentialsProvider(inst.AccessKey, inst.SecretKey, ""),
+			),
+		}, endpointOpts...)...,
+	)
+	if err != nil {
+		t.Fatalf("at-rest test: load raw S3 config: %v", err)
+	}
+	rawSvc := s3.NewFromConfig(rawCfg, func(o *s3.Options) { o.UsePathStyle = true })
+
+	out, err := rawSvc.GetObject(ctx, &s3.GetObjectInput{
+		Bucket: aws.String(inst.Bucket),
+		Key:    aws.String(key),
+	})
+	if err != nil {
+		t.Fatalf("at-rest test: raw GetObject: %v", err)
+	}
+	defer out.Body.Close()
+	rawBytes, err := io.ReadAll(out.Body)
+	if err != nil {
+		t.Fatalf("at-rest test: read raw body: %v", err)
+	}
+
+	// The raw backend bytes must NOT contain the plaintext marker.
+	// If the gateway is encrypting correctly, the ciphertext is pseudo-random
+	// and the marker string will not appear verbatim.
+	if bytes.Contains(rawBytes, marker) {
+		t.Errorf("AT-REST SECURITY FAILURE: raw backend bytes contain plaintext marker %q — "+
+			"encrypted MPU code path is writing plaintext to the backend for provider %s",
+			marker, inst.ProviderName)
+	}
+
+	// Sanity check: reading through the gateway must still produce the original plaintext.
+	want := append(append([]byte(nil), part1Data...), part2Data...)
+	got := get(t, gw, inst.Bucket, key)
+	if !bytes.Equal(got, want) {
+		t.Errorf("at-rest test: gateway round-trip mismatch: got %d bytes, want %d bytes",
+			len(got), len(want))
 	}
 }
 

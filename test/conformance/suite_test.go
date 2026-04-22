@@ -103,10 +103,11 @@ func TestConformance(t *testing.T) {
 			// Concurrent operations.
 			{"Concurrent_PutGet", 0, testConcurrentPutGet},
 
-			// Encrypted multipart uploads (ADR-0009 / V0.6-SEC-3).
-			// Requires Docker for a Valkey container (state store).
-			{"EncryptedMPU_RoundTrip", provider.CapEncryptedMPU, testEncryptedMPURoundTrip},
-			{"EncryptedMPU_AbortCleansState", provider.CapEncryptedMPU, testEncryptedMPUAbortCleansState},
+		// Encrypted multipart uploads (ADR-0009 / V0.6-SEC-3).
+		// Requires Docker for a Valkey container (state store).
+		{"EncryptedMPU_RoundTrip", provider.CapEncryptedMPU, testEncryptedMPURoundTrip},
+		{"EncryptedMPU_AtRest", provider.CapEncryptedMPU, testEncryptedMPU_AtRest},
+		{"EncryptedMPU_AbortCleansState", provider.CapEncryptedMPU, testEncryptedMPUAbortCleansState},
 
 			// In-process load tests (range concurrency + multipart throughput).
 			// Only run against local providers (MinIO, Garage) where per-request
