@@ -182,11 +182,23 @@ type ServerConfig struct {
 	// InvalidRequest with a message pointing operators at the chunked
 	// encryption migration path. A value ≤ 0 is treated as the default.
 	MaxLegacyCopySourceBytes int64 `yaml:"max_legacy_copy_source_bytes" env:"SERVER_MAX_LEGACY_COPY_SOURCE_BYTES"`
+	// MaxPartBuffer caps the amount of memory the gateway will allocate when
+	// buffering a single UploadPart body to satisfy the AWS SDK V2 seekable-body
+	// contract (SigV4 payload hashing over plaintext-HTTP backends). Parts whose
+	// body exceeds this limit are rejected with HTTP 413 before any backend write
+	// occurs. Default: 64 MiB. Operators uploading parts larger than 64 MiB
+	// should raise this value and size pod memory accordingly.
+	// V0.6-PERF-1 — Phase D.
+	MaxPartBuffer int64 `yaml:"max_part_buffer" env:"SERVER_MAX_PART_BUFFER"`
 }
 
 // DefaultMaxLegacyCopySourceBytes is the default cap for the legacy
 // UploadPartCopy fallback path (256 MiB). See ServerConfig.MaxLegacyCopySourceBytes.
 const DefaultMaxLegacyCopySourceBytes int64 = 256 * 1024 * 1024
+
+// DefaultMaxPartBuffer is the default cap for the UploadPart seekable-body
+// wrapper (64 MiB). See ServerConfig.MaxPartBuffer.
+const DefaultMaxPartBuffer int64 = 64 * 1024 * 1024
 
 // RateLimitConfig holds rate limiting configuration.
 type RateLimitConfig struct {
@@ -358,6 +370,7 @@ func LoadConfig(path string) (*Config, error) {
 			MaxHeaderBytes:           1 << 20, // 1MB
 			DisableMultipartUploads:  false,   // Allow multipart uploads by default for compatibility
 			MaxLegacyCopySourceBytes: DefaultMaxLegacyCopySourceBytes,
+			MaxPartBuffer:            DefaultMaxPartBuffer,
 		},
 		RateLimit: RateLimitConfig{
 			Enabled: false,

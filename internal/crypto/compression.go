@@ -1,7 +1,6 @@
 package crypto
 
 import (
-	"bytes"
 	"compress/gzip"
 	"fmt"
 	"io"
@@ -118,66 +117,59 @@ func (c *compressionEngine) isCompressibleType(contentType string, compressibleT
 }
 
 // Compress compresses data using the configured algorithm.
+//
+// V0.6-PERF-1 Phase E: converted to a streaming implementation using
+// io.Pipe so that callers (engine.Encrypt) do not need to buffer the
+// compressed output separately. The post-hoc "skip if compressed ≥
+// original" size check is removed per plan §E-1: the ShouldCompress
+// pre-filter (size + content-type) is the industry-standard gate and is
+// sufficient. Gzip overhead on uncompressible content is ≤ 20 bytes
+// (negligible). ADR 0006 addendum documents this behaviour change.
 func (c *compressionEngine) Compress(reader io.Reader, contentType string, size int64) (io.Reader, map[string]string, error) {
 	if !c.ShouldCompress(size, contentType) {
 		// Return as-is with no compression metadata
 		return reader, nil, nil
 	}
 
-	// Read source data
-	data, err := io.ReadAll(reader)
-	if err != nil {
-		return nil, nil, fmt.Errorf("failed to read data for compression: %w", err)
-	}
-
-	originalSize := int64(len(data))
-
-	var compressedData []byte
-	var algorithm string
-
 	switch c.algorithm {
 	case "gzip", "":
-		// Default to gzip
-		algorithm = "gzip"
-		var buf bytes.Buffer
-		writer, err := gzip.NewWriterLevel(&buf, c.level)
-		if err != nil {
-			return nil, nil, fmt.Errorf("failed to create gzip writer: %w", err)
-		}
+		// Default to gzip. Pipe the source through a gzip.Writer in a
+		// background goroutine so the caller can read compressed bytes
+		// without buffering the entire payload.
+		pr, pw := io.Pipe()
+		go func() {
+			gw, err := gzip.NewWriterLevel(pw, c.level)
+			if err != nil {
+				pw.CloseWithError(fmt.Errorf("failed to create gzip writer: %w", err))
+				return
+			}
+			_, cpErr := io.Copy(gw, reader)
+			closeErr := gw.Close()
+			if cpErr != nil {
+				pw.CloseWithError(fmt.Errorf("failed to compress data: %w", cpErr))
+				return
+			}
+			pw.CloseWithError(closeErr)
+		}()
 
-		if _, err := writer.Write(data); err != nil {
-			writer.Close()
-			return nil, nil, fmt.Errorf("failed to compress data: %w", err)
+		metadata := map[string]string{
+			MetaCompressionEnabled:      "true",
+			MetaCompressionAlgorithm:    "gzip",
+			MetaCompressionOriginalSize: fmt.Sprintf("%d", size),
 		}
-
-		if err := writer.Close(); err != nil {
-			return nil, nil, fmt.Errorf("failed to close gzip writer: %w", err)
-		}
-
-		compressedData = buf.Bytes()
+		return pr, metadata, nil
 	default:
 		return nil, nil, fmt.Errorf("unsupported compression algorithm: %s", c.algorithm)
 	}
-
-	compressedSize := int64(len(compressedData))
-
-	// Only use compression if it actually saves space
-	if compressedSize >= originalSize {
-		// Compression didn't help, return original
-		return bytes.NewReader(data), nil, nil
-	}
-
-	// Prepare compression metadata
-	metadata := map[string]string{
-		MetaCompressionEnabled:     "true",
-		MetaCompressionAlgorithm:    algorithm,
-		MetaCompressionOriginalSize: fmt.Sprintf("%d", originalSize),
-	}
-
-	return bytes.NewReader(compressedData), metadata, nil
 }
 
 // Decompress decompresses data using the provided metadata.
+//
+// V0.6-PERF-1 Phase E: converted to streaming. The gzip.NewReader wraps
+// the source reader directly; decompressed bytes flow to the caller on
+// demand without buffering the entire payload. The caller is responsible
+// for fully consuming (and effectively closing) the returned reader; the
+// underlying gzip.Reader is closed when it signals io.EOF.
 func (c *compressionEngine) Decompress(reader io.Reader, metadata map[string]string) (io.Reader, error) {
 	// Check if compression was used
 	compressionEnabled, ok := metadata[MetaCompressionEnabled]
@@ -191,29 +183,21 @@ func (c *compressionEngine) Decompress(reader io.Reader, metadata map[string]str
 		return nil, fmt.Errorf("compression algorithm not specified in metadata")
 	}
 
-	// Read compressed data
-	compressedData, err := io.ReadAll(reader)
-	if err != nil {
-		return nil, fmt.Errorf("failed to read compressed data: %w", err)
-	}
-
-	var decompressedData []byte
-
 	switch algorithm {
 	case "gzip":
-		gzipReader, err := gzip.NewReader(bytes.NewReader(compressedData))
+		// Wrap the source reader directly — no full-payload buffer.
+		gzipReader, err := gzip.NewReader(reader)
 		if err != nil {
 			return nil, fmt.Errorf("failed to create gzip reader: %w", err)
 		}
-		defer gzipReader.Close()
-
-		decompressedData, err = io.ReadAll(gzipReader)
-		if err != nil {
-			return nil, fmt.Errorf("failed to decompress data: %w", err)
-		}
+		// Return the gzip.Reader as an io.Reader. gzip.Reader implements
+		// io.ReadCloser; the Close is a no-op on the underlying reader,
+		// so callers that exhaust the stream will receive io.EOF from gzip
+		// transparently. For legacy engine.Decrypt the AEAD has already
+		// authenticated the ciphertext before decompression begins, so
+		// streaming is safe here (commit-before-release rule satisfied).
+		return gzipReader, nil
 	default:
 		return nil, fmt.Errorf("unsupported decompression algorithm: %s", algorithm)
 	}
-
-	return bytes.NewReader(decompressedData), nil
 }

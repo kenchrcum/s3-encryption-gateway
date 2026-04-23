@@ -6,6 +6,61 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased] — v0.6
 
+### Performance
+
+- **Zero-copy streaming on hot data paths** (V0.6-PERF-1): eliminated
+  full-object in-memory buffers on the most allocation-heavy paths:
+
+  - **`handleGetObject` optimised range path**: the `io.ReadAll` at the
+    partial-content response stage is replaced with `io.CopyBuffer`
+    directly to the response writer using a pooled 64 KiB buffer.
+    `Content-Length` is computed from the already-known plaintext range,
+    so no intermediate `[]byte` slice is needed.
+
+  - **`handleCopyObject`**: the double-allocation
+    (`ReadAll(decryptedReader)` → `Encrypt(bytes.NewReader(decryptedData))`
+    → `ReadAll(encryptedReader)`) is reduced to a single allocation
+    inside the engine. `decryptedReader` is now passed directly to
+    `Encrypt`, eliminating the intermediate `decryptedData []byte`. A
+    legacy-source size cap (`Server.MaxLegacyCopySourceBytes`, default
+    256 MiB) is now also enforced on `handleCopyObject` (previously
+    only on `UploadPartCopy`).
+
+  - **`handleUploadPart`**: `io.ReadAll(r.Body)` and
+    `io.ReadAll(encReader)` are replaced with a pooled
+    `SeekableBody` wrapper (`internal/s3/seekable_body.go`) that
+    satisfies the AWS SDK V2 SigV4 seekable-body contract while capping
+    heap per part at `Server.MaxPartBuffer` (new config knob, default
+    **64 MiB**). Parts above the cap are refused with HTTP 413 before
+    any backend write occurs.
+
+  - **Compression engine** (`internal/crypto/compression.go`):
+    `Compress` now returns a streaming `io.Pipe` reader instead of
+    buffering the full compressed output; `Decompress` returns a
+    `*gzip.Reader` wrapping the plaintext directly. The post-hoc
+    "skip if compressed ≥ original" size check is removed in favour of
+    the `ShouldCompress` pre-filter (size + content-type), consistent
+    with nginx / Envoy precedent. ADR 0006 addendum documents the
+    behaviour change.
+
+  - **Engine compression branch** (`internal/crypto/engine.go`): the
+    `bytes.NewReader(compressedData)` intermediate re-wrap is eliminated;
+    the compression pipe reader flows directly into the AEAD boundary.
+    The engine Decrypt path also drops a redundant `io.ReadAll →
+    bytes.NewReader` round-trip.
+
+  - **Streaming MPU part encrypt reader**
+    (`internal/crypto/mpu_encrypter.go`, Phase G): `NewMPUPartEncryptReader`
+    now returns a true streaming `io.Reader` (`*mpuEncryptReader`) that
+    encrypts one 64 KiB AEAD chunk per `Read` call. Peak heap per part
+    is O(chunkSize + tagSize) ≈ 65 KiB regardless of part size, down
+    from O(plaintext + ciphertext). The DEK is defensively copied by
+    the reader so that callers may safely zero their DEK slice
+    immediately after the constructor returns (fixing a latent bug
+    where `defer zeroBytes(dek)` would corrupt IVs under the previous
+    streaming design). IV derivation remains deterministic — retries
+    produce byte-identical ciphertext.
+
 ### Added
 
 - **Unified multi-provider conformance test suite** (V0.6-QA-4):

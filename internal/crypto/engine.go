@@ -349,8 +349,14 @@ func (e *engine) Encrypt(reader io.Reader, metadata map[string]string) (io.Reade
 	// This must be done before compression potentially changes the data
 	originalETag := computeETag(plaintext)
 
-	// Apply compression if enabled and applicable
-	var toEncrypt io.Reader = bytes.NewReader(plaintext)
+	// V0.6-PERF-1 Phase F: Apply compression if enabled and applicable.
+	// The intermediate bytes.NewReader(compressedData) double-buffer is
+	// eliminated: Compress (Phase E) now returns a streaming pipe reader, so
+	// we can read compressed bytes directly into the gcm.Seal call below via a
+	// single io.ReadAll. For legacy single-AEAD mode, gcm.Seal requires a
+	// []byte, so we must buffer the compressed output — but the plaintext
+	// buffer is no longer replicated.
+	var toEncryptReader io.Reader = bytes.NewReader(plaintext)
 	compressionMetadata := make(map[string]string)
 	if e.compressionEngine != nil {
 		compressedReader, compMeta, err := e.compressionEngine.Compress(bytes.NewReader(plaintext), contentType, originalSize)
@@ -358,14 +364,11 @@ func (e *engine) Encrypt(reader io.Reader, metadata map[string]string) (io.Reade
 			return nil, nil, fmt.Errorf("failed to compress data: %w", err)
 		}
 		if compMeta != nil {
-			// Compression was applied and was beneficial
+			// Compression was applied; compressedReader is now a streaming pipe.
+			// Set toEncryptReader to the compressed stream; io.ReadAll below will
+			// drain it in one pass — no intermediate bytes.NewReader wrapper needed.
 			compressionMetadata = compMeta
-			// Read compressed data
-			compressedData, err := io.ReadAll(compressedReader)
-			if err != nil {
-				return nil, nil, fmt.Errorf("failed to read compressed data: %w", err)
-			}
-			toEncrypt = bytes.NewReader(compressedData)
+			toEncryptReader = compressedReader
 		}
 		// If compression wasn't applied, compMeta will be nil and we continue with original
 	}
@@ -440,8 +443,9 @@ func (e *engine) Encrypt(reader io.Reader, metadata map[string]string) (io.Reade
 	}
 	gcm := aeadCipher.(cipher.AEAD) // For backward compatibility with existing code
 
-	// Read data to encrypt (may be compressed)
-	dataToEncrypt, err := io.ReadAll(toEncrypt)
+	// Read data to encrypt (may be compressed). Single allocation: drains the
+	// streaming compression pipe (or the original plaintext bytes.Reader) directly.
+	dataToEncrypt, err := io.ReadAll(toEncryptReader)
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to read data for encryption: %w", err)
 	}
@@ -747,19 +751,13 @@ func (e *engine) Decrypt(reader io.Reader, metadata map[string]string) (io.Reade
 		return nil, nil, fmt.Errorf("failed to decrypt data (algorithm=%s, keySize=%d, ivSize=%d, ciphertextSize=%d): %w", algorithm, len(key), len(iv), len(ciphertext), openErr)
 	}
 
-	// Create decrypted reader from plaintext
-	decryptedReader := bytes.NewReader(plaintext)
-
-	// Read decrypted data (may be compressed)
-	decryptedData, err := io.ReadAll(decryptedReader)
-	if err != nil {
-		return nil, nil, fmt.Errorf("failed to read decrypted data: %w", err)
-	}
-
-	// Apply decompression if compression was used
-	var finalReader io.Reader = bytes.NewReader(decryptedData)
+	// V0.6-PERF-1 Phase F: Apply decompression if compression was used.
+	// Decompress (Phase E) now returns a streaming gzip.Reader wrapping the
+	// plaintext directly — no intermediate ReadAll → bytes.NewReader needed.
+	// For non-compressed objects, plaintext is used directly.
+	var finalReader io.Reader = bytes.NewReader(plaintext)
 	if e.compressionEngine != nil {
-		decompressedReader, err := e.compressionEngine.Decompress(bytes.NewReader(decryptedData), expandedMetadata)
+		decompressedReader, err := e.compressionEngine.Decompress(bytes.NewReader(plaintext), expandedMetadata)
 		if err != nil {
 			return nil, nil, fmt.Errorf("failed to decompress data: %w", err)
 		}

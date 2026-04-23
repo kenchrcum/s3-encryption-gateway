@@ -222,3 +222,40 @@ Full-object buffering for legacy sources is necessary but dangerous. A conservat
 2. **Backend-native CopyObject when source is plaintext** – Extend the plaintext fast-path optimization to regular `CopyObject`.
 3. **Conditional copy headers** – `x-amz-copy-source-if-match`, etc. – forward on fast path; implement HeadObject-based checks on mediated path.
 4. **Zero-copy optimizations** – Beyond plaintext, explore streaming decryption pipelines for chunked sources (V0.6-PERF-1).
+
+---
+
+## Addendum — V0.6-PERF-1 (streaming refactor)
+
+Implemented as part of V0.6-PERF-1. The following behaviour changes apply
+from the streaming rewrite:
+
+### `Server.MaxPartBuffer` (new, default 64 MiB)
+
+`handleUploadPart` no longer calls `io.ReadAll(r.Body)` or
+`io.ReadAll(encReader)`. Both are replaced with a pooled
+`*s3.SeekableBody` wrapper that reads at most `Server.MaxPartBuffer`
+bytes. Parts whose body exceeds the cap are refused with HTTP 413 before
+any backend write occurs. Operators uploading parts > 64 MiB must raise
+this value explicitly. See `internal/s3/seekable_body.go`.
+
+### Compression pre-filter (behaviour change)
+
+`compression.go` previously applied compression and then compared the
+compressed vs original size, discarding the compressed output when it
+was not smaller. This post-hoc size check is **removed** in V0.6-PERF-1
+because it is incompatible with streaming (the final size is not known
+until the entire compressed payload has been produced).
+
+The `ShouldCompress` pre-filter (size threshold + content-type) is now
+the sole compression gate, consistent with nginx, Envoy, and the AWS SDK.
+Incompressible payloads (random bytes, pre-compressed content) that slip
+through the content-type filter will grow by ≤ ~20 bytes (gzip header
+overhead). The content-type exclusion list (`image/*`, `video/*`, etc.)
+prevents this from being a concern in practice.
+
+### `MaxLegacyCopySourceBytes` now enforced on `handleCopyObject`
+
+Previously only enforced in `uploadPartCopyLegacy`. V0.6-PERF-1 adds the
+same cap to `handleCopyObject` to prevent unbounded allocation when the
+source is a legacy (non-chunked) encrypted object.

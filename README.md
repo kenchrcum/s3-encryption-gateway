@@ -137,6 +137,17 @@ server:
 
 This enforces a 5 GiB single-PUT ceiling but guarantees all data is encrypted and requires no state infrastructure.
 
+#### UploadPart memory cap (`server.max_part_buffer`)
+
+Each `UploadPart` request is buffered into a seekable in-memory buffer so the AWS SDK V2 SigV4 signer can re-read the body for payload hashing and retries. The default cap is **64 MiB** — parts larger than this are refused with HTTP 413 before any backend write occurs:
+
+```yaml
+server:
+  max_part_buffer: 67108864  # 64 MiB (default); env: SERVER_MAX_PART_BUFFER
+```
+
+Raise this value if your workload uploads parts larger than 64 MiB. The cap applies to both encrypted and plaintext multipart upload paths. `Server.MaxLegacyCopySourceBytes` (default 256 MiB, set via `server.max_legacy_copy_source_bytes` / `SERVER_MAX_LEGACY_COPY_SOURCE_BYTES`) separately bounds the allocation incurred when copying legacy (non-chunked) encrypted objects with `CopyObject` or `UploadPartCopy`.
+
 #### Deploying Valkey with the Helm chart
 
 The Helm chart bundles an optional Valkey subchart which is off by default:

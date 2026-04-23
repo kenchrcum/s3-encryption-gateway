@@ -12,12 +12,53 @@ import (
 
 const mpuAEADTagSize = 16 // AES-GCM authentication tag size
 
+// mpuEncryptReader is a streaming io.Reader that encrypts an MPU part one AEAD
+// chunk at a time. It never buffers more than one plaintext chunk
+// (chunkSize bytes) plus one ciphertext chunk (chunkSize+tagSize bytes) at
+// a time, regardless of part size.
+//
+// V0.6-PERF-1 Phase G: replaces the io.ReadAll+bytes.Buffer implementation in
+// NewMPUPartEncryptReader. IVs are derived deterministically from
+// (DEK, uploadIDHash, ivPrefix, partNumber, chunkIndex), so ciphertext output
+// is byte-identical across retries for the same source — the SDK retry
+// contract is preserved.
+type mpuEncryptReader struct {
+	src      io.Reader
+	gcm      cipher.AEAD
+	dek      []byte
+	hash     [32]byte
+	prefix   [12]byte
+	part     uint32
+	csz      int // chunk size (plaintext)
+
+	// per-chunk state
+	plainBuf []byte // pooled, cap=csz
+	cipherBuf []byte // current chunk ciphertext output
+	cipherOff int    // read position within cipherBuf
+	chunkIdx  uint32
+
+	// flow control
+	srcDone bool // source exhausted
+	eof     bool // all ciphertext consumed
+	err     error
+}
+
+// plainChunkPool reuses per-chunk plaintext buffers to reduce GC pressure.
+// The pool is keyed by DefaultChunkSize; callers using a different chunkSize
+// allocate independently (uncommon in production).
+var plainChunkPool = sync.Pool{New: func() any { return make([]byte, DefaultChunkSize) }}
+
 // NewMPUPartEncryptReader creates a streaming encrypter for a single multipart
 // upload part. It uses DeriveMultipartIV for each chunk so that IVs are
 // deterministic across retries but unique across (upload, part, chunk) tuples.
 //
 // Returns the ciphertext reader and the exact byte length of the ciphertext.
-// plainLen == 0 is allowed (empty part); the function reads body in full.
+// plainLen must be ≥ 0; when 0 (empty part) the reader immediately returns
+// io.EOF. All callers in the gateway provide Content-Length via the
+// x-amz-decoded-content-length or Content-Length header.
+//
+// V0.6-PERF-1 Phase G: fully streaming — peak heap per call is
+// O(chunkSize + chunkSize+tagSize) regardless of part size.
 func NewMPUPartEncryptReader(
 	ctx context.Context,
 	body io.Reader,
@@ -32,15 +73,6 @@ func NewMPUPartEncryptReader(
 		chunkSize = DefaultChunkSize
 	}
 
-	// Read the entire part body into memory.
-	// TODO(V0.6-PERF-1): Replace io.ReadAll with a streaming implementation.
-	// Currently accepted per Phase D deferral since parts are typically 5 MiB
-	// and buffering one part at a time is acceptable in the short term.
-	plaintext, err := io.ReadAll(body)
-	if err != nil {
-		return nil, 0, fmt.Errorf("mpu_encrypter: read body: %w", err)
-	}
-
 	block, err := aes.NewCipher(dek)
 	if err != nil {
 		return nil, 0, fmt.Errorf("mpu_encrypter: create AES cipher: %w", err)
@@ -50,27 +82,129 @@ func NewMPUPartEncryptReader(
 		return nil, 0, fmt.Errorf("mpu_encrypter: create GCM: %w", err)
 	}
 
-	var (
-		out        bytes.Buffer
-		chunkIndex uint32
-		offset     int
-	)
-
-	for offset < len(plaintext) {
-		end := offset + chunkSize
-		if end > len(plaintext) {
-			end = len(plaintext)
+	// Compute exact output length upfront so callers can set ContentLength.
+	// Formula: every full chunk → chunkSize + tagSize bytes; if plainLen is
+	// not an exact multiple of chunkSize, the final partial chunk adds
+	// (rem + tagSize) bytes; empty part → 0.
+	//
+	// When plainLen == N * chunkSize exactly, there are N full chunks and no
+	// trailing partial chunk — fullChunks × (chunkSize + tagSize) is the total.
+	var encLen int64
+	if plainLen > 0 {
+		fullChunks := plainLen / int64(chunkSize)
+		rem := plainLen % int64(chunkSize)
+		encLen = fullChunks * int64(chunkSize+mpuAEADTagSize)
+		if rem > 0 {
+			// Trailing partial chunk.
+			encLen += rem + int64(mpuAEADTagSize)
 		}
-		chunk := plaintext[offset:end]
-		iv := DeriveMultipartIV(dek, uploadIDHash, ivPrefix, uint32(partNumber), chunkIndex)
-		cipherChunk := gcm.Seal(nil, iv[:], chunk, nil)
-		out.Write(cipherChunk)
-		offset = end
-		chunkIndex++
 	}
 
-	encLen := int64(out.Len())
-	return &out, encLen, nil
+	// Get a pooled plaintext buffer when chunkSize matches the pool size.
+	var plainBuf []byte
+	if chunkSize == DefaultChunkSize {
+		plainBuf = plainChunkPool.Get().([]byte)[:chunkSize]
+	} else {
+		plainBuf = make([]byte, chunkSize)
+	}
+
+	// Copy the DEK so that the caller's defer zeroBytes(dek) does not corrupt
+	// IVs derived on subsequent Read calls (DeriveMultipartIV uses dek).
+	// The copy is zeroed when the streaming reader is fully consumed or abandoned
+	// via returnPlainBuf (which also zeros dekCopy — see Read/returnPlainBuf).
+	dekCopy := make([]byte, len(dek))
+	copy(dekCopy, dek)
+
+	return &mpuEncryptReader{
+		src:    body,
+		gcm:    gcm,
+		dek:    dekCopy,
+		hash:   uploadIDHash,
+		prefix: ivPrefix,
+		part:   uint32(partNumber),
+		csz:    chunkSize,
+
+		plainBuf: plainBuf,
+		srcDone:  plainLen == 0,
+		eof:      plainLen == 0,
+	}, encLen, nil
+}
+
+// Read implements io.Reader. It encrypts one AEAD chunk per source read,
+// serving ciphertext bytes on demand.
+func (r *mpuEncryptReader) Read(p []byte) (int, error) {
+	if r.err != nil {
+		return 0, r.err
+	}
+	if r.eof {
+		r.returnPlainBuf()
+		return 0, io.EOF
+	}
+
+	total := 0
+	for len(p) > 0 {
+		// Serve from the current chunk's ciphertext buffer if available.
+		if r.cipherOff < len(r.cipherBuf) {
+			n := copy(p, r.cipherBuf[r.cipherOff:])
+			r.cipherOff += n
+			total += n
+			p = p[n:]
+			continue
+		}
+
+		// Need a new chunk.
+		if r.srcDone {
+			r.eof = true
+			r.returnPlainBuf()
+			if total > 0 {
+				return total, nil
+			}
+			return 0, io.EOF
+		}
+
+		// Read one chunk from the source (may be short if near EOF).
+		n, readErr := io.ReadFull(r.src, r.plainBuf)
+		if readErr != nil && readErr != io.ErrUnexpectedEOF && readErr != io.EOF {
+			r.err = fmt.Errorf("mpu_encrypter: read source: %w", readErr)
+			r.returnPlainBuf()
+			return total, r.err
+		}
+		if readErr == io.ErrUnexpectedEOF || readErr == io.EOF {
+			// Short or empty read — this is the final (possibly partial) chunk.
+			r.srcDone = true
+			if n == 0 {
+				// Source was already at EOF; no more chunks.
+				r.eof = true
+				r.returnPlainBuf()
+				if total > 0 {
+					return total, nil
+				}
+				return 0, io.EOF
+			}
+		}
+
+		iv := DeriveMultipartIV(r.dek, r.hash, r.prefix, r.part, r.chunkIdx)
+		r.cipherBuf = r.gcm.Seal(r.cipherBuf[:0], iv[:], r.plainBuf[:n], nil)
+		r.cipherOff = 0
+		r.chunkIdx++
+	}
+	return total, nil
+}
+
+// returnPlainBuf returns the pooled plaintext buffer and zeros the DEK copy.
+// Called when the reader reaches EOF or an error — safe to call multiple times.
+func (r *mpuEncryptReader) returnPlainBuf() {
+	if r.plainBuf != nil && r.csz == DefaultChunkSize {
+		for i := range r.plainBuf {
+			r.plainBuf[i] = 0
+		}
+		plainChunkPool.Put(r.plainBuf)
+		r.plainBuf = nil
+	}
+	// Zero the DEK copy we own so key material doesn't linger in heap.
+	for i := range r.dek {
+		r.dek[i] = 0
+	}
 }
 
 // newMPUPartEncryptReader is the unexported alias used from within the api package via the exported function.

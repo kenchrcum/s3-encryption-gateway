@@ -579,10 +579,11 @@ func (h *Handler) uploadPartCopyLegacy(ctx context.Context, s3Client s3.Client,
 		return nil, 0, fmt.Errorf("failed to decrypt source object: %w", err)
 	}
 
-	// Bounded read: refuse anything beyond the cap even if the backend
-	// reported a smaller Content-Length (defensive — backends can lie).
-	// ReadAll up to cap+1 then check; +1 lets us distinguish "exactly at cap"
-	// from "over cap".
+	// V0.6-PERF-1: intentionally buffered — legacy AEAD is a single-nonce
+	// envelope that cannot be authenticated before reading the whole ciphertext
+	// (RFC 5116 / *Serious Cryptography, 2nd Ed.* §8.4 commit-before-release
+	// rule). Streaming is non-trivially incorrect here. The cap
+	// (Server.MaxLegacyCopySourceBytes, default 256 MiB) bounds the allocation.
 	limited := io.LimitReader(decryptedReader, maxLegacyCap+1)
 	plaintextData, err := io.ReadAll(limited)
 	if err != nil {
@@ -809,10 +810,12 @@ func (h *Handler) uploadPartCopyReencryptMPU(
 		return nil, 0, fmt.Errorf("uploadPartCopyReencryptMPU: re-encrypt: %w", err)
 	}
 
-	// Buffer the re-encrypted bytes so UploadPart can pass a seekable body to
-	// the backend SDK. This is required for plaintext-HTTP backends where
-	// SigV4 must seek to compute payload hash (see uploadPartCopyChunked for
-	// detailed rationale).
+	// V0.6-PERF-1: intentionally buffered — the backend SDK requires a seekable
+	// body for SigV4 payload hashing over plaintext-HTTP (see Phase D of the
+	// PERF-1 plan). encReader is now a streaming mpuEncryptReader (Phase G);
+	// buffering it here to obtain a *bytes.Reader is unavoidable without
+	// backend streaming-checksum support (D-1, deferred). The allocation is
+	// bounded by encLen (≤ MaxPartBuffer; enforced upstream in the handler).
 	encBytes, err := io.ReadAll(encReader)
 	if err != nil {
 		return nil, 0, fmt.Errorf("uploadPartCopyReencryptMPU: read re-encrypted part: %w", err)

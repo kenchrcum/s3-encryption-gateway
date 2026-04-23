@@ -1193,21 +1193,10 @@ func (h *Handler) handleGetObject(w http.ResponseWriter, r *http.Request) {
 	outputData := decryptedData
 	if rangeHeader != nil && *rangeHeader != "" {
 		if useRangeOptimization {
-			// Optimized range: decryptedReader already contains only the range
-			// Read it into outputData
-			outputData, err = io.ReadAll(decryptedReader)
-			if err != nil {
-				h.logger.WithError(err).Error("Failed to read optimized range data")
-				s3Err := &S3Error{
-					Code:       "InternalError",
-					Message:    "Failed to read range data",
-					Resource:   r.URL.Path,
-					HTTPStatus: http.StatusInternalServerError,
-				}
-				s3Err.WriteXML(w)
-				h.metrics.RecordHTTPRequest(r.Context(), "GET", r.URL.Path, s3Err.HTTPStatus, time.Since(start), 0)
-				return
-			}
+			// V0.6-PERF-1 Phase B: Optimized range — stream directly to the
+			// response writer without buffering the entire range into memory.
+			// Content-Length is known from the plaintext range (already computed
+			// above at decryptedSize). This eliminates one full-range allocation.
 
 			// Get total size for Content-Range header
 			totalSize, _ := crypto.GetPlaintextSizeFromMetadata(metadata)
@@ -1226,8 +1215,21 @@ func (h *Handler) handleGetObject(w http.ResponseWriter, r *http.Request) {
 				w.Header().Set("x-amz-version-id", *versionID)
 			}
 			w.Header().Set("Content-Range", fmt.Sprintf("bytes %d-%d/%d", plaintextStart, plaintextEnd, totalSize))
-			w.Header().Set("Content-Length", fmt.Sprintf("%d", len(outputData)))
+			w.Header().Set("Content-Length", fmt.Sprintf("%d", decryptedSize))
 			w.WriteHeader(http.StatusPartialContent)
+
+			// Stream range bytes directly — no intermediate buffer.
+			pool := crypto.GetGlobalBufferPool()
+			buf := pool.Get64K()
+			defer pool.Put(buf)
+			n64, copyErr := io.CopyBuffer(w, decryptedReader, buf)
+			if copyErr != nil {
+				h.logger.WithError(copyErr).Error("Failed to write optimized range data")
+				// Headers already sent; log only.
+			}
+			h.metrics.RecordS3Operation(r.Context(), "GetObject", bucket, time.Since(start))
+			h.metrics.RecordHTTPRequest(r.Context(), "GET", r.URL.Path, http.StatusPartialContent, time.Since(start), n64)
+			return
 		} else {
 			// Non-optimized: apply range to buffered data
 			outputData, err = applyRangeRequest(decryptedData, *rangeHeader)
@@ -2668,33 +2670,39 @@ func (h *Handler) handleUploadPart(w http.ResponseWriter, r *http.Request) {
 			h.metrics.RecordHTTPRequest(r.Context(), "PUT", r.URL.Path, s3Err.HTTPStatus, time.Since(start), 0)
 			return
 		}
-		// Plaintext-HTTP backends require a seekable body for SigV4 retries.
-		encBytes, readErr := io.ReadAll(encReader)
-		if readErr != nil {
-			h.logger.WithError(readErr).WithFields(logrus.Fields{
+		// V0.6-PERF-1 Phase D: use a pooled seekable wrapper bounded by
+		// MaxPartBuffer instead of io.ReadAll. This satisfies the AWS SDK V2
+		// SigV4 seekable-body requirement while capping heap per part.
+		maxBuf := effectiveMaxPartBuffer(h.config)
+		sb, sbErr := s3.NewSeekableBody(encReader, maxBuf)
+		if sbErr != nil {
+			h.logger.WithError(sbErr).WithFields(logrus.Fields{
 				"bucket":     bucket,
 				"key":        key,
 				"uploadID":   uploadID,
 				"partNumber": partNumber,
 			}).Error("Failed to buffer encrypted MPU part")
-			s3Err := &S3Error{
-				Code:       "InternalError",
-				Message:    "Failed to prepare multipart upload part",
-				Resource:   r.URL.Path,
-				HTTPStatus: http.StatusInternalServerError,
+			code := "InternalError"
+			status := http.StatusInternalServerError
+			msg := "Failed to prepare multipart upload part"
+			if _, isLarge := sbErr.(*s3.ErrPartTooLarge); isLarge {
+				code = "EntityTooLarge"
+				status = http.StatusRequestEntityTooLarge
+				msg = sbErr.Error()
 			}
+			s3Err := &S3Error{Code: code, Message: msg, Resource: r.URL.Path, HTTPStatus: status}
 			s3Err.WriteXML(w)
 			h.metrics.RecordHTTPRequest(r.Context(), "PUT", r.URL.Path, s3Err.HTTPStatus, time.Since(start), 0)
 			return
 		}
-		if int64(len(encBytes)) != encLen {
+		if sb.Len != encLen {
 			h.logger.WithFields(logrus.Fields{
 				"bucket":       bucket,
 				"key":          key,
 				"uploadID":     uploadID,
 				"partNumber":   partNumber,
 				"expected_len": encLen,
-				"actual_len":   len(encBytes),
+				"actual_len":   sb.Len,
 			}).Error("Encrypted MPU part length mismatch")
 			s3Err := &S3Error{
 				Code:       "InternalError",
@@ -2706,7 +2714,7 @@ func (h *Handler) handleUploadPart(w http.ResponseWriter, r *http.Request) {
 			h.metrics.RecordHTTPRequest(r.Context(), "PUT", r.URL.Path, s3Err.HTTPStatus, time.Since(start), 0)
 			return
 		}
-		encryptedReader = bytes.NewReader(encBytes)
+		encryptedReader = sb
 		contentLengthPtr = &encLen
 		// Hoist state into outer scope so AppendPart can use it without a
 		// second Valkey round-trip after UploadPart succeeds.
@@ -2715,21 +2723,26 @@ func (h *Handler) handleUploadPart(w http.ResponseWriter, r *http.Request) {
 	} else {
 		// Plaintext multipart path (ADR 0002): buffer to make body seekable for
 		// the AWS SDK's retry behaviour.
-		partData, err := io.ReadAll(r.Body)
-		if err != nil {
-			h.logger.WithError(err).Error("Failed to read multipart upload part")
-			s3Err := &S3Error{
-				Code:       "InternalError",
-				Message:    "Failed to read part data",
-				Resource:   r.URL.Path,
-				HTTPStatus: http.StatusInternalServerError,
+		// V0.6-PERF-1 Phase D: use pooled seekable wrapper instead of io.ReadAll.
+		maxBuf := effectiveMaxPartBuffer(h.config)
+		sb, sbErr := s3.NewSeekableBody(r.Body, maxBuf)
+		if sbErr != nil {
+			h.logger.WithError(sbErr).Error("Failed to read multipart upload part")
+			code := "InternalError"
+			status := http.StatusInternalServerError
+			msg := "Failed to read part data"
+			if _, isLarge := sbErr.(*s3.ErrPartTooLarge); isLarge {
+				code = "EntityTooLarge"
+				status = http.StatusRequestEntityTooLarge
+				msg = sbErr.Error()
 			}
+			s3Err := &S3Error{Code: code, Message: msg, Resource: r.URL.Path, HTTPStatus: status}
 			s3Err.WriteXML(w)
 			h.metrics.RecordHTTPRequest(r.Context(), "PUT", r.URL.Path, s3Err.HTTPStatus, time.Since(start), 0)
 			return
 		}
-		encryptedReader = bytes.NewReader(partData)
-		partSize := int64(len(partData))
+		encryptedReader = sb
+		partSize := sb.Len
 		contentLengthPtr = &partSize
 	}
 
@@ -3764,28 +3777,47 @@ func (h *Handler) handleCopyObject(w http.ResponseWriter, r *http.Request, dstBu
 		return
 	}
 
-	// Decrypt source if encrypted
+	// V0.6-PERF-1 Phase C: enforce legacy-source cap on handleCopyObject
+	// (mirror of the guard added in V0.6-S3-1 for uploadPartCopyLegacy).
+	// Legacy AEAD cannot be range-decrypted, so the engine buffers the whole
+	// source internally inside Decrypt. Cap the allocation before we start.
+	if srcEngine.IsEncrypted(srcMetadata) && !crypto.IsChunkedFormat(srcMetadata) {
+		legacyCap := effectiveCopySourceCap(h.config)
+		srcSizeHint := int64(0)
+		if clStr, ok := srcMetadata["Content-Length"]; ok {
+			if cl, perr := strconv.ParseInt(clStr, 10, 64); perr == nil {
+				srcSizeHint = cl
+			}
+		}
+		if srcSizeHint > 0 && srcSizeHint > legacyCap {
+			h.logger.WithFields(logrus.Fields{
+				"srcBucket": srcBucket,
+				"srcKey":    srcKey,
+				"size":      srcSizeHint,
+				"cap":       legacyCap,
+			}).Error("Legacy source too large for CopyObject; raise server.max_legacy_copy_source_bytes")
+			s3Err := &S3Error{
+				Code:       "InvalidRequest",
+				Message:    fmt.Sprintf("Source object (%d bytes) exceeds server.max_legacy_copy_source_bytes (%d bytes). Migrate to chunked encryption or raise the limit.", srcSizeHint, legacyCap),
+				Resource:   r.URL.Path,
+				HTTPStatus: http.StatusBadRequest,
+			}
+			s3Err.WriteXML(w)
+			h.metrics.RecordHTTPRequest(r.Context(), "PUT", r.URL.Path, s3Err.HTTPStatus, time.Since(start), 0)
+			return
+		}
+	}
+
+	// Decrypt source if encrypted.
+	// V0.6-PERF-1 Phase C: pass srcReader directly to Decrypt — the engine
+	// already handles buffering for legacy AEAD and streams for chunked.
+	// The intermediate decryptedData []byte allocation is eliminated here.
 	decryptedReader, _, err := srcEngine.Decrypt(srcReader, srcMetadata)
 	if err != nil {
 		h.logger.WithError(err).Error("Failed to decrypt source object for copy")
 		s3Err := &S3Error{
 			Code:       "InternalError",
 			Message:    "Failed to decrypt source object",
-			Resource:   r.URL.Path,
-			HTTPStatus: http.StatusInternalServerError,
-		}
-		s3Err.WriteXML(w)
-		h.metrics.RecordHTTPRequest(r.Context(), "PUT", r.URL.Path, s3Err.HTTPStatus, time.Since(start), 0)
-		return
-	}
-
-	// Read decrypted data
-	decryptedData, err := io.ReadAll(decryptedReader)
-	if err != nil {
-		h.logger.WithError(err).Error("Failed to read decrypted source object")
-		s3Err := &S3Error{
-			Code:       "InternalError",
-			Message:    "Failed to read source object",
 			Resource:   r.URL.Path,
 			HTTPStatus: http.StatusInternalServerError,
 		}
@@ -3824,8 +3856,10 @@ func (h *Handler) handleCopyObject(w http.ResponseWriter, r *http.Request, dstBu
 		return
 	}
 
-	// Re-encrypt for destination
-	encryptedReader, encMetadata, err := dstEngine.Encrypt(bytes.NewReader(decryptedData), dstMetadata)
+	// V0.6-PERF-1 Phase C: pass decryptedReader directly to Encrypt, eliminating
+	// the intermediate decryptedData []byte allocation. The engine handles its
+	// own buffering as needed for legacy vs chunked mode.
+	encryptedReader, encMetadata, err := dstEngine.Encrypt(decryptedReader, dstMetadata)
 	if err != nil {
 		h.logger.WithError(err).Error("Failed to encrypt destination object")
 		s3Err := &S3Error{
@@ -3839,7 +3873,16 @@ func (h *Handler) handleCopyObject(w http.ResponseWriter, r *http.Request, dstBu
 		return
 	}
 
-	// Read encrypted data
+	// V0.6-PERF-1: intentionally buffered — the engine returns a fully-sealed
+	// ciphertext reader (legacy AEAD: single allocation inside engine.Encrypt;
+	// chunked: backing bytes.Buffer from the chunked writer). We must call
+	// io.ReadAll once here to obtain the exact byte count for PutObject's
+	// ContentLength field; no additional copy of the plaintext or intermediate
+	// decryptedData exists at this point. A full-pipeline io.Pipe (decode →
+	// encode → PUT without buffering) requires the SDK to accept a non-seekable
+	// body with a pre-computed CiphertextLen — deferred to V0.6-PERF-2 behind
+	// a Backend.SupportsStreamingChecksums capability flag. See ADR 0006
+	// addendum and docs/plans/V0.6-PERF-1-plan.md §4.4.
 	encryptedData, err := io.ReadAll(encryptedReader)
 	if err != nil {
 		h.logger.WithError(err).Error("Failed to read encrypted destination object")
@@ -4087,4 +4130,25 @@ func parseCopySource(copySource string) (bucket, key string, versionID *string, 
 	key = strings.TrimPrefix(keyWithVersion, "/")
 
 	return bucket, key, versionID, nil
+}
+
+// effectiveCopySourceCap returns the configured legacy-source cap for
+// handleCopyObject, falling back to the default when unconfigured.
+// V0.6-PERF-1 Phase C: mirrors effectiveMaxLegacyCopySourceBytes in
+// upload_part_copy.go for the CopyObject handler.
+func effectiveCopySourceCap(cfg *config.Config) int64 {
+	if cfg != nil && cfg.Server.MaxLegacyCopySourceBytes > 0 {
+		return cfg.Server.MaxLegacyCopySourceBytes
+	}
+	return config.DefaultMaxLegacyCopySourceBytes
+}
+
+// effectiveMaxPartBuffer returns the configured UploadPart body cap,
+// falling back to the default when unconfigured.
+// V0.6-PERF-1 Phase D.
+func effectiveMaxPartBuffer(cfg *config.Config) int64 {
+	if cfg != nil && cfg.Server.MaxPartBuffer > 0 {
+		return cfg.Server.MaxPartBuffer
+	}
+	return config.DefaultMaxPartBuffer
 }
