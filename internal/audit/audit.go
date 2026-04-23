@@ -29,6 +29,11 @@ const (
 	EventTypeMPUAbort          EventType = "mpu.abort"
 	EventTypeMPUTamperDetected EventType = "mpu.tamper_detected"
 	EventTypeMPUValkeyUnavail  EventType = "mpu.valkey_unavailable"
+
+	// V0.6-PERF-2 — backend retry audit event type (ADR 0010).
+	// Emitted when a data-plane write operation exhausts all retry attempts.
+	// Read-path give-ups are counter-only (too chatty under normal backend hiccups).
+	EventTypeBackendRetryGiveUp EventType = "backend.retry_give_up"
 )
 
 // AuditEvent represents a single audit log event.

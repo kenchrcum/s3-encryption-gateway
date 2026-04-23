@@ -72,6 +72,20 @@ type Metrics struct {
 	mpuValkeyInsecure    prometheus.Gauge
 	mpuManifestBytes     prometheus.Histogram
 	mpuManifestStorage   *prometheus.CounterVec
+
+	// V0.6-PERF-2 — S3 backend retry metrics (ADR 0010).
+	// s3BackendRetriesTotal counts retry attempts per operation and classifier
+	// reason. Labels: operation, reason, mode.
+	s3BackendRetriesTotal *prometheus.CounterVec
+	// s3BackendAttemptsPerRequest is a histogram of total attempts made per
+	// logical backend request (≥ 1). Labels: operation.
+	s3BackendAttemptsPerRequest *prometheus.HistogramVec
+	// s3BackendRetryGiveUpsTotal counts operations that exhausted MaxAttempts.
+	// Labels: operation, final_reason.
+	s3BackendRetryGiveUpsTotal *prometheus.CounterVec
+	// s3BackendRetryBackoffSeconds is a histogram of backoff delays actually
+	// slept.
+	s3BackendRetryBackoffSeconds prometheus.Histogram
 }
 
 // NewMetrics creates a new metrics instance with default configuration.
@@ -356,6 +370,37 @@ func newMetricsWithRegistry(reg prometheus.Registerer, cfg Config) *Metrics {
 				Help: "MPU manifests by storage location (location=inline|fallback).",
 			},
 			[]string{"location"},
+		),
+
+		// V0.6-PERF-2 — backend retry metrics (ADR 0010).
+		s3BackendRetriesTotal: factory.NewCounterVec(
+			prometheus.CounterOpts{
+				Name: "s3_backend_retries_total",
+				Help: "Total S3 backend retry attempts, labelled by operation, classifier reason, and retry mode.",
+			},
+			[]string{"operation", "reason", "mode"},
+		),
+		s3BackendAttemptsPerRequest: factory.NewHistogramVec(
+			prometheus.HistogramOpts{
+				Name:    "s3_backend_attempts_per_request",
+				Help:    "Total attempts (including first) made per logical S3 backend request.",
+				Buckets: []float64{1, 2, 3, 4, 5, 6, 7, 8, 9, 10},
+			},
+			[]string{"operation"},
+		),
+		s3BackendRetryGiveUpsTotal: factory.NewCounterVec(
+			prometheus.CounterOpts{
+				Name: "s3_backend_retry_give_ups_total",
+				Help: "S3 backend operations that exhausted MaxAttempts, labelled by operation and final classifier reason.",
+			},
+			[]string{"operation", "final_reason"},
+		),
+		s3BackendRetryBackoffSeconds: factory.NewHistogram(
+			prometheus.HistogramOpts{
+				Name:    "s3_backend_retry_backoff_seconds",
+				Help:    "Backoff delays actually slept before a retry attempt, in seconds.",
+				Buckets: []float64{0.001, 0.01, 0.05, 0.1, 0.2, 0.5, 1, 2, 5, 10, 20},
+			},
 		),
 	}
 }
@@ -696,6 +741,55 @@ func (m *Metrics) RecordMPUManifestStorage(location string) {
 		return
 	}
 	m.mpuManifestStorage.WithLabelValues(location).Inc()
+}
+
+// ---- V0.6-PERF-2 backend retry metric helpers --------------------------------
+
+// RecordBackendRetry increments the retry counter for a single retry attempt.
+// op is the SDK operation name; reason is from the closed set in retry.go.
+// mode is the retry mode string ("standard", "adaptive", "off").
+func (m *Metrics) RecordBackendRetry(op, reason string) {
+	if m == nil || m.s3BackendRetriesTotal == nil {
+		return
+	}
+	m.s3BackendRetriesTotal.WithLabelValues(op, reason, "standard").Inc()
+}
+
+// RecordBackendRetryWithMode is like RecordBackendRetry but accepts an
+// explicit mode label.  Used when the mode is known at the call site.
+func (m *Metrics) RecordBackendRetryWithMode(op, reason, mode string) {
+	if m == nil || m.s3BackendRetriesTotal == nil {
+		return
+	}
+	m.s3BackendRetriesTotal.WithLabelValues(op, reason, mode).Inc()
+}
+
+// RecordBackendAttemptsPerRequest records the total number of attempts made
+// for a single logical S3 request (including the original; ≥ 1).
+func (m *Metrics) RecordBackendAttemptsPerRequest(op string, attempts int) {
+	if m == nil || m.s3BackendAttemptsPerRequest == nil {
+		return
+	}
+	m.s3BackendAttemptsPerRequest.WithLabelValues(op).Observe(float64(attempts))
+}
+
+// RecordBackendRetryGiveUp increments the give-up counter when MaxAttempts
+// has been exhausted.
+func (m *Metrics) RecordBackendRetryGiveUp(op, finalReason string) {
+	if m == nil || m.s3BackendRetryGiveUpsTotal == nil {
+		return
+	}
+	m.s3BackendRetryGiveUpsTotal.WithLabelValues(op, finalReason).Inc()
+}
+
+// RecordBackendRetryBackoff observes the actual backoff delay slept (in seconds).
+func (m *Metrics) RecordBackendRetryBackoff(delay time.Duration) {
+	if m == nil || m.s3BackendRetryBackoffSeconds == nil {
+		return
+	}
+	if delay > 0 {
+		m.s3BackendRetryBackoffSeconds.Observe(delay.Seconds())
+	}
 }
 
 // getExemplar extracts trace ID from context and returns prometheus Labels for exemplar.

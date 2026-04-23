@@ -53,6 +53,154 @@ type BackendConfig struct {
 	// Credential passthrough: if enabled, use credentials from client requests instead of configured credentials
 	// This allows respecting client access rights while still using configured credentials as fallback
 	UseClientCredentials bool `yaml:"use_client_credentials" env:"BACKEND_USE_CLIENT_CREDENTIALS"`
+	// Retry governs the S3 backend retry policy (V0.6-PERF-2).
+	// All fields are optional; zero values fall back to the DefaultBackendRetry* constants.
+	Retry BackendRetryConfig `yaml:"retry"`
+}
+
+// BackendRetryConfig governs retries emitted by the S3 backend client.
+// All fields optional; zero values fall back to safe defaults (see
+// DefaultBackendRetry* constants). See docs/adr/0010-backend-retry-policy.md.
+//
+// V0.6-PERF-2 — Phase B.
+type BackendRetryConfig struct {
+	// Mode selects the retryer implementation.
+	//   "standard" (default) — exponential backoff with jitter
+	//   "adaptive"           — token bucket + adaptive rate limit
+	//   "off"                — no retries (single attempt only)
+	Mode string `yaml:"mode" env:"BACKEND_RETRY_MODE"`
+
+	// MaxAttempts is the total number of attempts (including the first).
+	// Must be >= 1. Default: 3.
+	MaxAttempts int `yaml:"max_attempts" env:"BACKEND_RETRY_MAX_ATTEMPTS"`
+
+	// InitialBackoff is the base delay before the first retry.
+	// Default: 100 ms.
+	InitialBackoff time.Duration `yaml:"initial_backoff" env:"BACKEND_RETRY_INITIAL_BACKOFF"`
+
+	// MaxBackoff caps the per-attempt delay. Default: 20 s (matches SDK default).
+	MaxBackoff time.Duration `yaml:"max_backoff" env:"BACKEND_RETRY_MAX_BACKOFF"`
+
+	// Jitter selects the jitter algorithm.
+	//   "full"         (default) — uniform [0, computed]
+	//   "decorrelated"           — AWS Architecture Blog algorithm; best under high contention
+	//   "equal"                  — half computed + uniform half
+	//   "none"                   — no jitter (debug only; unsafe under contention)
+	Jitter string `yaml:"jitter" env:"BACKEND_RETRY_JITTER"`
+
+	// PerOperation overrides MaxAttempts per S3 API verb.  Keys are canonical
+	// SDK operation names: "PutObject", "GetObject", "HeadObject", "UploadPart",
+	// "CompleteMultipartUpload", "CopyObject", "UploadPartCopy", "DeleteObject",
+	// "DeleteObjects", "ListObjectsV2", "ListParts", etc.
+	// A value of 1 disables retries for that operation.
+	// CompleteMultipartUpload defaults to 1 (non-idempotent post-commit).
+	PerOperation map[string]int `yaml:"per_operation"`
+
+	// SafeCopyObject enables retrying CopyObject. Some applications require
+	// If-Match/If-None-Match contracts that break across a retried copy;
+	// disable here to opt out. Default: true (nil → true).
+	SafeCopyObject *bool `yaml:"safe_copy_object" env:"BACKEND_RETRY_SAFE_COPY_OBJECT"`
+}
+
+// Default values for BackendRetryConfig.
+const (
+	DefaultBackendRetryMode           = "standard"
+	DefaultBackendRetryMaxAttempts    = 3
+	DefaultBackendRetryInitialBackoff = 100 * time.Millisecond
+	DefaultBackendRetryMaxBackoff     = 20 * time.Second
+	DefaultBackendRetryJitter         = "full"
+)
+
+// knownOperationNames is the closed set of S3 operation names that may appear
+// in BackendRetryConfig.PerOperation.  Unknown keys are rejected at validation
+// time to surface typos promptly.
+var knownOperationNames = map[string]bool{
+	"PutObject":                true,
+	"GetObject":                true,
+	"HeadObject":               true,
+	"UploadPart":               true,
+	"CompleteMultipartUpload":  true,
+	"CreateMultipartUpload":    true,
+	"AbortMultipartUpload":     true,
+	"ListParts":                true,
+	"CopyObject":               true,
+	"UploadPartCopy":           true,
+	"DeleteObject":             true,
+	"DeleteObjects":            true,
+	"ListObjectsV2":            true,
+	"ListObjects":              true,
+	"PutObjectRetention":       true,
+	"GetObjectRetention":       true,
+	"PutObjectLegalHold":       true,
+	"GetObjectLegalHold":       true,
+	"PutObjectLockConfiguration": true,
+	"GetObjectLockConfiguration": true,
+}
+
+// Normalize fills zero-value fields with their documented defaults.
+// It is idempotent and safe to call multiple times.
+func (r *BackendRetryConfig) Normalize() {
+	if r.Mode == "" {
+		r.Mode = DefaultBackendRetryMode
+	}
+	if r.MaxAttempts <= 0 {
+		r.MaxAttempts = DefaultBackendRetryMaxAttempts
+	}
+	if r.InitialBackoff <= 0 {
+		r.InitialBackoff = DefaultBackendRetryInitialBackoff
+	}
+	if r.MaxBackoff <= 0 {
+		r.MaxBackoff = DefaultBackendRetryMaxBackoff
+	}
+	if r.Jitter == "" {
+		r.Jitter = DefaultBackendRetryJitter
+	}
+	if r.SafeCopyObject == nil {
+		t := true
+		r.SafeCopyObject = &t
+	}
+}
+
+// Validate checks the config for invalid values and returns a descriptive
+// error if any field is out of range.  Normalize must be called first.
+func (r *BackendRetryConfig) Validate() error {
+	switch r.Mode {
+	case "standard", "adaptive", "off":
+	default:
+		return fmt.Errorf("backend.retry.mode must be \"standard\", \"adaptive\", or \"off\" (got %q)", r.Mode)
+	}
+	if r.MaxAttempts < 1 {
+		return fmt.Errorf("backend.retry.max_attempts must be >= 1 (got %d)", r.MaxAttempts)
+	}
+	if r.MaxAttempts > 10 {
+		return fmt.Errorf("backend.retry.max_attempts must be <= 10 to prevent runaway retries (got %d)", r.MaxAttempts)
+	}
+	if r.InitialBackoff < time.Millisecond {
+		return fmt.Errorf("backend.retry.initial_backoff must be >= 1ms (got %s)", r.InitialBackoff)
+	}
+	if r.MaxBackoff < r.InitialBackoff {
+		return fmt.Errorf("backend.retry.max_backoff (%s) must be >= initial_backoff (%s)", r.MaxBackoff, r.InitialBackoff)
+	}
+	if r.MaxBackoff > 5*time.Minute {
+		return fmt.Errorf("backend.retry.max_backoff must be <= 5m (got %s)", r.MaxBackoff)
+	}
+	switch r.Jitter {
+	case "full", "decorrelated", "equal", "none":
+	default:
+		return fmt.Errorf("backend.retry.jitter must be \"full\", \"decorrelated\", \"equal\", or \"none\" (got %q)", r.Jitter)
+	}
+	for op, attempts := range r.PerOperation {
+		if !knownOperationNames[op] {
+			return fmt.Errorf("backend.retry.per_operation: unknown operation %q (check spelling; known ops: PutObject, GetObject, HeadObject, UploadPart, CompleteMultipartUpload, CopyObject, ...)", op)
+		}
+		if attempts < 1 {
+			return fmt.Errorf("backend.retry.per_operation[%q] must be >= 1 (got %d)", op, attempts)
+		}
+		if attempts > 10 {
+			return fmt.Errorf("backend.retry.per_operation[%q] must be <= 10 (got %d)", op, attempts)
+		}
+	}
+	return nil
 }
 
 // EncryptionConfig holds encryption-related configuration.
@@ -355,6 +503,13 @@ func LoadConfig(path string) (*Config, error) {
 			Endpoint: "", // Leave empty for AWS default, or set for any S3-compatible endpoint
 			Region:   "us-east-1",
 			UseSSL:   true,
+			Retry: BackendRetryConfig{
+				Mode:           DefaultBackendRetryMode,
+				MaxAttempts:    DefaultBackendRetryMaxAttempts,
+				InitialBackoff: DefaultBackendRetryInitialBackoff,
+				MaxBackoff:     DefaultBackendRetryMaxBackoff,
+				Jitter:         DefaultBackendRetryJitter,
+			},
 		},
 		Compression: CompressionConfig{
 			Enabled:   false,
@@ -498,6 +653,32 @@ func loadFromEnv(config *Config) {
 	}
 	if v := os.Getenv("BACKEND_USE_CLIENT_CREDENTIALS"); v != "" {
 		config.Backend.UseClientCredentials = v == "true" || v == "1"
+	}
+	// V0.6-PERF-2 — backend retry config env vars.
+	if v := os.Getenv("BACKEND_RETRY_MODE"); v != "" {
+		config.Backend.Retry.Mode = v
+	}
+	if v := os.Getenv("BACKEND_RETRY_MAX_ATTEMPTS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n >= 1 {
+			config.Backend.Retry.MaxAttempts = n
+		}
+	}
+	if v := os.Getenv("BACKEND_RETRY_INITIAL_BACKOFF"); v != "" {
+		if d, err := time.ParseDuration(v); err == nil {
+			config.Backend.Retry.InitialBackoff = d
+		}
+	}
+	if v := os.Getenv("BACKEND_RETRY_MAX_BACKOFF"); v != "" {
+		if d, err := time.ParseDuration(v); err == nil {
+			config.Backend.Retry.MaxBackoff = d
+		}
+	}
+	if v := os.Getenv("BACKEND_RETRY_JITTER"); v != "" {
+		config.Backend.Retry.Jitter = v
+	}
+	if v := os.Getenv("BACKEND_RETRY_SAFE_COPY_OBJECT"); v != "" {
+		b := v == "true" || v == "1"
+		config.Backend.Retry.SafeCopyObject = &b
 	}
 	if v := os.Getenv("ENCRYPTION_PASSWORD"); v != "" {
 		config.Encryption.Password = v
@@ -972,6 +1153,13 @@ func (c *Config) Validate() error {
 		default:
 			return fmt.Errorf("invalid audit.sink.type: %s (must be stdout, file, or http)", c.Audit.Sink.Type)
 		}
+	}
+
+	// Validate backend retry configuration (V0.6-PERF-2).
+	// Normalize first so that empty-string defaults are resolved before validation.
+	c.Backend.Retry.Normalize()
+	if err := c.Backend.Retry.Validate(); err != nil {
+		return err
 	}
 
 	// Validate admin configuration

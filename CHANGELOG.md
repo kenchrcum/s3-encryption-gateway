@@ -8,6 +8,54 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Performance
 
+- **Configurable S3 backend retry policy** (V0.6-PERF-2):
+  Replaced the SDK-default retryer with a gateway-specific `aws.RetryerV2`
+  implementation (`internal/s3/retry.go`) backed by the new
+  `backend.retry.*` configuration stanza:
+
+  - **Operator-configurable knobs** (all optional, defaults match SDK
+    behaviour): `mode` (`standard` | `adaptive` | `off`),
+    `max_attempts` (1–10, default 3), `initial_backoff` (default 100 ms),
+    `max_backoff` (default 20 s), `jitter`
+    (`full` | `decorrelated` | `equal` | `none`, default `full`),
+    `per_operation` override map, `safe_copy_object` gate.
+
+  - **Idempotency safeguards**: `CompleteMultipartUpload` now defaults to
+    `max_attempts: 1` (non-idempotent post-commit); retrying a successful
+    Complete would return `NoSuchUpload` and confuse the caller. Callers
+    that need retry should do so at the application layer.
+
+  - **HTTP 429 classified as retryable** for all backends (the SDK's
+    default classifier only retries 429 if the response body contains a
+    known throttle error code, which Wasabi and Hetzner do not include).
+
+  - **Crypto errors are hard non-retryable** (`ErrInvalidEnvelope`,
+    `ErrUnwrapFailed`, `ErrKeyNotFound`, `ErrProviderUnavailable`) — no
+    auto-retry on tamper-detected objects.
+
+  - **Context-aware sleep** — request cancellation interrupts a sleeping
+    retry without goroutine leaks.
+
+  - **`Retry-After` header honoured** for HTTP 429/503 responses.
+
+  - **Three new Prometheus metrics**:
+    `s3_backend_retries_total{operation, reason, mode}`,
+    `s3_backend_attempts_per_request{operation}`,
+    `s3_backend_retry_give_ups_total{operation, final_reason}`, and
+    `s3_backend_retry_backoff_seconds` histogram.
+
+  - **Audit event** `backend.retry_give_up` emitted on data-plane write
+    give-ups (not on read-path give-ups to avoid noise).
+
+  - **`adaptive` mode** available for contended backends; wraps the SDK's
+    `retry.AdaptiveMode` token bucket.
+
+  - **`off` mode** disables retries entirely for debug and
+    conformance-test isolation.
+
+  - See `docs/adr/0010-backend-retry-policy.md` and
+    `config.yaml.example` for the full knob reference.
+
 - **Zero-copy streaming on hot data paths** (V0.6-PERF-1): eliminated
   full-object in-memory buffers on the most allocation-heavy paths:
 

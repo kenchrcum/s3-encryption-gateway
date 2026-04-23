@@ -18,17 +18,53 @@ backend:
   # filter_metadata_keys: []  # Optional: Comma-separated list of metadata keys to filter out
   #                           # Useful for S3 backends that reject certain metadata keys
   #                           # Set via BACKEND_FILTER_METADATA_KEYS env var
-  # use_client_credentials: false  # Optional: If true, extract and use credentials from client requests
-  #                                 # When enabled, the gateway will use the client's credentials for backend access,
-  #                                 # respecting their access rights. REQUIRES credentials in every request.
-  #                                 # Backend access_key and secret_key are NOT required when this is enabled.
-  #                                 # 
-  #                                 # SUPPORTED: Query parameters (AWSAccessKeyId, AWSSecretAccessKey in URL)
-  #                                 # NOT SUPPORTED: AWS Signature V4 (Authorization header) - signature validation fails
-  #                                 #   because the signature includes the Host header, and forwarding changes it.
-  #                                 # 
-  #                                 # If credentials cannot be extracted, the request will fail (no fallback).
-  #                                 # Set via BACKEND_USE_CLIENT_CREDENTIALS env var
+   # use_client_credentials: false  # Optional: If true, extract and use credentials from client requests
+   #                                 # When enabled, the gateway will use the client's credentials for backend access,
+   #                                 # respecting their access rights. REQUIRES credentials in every request.
+   #                                 # Backend access_key and secret_key are NOT required when this is enabled.
+   #                                 # 
+   #                                 # SUPPORTED: Query parameters (AWSAccessKeyId, AWSSecretAccessKey in URL)
+   #                                 # NOT SUPPORTED: AWS Signature V4 (Authorization header) - signature validation fails
+   #                                 #   because the signature includes the Host header, and forwarding changes it.
+   #                                 # 
+   #                                 # If credentials cannot be extracted, the request will fail (no fallback).
+   #                                 # Set via BACKEND_USE_CLIENT_CREDENTIALS env var
+
+  # --- Retry Policy (V0.6-PERF-2) ---
+  # Controls how the gateway retries failed S3 backend requests.
+  # All fields are optional; omitted fields use the documented defaults.
+  # See docs/adr/0010-backend-retry-policy.md for full details.
+  # retry:
+  #   mode: "standard"         # "standard" (default) | "adaptive" | "off"
+  #                            # adaptive: adds client-side token bucket for contended backends
+  #                            # off: single attempt only (useful for debug / conformance tests)
+  #                            # Set via BACKEND_RETRY_MODE env var
+  #
+  #   max_attempts: 3          # Total attempts including the first. Range: [1, 10]. Default: 3.
+  #                            # Set via BACKEND_RETRY_MAX_ATTEMPTS env var
+  #
+  #   initial_backoff: "100ms" # Base delay before the first retry. Minimum: 1ms. Default: 100ms.
+  #                            # Tip: use a smaller value (e.g. 10ms) for local MinIO during development.
+  #                            # Set via BACKEND_RETRY_INITIAL_BACKOFF env var
+  #
+  #   max_backoff: "20s"       # Per-attempt delay ceiling. Range: [initial_backoff, 5m]. Default: 20s.
+  #                            # Set via BACKEND_RETRY_MAX_BACKOFF env var
+  #
+  #   jitter: "full"           # Jitter algorithm:
+  #                            #   "full"         (default) — uniform [0, cap]; best against thundering herds
+  #                            #   "decorrelated" — tighter tail than full under high contention
+  #                            #   "equal"        — cap/2 + rand(cap/2); predictable minimum wait
+  #                            #   "none"         — no jitter (debug only; unsafe under contention)
+  #                            # Set via BACKEND_RETRY_JITTER env var
+  #
+  #   safe_copy_object: true   # Allow retrying CopyObject. Disable if your application
+  #                            # depends on If-Match/If-None-Match contracts across copies.
+  #                            # Set via BACKEND_RETRY_SAFE_COPY_OBJECT env var
+  #
+  #   per_operation:           # Per-verb MaxAttempts overrides. A value of 1 disables retries.
+  #     CompleteMultipartUpload: 1   # Default: 1 (non-idempotent post-commit; see ADR 0010)
+  #     # PutObject: 5               # Raise retry budget for critical write paths
+  #     # GetObject: 5               # Raise retry budget for read-heavy workloads
 
 encryption:
   password: ""     # Set via ENCRYPTION_PASSWORD env var

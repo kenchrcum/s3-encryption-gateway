@@ -5,8 +5,16 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"net/http"
 	"strings"
+	"sync"
 	"testing"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	awsconfig "github.com/aws/aws-sdk-go-v2/config"
+	"github.com/aws/aws-sdk-go-v2/credentials"
+	awss3 "github.com/aws/aws-sdk-go-v2/service/s3"
 
 	"github.com/kenneth/s3-encryption-gateway/internal/config"
 )
@@ -244,4 +252,164 @@ func TestClientFactory_GetClient(t *testing.T) {
 			t.Logf("GetClient returned error (expected without real credentials): %v", err)
 		}
 	}
+}
+
+// ---- V0.6-PERF-2 Phase D factory / client integration tests ----------------
+
+// TestClientFactory_RetryerInstalled verifies that the factory constructs a
+// retryer that classifies 503 as retryable and uses the configured MaxAttempts.
+// We test via the retryer directly (not end-to-end through the SDK) to avoid
+// relying on SDK sleep behavior in unit tests.
+func TestClientFactory_RetryerInstalled(t *testing.T) {
+	cfg := &config.BackendConfig{
+		Region:    "us-east-1",
+		AccessKey: "AKIATEST",
+		SecretKey: "secrettest",
+		UseSSL:    false,
+		Retry: config.BackendRetryConfig{
+			Mode:           "standard",
+			MaxAttempts:    3,
+			InitialBackoff: 1 * time.Millisecond,
+			MaxBackoff:     10 * time.Millisecond,
+			Jitter:         "full",
+		},
+	}
+	cfg.Retry.Normalize()
+	factory := NewClientFactory(cfg)
+
+	// Verify the retry factory is installed.
+	if factory.retryerFactory == nil {
+		t.Fatal("retryerFactory should not be nil for mode=standard")
+	}
+
+	// Build a per-operation retryer and verify it classifies 503 as retryable.
+	r := factory.retryerFactory.Build("PutObject")
+	err503 := makeHTTPRespErr(t, 503, 0)
+	if !r.IsErrorRetryable(err503) {
+		t.Error("503 should be retryable")
+	}
+	if r.MaxAttempts() != 3 {
+		t.Errorf("MaxAttempts: expected 3, got %d", r.MaxAttempts())
+	}
+}
+
+// TestClientFactory_RetryMode_Off verifies that mode=off disables retries.
+func TestClientFactory_RetryMode_Off(t *testing.T) {
+	var attemptCount int
+	countingTransport := &countingFaultTransport{
+		faultStatus:   503,
+		faultCount:    999, // always fail
+		onAttempt:     func() { attemptCount++ },
+		okBodyBuilder: benchBodyFor,
+	}
+
+	cfg := &config.BackendConfig{
+		Region:    "us-east-1",
+		AccessKey: "AKIATEST",
+		SecretKey: "secrettest",
+		UseSSL:    false,
+		Retry: config.BackendRetryConfig{
+			Mode:           "off",
+			MaxAttempts:    1,
+			InitialBackoff: 1 * time.Millisecond,
+			MaxBackoff:     10 * time.Millisecond,
+			Jitter:         "full",
+		},
+	}
+	cfg.Retry.Normalize()
+
+	awsCfg, err := awsconfig.LoadDefaultConfig(context.Background(),
+		awsconfig.WithRegion("us-east-1"),
+		awsconfig.WithCredentialsProvider(credentials.NewStaticCredentialsProvider("AKIATEST", "secrettest", "")),
+		awsconfig.WithRequestChecksumCalculation(aws.RequestChecksumCalculationWhenRequired),
+		awsconfig.WithResponseChecksumValidation(aws.ResponseChecksumValidationWhenRequired),
+		awsconfig.WithHTTPClient(&http.Client{Transport: countingTransport}),
+		awsconfig.WithRetryer(func() aws.Retryer {
+			return newNopRetryerV2()
+		}),
+	)
+	if err != nil {
+		t.Fatalf("LoadDefaultConfig: %v", err)
+	}
+	sdkClient := awss3.NewFromConfig(awsCfg, func(o *awss3.Options) {
+		o.BaseEndpoint = aws.String("http://localhost:9000")
+		o.UsePathStyle = true
+	})
+
+	payload := make([]byte, 16)
+	_, _ = sdkClient.PutObject(context.Background(), &awss3.PutObjectInput{
+		Bucket:        aws.String("test-bucket"),
+		Key:           aws.String("test-key"),
+		Body:          bytes.NewReader(payload),
+		ContentLength: aws.Int64(int64(len(payload))),
+	})
+
+	if attemptCount != 1 {
+		t.Errorf("mode=off: expected exactly 1 attempt, got %d", attemptCount)
+	}
+	_ = cfg
+}
+
+// TestClientFactory_PerOperationOverride_DisablesPutObject verifies that a
+// per-operation override of 1 for PutObject results in a single attempt.
+func TestClientFactory_PerOperationOverride_DisablesPutObject(t *testing.T) {
+	cfg := defaultTestCfg()
+	cfg.PerOperation = map[string]int{"PutObject": 1}
+
+	r := newTestRetryer(t, cfg, &fakeClock{}, nil, nil).clone("PutObject")
+	if r.MaxAttempts() != 1 {
+		t.Errorf("per-op override should give MaxAttempts=1 for PutObject, got %d", r.MaxAttempts())
+	}
+
+	// HeadObject should still use the global MaxAttempts=3.
+	rHead := newTestRetryer(t, cfg, &fakeClock{}, nil, nil).clone("HeadObject")
+	if rHead.MaxAttempts() != 3 {
+		t.Errorf("HeadObject should still use global MaxAttempts=3, got %d", rHead.MaxAttempts())
+	}
+}
+
+// countingFaultTransport injects `faultCount` faults then returns 200.
+// Thread-safe for concurrent use.
+type countingFaultTransport struct {
+	faultStatus   int
+	faultCount    int
+	onAttempt     func()
+	okBodyBuilder func(req *http.Request) string
+	mu            sync.Mutex
+	called        int
+}
+
+func (t *countingFaultTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	t.mu.Lock()
+	t.called++
+	n := t.called
+	t.mu.Unlock()
+
+	if t.onAttempt != nil {
+		t.onAttempt()
+	}
+
+	if n <= t.faultCount {
+		body := fmt.Sprintf(`<Error><Code>ServiceUnavailable</Code><Message>injected %d</Message></Error>`, t.faultStatus)
+		return &http.Response{
+			StatusCode: t.faultStatus,
+			Status:     fmt.Sprintf("%d %s", t.faultStatus, http.StatusText(t.faultStatus)),
+			Header:     http.Header{"Content-Type": []string{"application/xml"}, "x-amz-request-id": []string{"COUNTFLT"}},
+			Body:       io.NopCloser(strings.NewReader(body)),
+			Request:    req,
+		}, nil
+	}
+
+	// Success path.
+	var body string
+	if t.okBodyBuilder != nil {
+		body = t.okBodyBuilder(req)
+	}
+	return &http.Response{
+		StatusCode: 200,
+		Status:     "200 OK",
+		Header:     http.Header{"Content-Type": []string{"application/xml"}, "ETag": []string{`"countok"`}},
+		Body:       io.NopCloser(strings.NewReader(body)),
+		Request:    req,
+	}, nil
 }

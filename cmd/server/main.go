@@ -354,15 +354,25 @@ func main() {
 	// Start system metrics collector
 	m.StartSystemMetricsCollector()
 
-	// Initialize S3 client (only if useClientCredentials is not enabled)
-	// When useClientCredentials is enabled, clients are created per-request from client credentials
+	// Log any advisory warnings from the retry configuration.
+	for _, w := range s3.ValidationWarnings(cfg.Backend.Retry) {
+		logger.Warn("backend retry config: " + w)
+	}
+
+	// Initialize S3 client (only if useClientCredentials is not enabled).
+	// V0.6-PERF-2: always use ClientFactory so the retry policy is applied.
 	var s3Client s3.Client
 	if !cfg.Backend.UseClientCredentials {
-		s3Client, err = s3.NewClient(&cfg.Backend)
+		factory := s3.NewClientFactory(&cfg.Backend, s3.WithMetrics(m))
+		s3Client, err = factory.GetClient()
 		if err != nil {
 			logger.WithError(err).Fatal("Failed to create S3 client")
 		}
-		logger.Info("S3 backend client initialized with configured credentials")
+		logger.WithFields(logrus.Fields{
+			"retry_mode":     cfg.Backend.Retry.Mode,
+			"max_attempts":   cfg.Backend.Retry.MaxAttempts,
+			"initial_backoff": cfg.Backend.Retry.InitialBackoff,
+		}).Info("S3 backend client initialized with configured credentials and retry policy")
 	} else {
 		logger.Info("Client credential passthrough enabled - S3 clients will be created per-request from client credentials")
 	}

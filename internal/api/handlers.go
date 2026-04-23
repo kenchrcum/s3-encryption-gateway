@@ -73,9 +73,10 @@ func NewHandlerWithFeatures(
 		config:           config,
 		policyManager:    policyManager,
 	}
-	// Create client factory for per-request credential support
+	// Create client factory for per-request credential support.
+	// V0.6-PERF-2: inject metrics so the factory can emit retry counters.
 	if config != nil {
-		h.clientFactory = s3.NewClientFactory(&config.Backend)
+		h.clientFactory = s3.NewClientFactory(&config.Backend, s3.WithMetrics(m))
 	}
 	return h
 }

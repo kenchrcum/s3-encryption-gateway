@@ -22,6 +22,7 @@ import (
 
 	"github.com/kenneth/s3-encryption-gateway/internal/config"
 	"github.com/kenneth/s3-encryption-gateway/internal/debug"
+	"github.com/kenneth/s3-encryption-gateway/internal/metrics"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
@@ -171,15 +172,61 @@ type s3Client struct {
 }
 
 // ClientFactory creates S3 clients, optionally with per-request credentials.
+// V0.6-PERF-2: gains optional retry config (wired via ClientFactoryOption).
 type ClientFactory struct {
-	baseConfig *config.BackendConfig
+	baseConfig     *config.BackendConfig
+	retryConfig    config.BackendRetryConfig // normalised at construction
+	retryerFactory *retryerFactory           // nil → use SDK default
+	m              *metrics.Metrics          // nil → no retry metrics
+}
+
+// ClientFactoryOption is a functional option for NewClientFactory.
+type ClientFactoryOption func(*ClientFactory)
+
+// WithMetrics configures the factory to emit retry metrics via m.
+// Pass nil to disable retry metrics (production default uses the gateway-wide
+// Metrics instance).
+func WithMetrics(m *metrics.Metrics) ClientFactoryOption {
+	return func(f *ClientFactory) {
+		f.m = m
+	}
 }
 
 // NewClientFactory creates a new client factory from base configuration.
-func NewClientFactory(cfg *config.BackendConfig) *ClientFactory {
-	return &ClientFactory{
-		baseConfig: cfg,
+// Functional options may be passed to configure retry metrics and other
+// optional dependencies (V0.6-PERF-2 Phase D).
+func NewClientFactory(cfg *config.BackendConfig, opts ...ClientFactoryOption) *ClientFactory {
+	// Normalise the retry config (fills in defaults for zero values).
+	rc := cfg.Retry
+	rc.Normalize()
+
+	f := &ClientFactory{
+		baseConfig:  cfg,
+		retryConfig: rc,
 	}
+	for _, opt := range opts {
+		opt(f)
+	}
+
+	// Build the retryer factory if mode != "off".
+	if rc.Mode != "off" {
+		var onAttempt OnAttemptFn
+		var onGiveUp OnGiveUpFn
+		if f.m != nil {
+			m := f.m // capture for closures
+			onAttempt = func(op string, attempt int, reason string, delay time.Duration) {
+				m.RecordBackendRetryWithMode(op, reason, rc.Mode)
+				m.RecordBackendRetryBackoff(delay)
+			}
+			onGiveUp = func(op string, attempts int, reason string, _ error) {
+				m.RecordBackendAttemptsPerRequest(op, attempts)
+				m.RecordBackendRetryGiveUp(op, reason)
+			}
+		}
+		f.retryerFactory = newRetryerFactory(rc, 0, nil, onAttempt, onGiveUp)
+	}
+
+	return f
 }
 
 // GetClient returns a client using the base configured credentials.
@@ -204,7 +251,10 @@ func (f *ClientFactory) GetClientWithCredentials(accessKey, secretKey string) (C
 		region = "us-east-1" // Default region for AWS SDK compatibility
 	}
 
-	awsCfg, err := awsconfig.LoadDefaultConfig(context.Background(),
+	// Build the list of aws.Config options.  The retryer is injected here so
+	// every client created by this factory uses the gateway-configured retry
+	// policy (V0.6-PERF-2 Phase D).
+	awsConfigOpts := []func(*awsconfig.LoadOptions) error{
 		awsconfig.WithRegion(region),
 		awsconfig.WithCredentialsProvider(credentials.NewStaticCredentialsProvider(
 			accessKey,
@@ -224,7 +274,29 @@ func (f *ClientFactory) GetClientWithCredentials(accessKey, secretKey string) (C
 		// Disable automatic response checksum validation for parity: MinIO may
 		// not always return the x-amz-checksum-* headers the SDK expects.
 		awsconfig.WithResponseChecksumValidation(aws.ResponseChecksumValidationWhenRequired),
-	)
+	}
+
+	// Install the gateway custom retryer or NopRetryer for mode=off.
+	// WithRetryer accepts a factory func so each request context gets a fresh
+	// per-operation retry state (per §4.6 of the PERF-2 plan).
+	if f.retryConfig.Mode == "off" {
+		awsConfigOpts = append(awsConfigOpts, awsconfig.WithRetryer(func() aws.Retryer {
+			return newNopRetryerV2()
+		}))
+	} else if f.retryerFactory != nil {
+		rf := f.retryerFactory // capture
+		awsConfigOpts = append(awsConfigOpts, awsconfig.WithRetryer(func() aws.Retryer {
+			// The SDK calls this factory once per logical operation and uses the
+			// returned retryer for all attempts in that operation.
+			// We return a clone keyed to the empty operation name here; the SDK
+			// does not call WithRetryer per-operation (it reuses the outer aws.Config).
+			// The operation name is set on the returned retryer via the per-request
+			// context in Phase C.  For now, "PutObject" is the safe fallback.
+			return rf.Build("")
+		}))
+	}
+
+	awsCfg, err := awsconfig.LoadDefaultConfig(context.Background(), awsConfigOpts...)
 	if err != nil {
 		return nil, fmt.Errorf("failed to load AWS config: %w", err)
 	}

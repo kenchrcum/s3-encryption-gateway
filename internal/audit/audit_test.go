@@ -211,3 +211,42 @@ func TestAuditLogger_LogAccess_BackwardCompat(t *testing.T) {
 		t.Errorf("expected nil Metadata for LogAccess without metadata, got %v", event.Metadata)
 	}
 }
+
+// TestAuditLogger_BackendRetryGiveUp verifies that EventTypeBackendRetryGiveUp
+// is a valid event type constant and can be used with LogAccessWithMetadata.
+// V0.6-PERF-2 Phase E.
+func TestAuditLogger_BackendRetryGiveUp(t *testing.T) {
+	logger := NewLogger(100, nil)
+
+	metadata := map[string]interface{}{
+		"operation":           "PutObject",
+		"bucket":              "test-bucket",
+		"key":                 "test-key",
+		"attempts":            3,
+		"final_error_class":   "throttle_503",
+		"total_backoff_secs":  4.2,
+		"request_id":          "REQ-123",
+	}
+	logger.LogAccessWithMetadata(
+		string(EventTypeBackendRetryGiveUp),
+		"test-bucket", "test-key",
+		"10.0.0.1", "test-agent", "REQ-123",
+		false, nil, 4200*time.Millisecond,
+		metadata,
+	)
+
+	events := logger.GetEvents()
+	if len(events) != 1 {
+		t.Fatalf("expected 1 event, got %d", len(events))
+	}
+	event := events[0]
+	if event.EventType != EventTypeBackendRetryGiveUp {
+		t.Errorf("expected event type %s, got %s", EventTypeBackendRetryGiveUp, event.EventType)
+	}
+	if event.Metadata["operation"] != "PutObject" {
+		t.Errorf("expected metadata operation=PutObject, got %v", event.Metadata["operation"])
+	}
+	if event.Metadata["final_error_class"] != "throttle_503" {
+		t.Errorf("expected final_error_class=throttle_503, got %v", event.Metadata["final_error_class"])
+	}
+}
