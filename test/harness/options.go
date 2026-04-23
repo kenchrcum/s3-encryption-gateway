@@ -4,6 +4,8 @@
 package harness
 
 import (
+	"net/http"
+
 	"github.com/kenneth/s3-encryption-gateway/internal/audit"
 	"github.com/kenneth/s3-encryption-gateway/internal/config"
 	"github.com/kenneth/s3-encryption-gateway/internal/crypto"
@@ -29,6 +31,11 @@ type options struct {
 	compressionAlgo     string
 	logLevel            string
 	extraConfig         func(*config.Config)
+	// backendTransport, when non-nil, replaces the HTTP transport used by the
+	// gateway's S3 backend client.  Use this in chaos / retry tests to inject
+	// faults at the gateway→backend layer without an external proxy.
+	// See WithBackendTransport and FaultyRoundTripper.
+	backendTransport    http.RoundTripper
 }
 
 // Option is a functional option for StartGateway.
@@ -111,4 +118,18 @@ func WithLogLevel(level string) Option {
 // sparingly; prefer typed options for discoverable configuration.
 func WithConfigMutator(fn func(*config.Config)) Option {
 	return func(o *options) { o.extraConfig = fn }
+}
+
+// WithBackendTransport replaces the HTTP transport used by the gateway's S3
+// backend client.  When set, every backend request the gateway makes passes
+// through rt before hitting the real (or fake) backend.
+//
+// Primary use: fault injection in retry / chaos conformance tests.  For
+// example, wrap a real provider's transport with FaultyRoundTripper to inject
+// transient errors at a controlled rate while still using a real MinIO backend
+// for correctness assertions.
+//
+// Production code must never call this; it is for tests only.
+func WithBackendTransport(rt http.RoundTripper) Option {
+	return func(o *options) { o.backendTransport = rt }
 }

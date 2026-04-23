@@ -23,6 +23,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus/testutil"
+
 	internalconfig "github.com/kenneth/s3-encryption-gateway/internal/config"
 	"github.com/kenneth/s3-encryption-gateway/test/harness"
 	"github.com/kenneth/s3-encryption-gateway/test/provider"
@@ -195,13 +197,17 @@ func testChaosThrottling(t *testing.T, _ provider.Instance) {
 		io.Copy(io.Discard, resp.Body)
 		resp.Body.Close()
 
-		// The AWS SDK retries on 429 — the gateway should surface 200.
+		// The gateway must surface 200 after retries succeed.
 		if resp.StatusCode != http.StatusOK {
 			t.Errorf("expected 200 after retries, got %d", resp.StatusCode)
 		}
 		// Backend must have seen at least 3 requests (2 failures + 1 success).
 		if n := backend.totalRequests(); n < 3 {
 			t.Errorf("expected ≥3 backend requests (retries), got %d", n)
+		}
+		// V0.6-PERF-2: verify retry metrics were emitted.
+		if testutil.CollectAndCount(gw.Metrics, "s3_backend_retries_total") == 0 {
+			t.Error("s3_backend_retries_total: no series recorded after 429 retries")
 		}
 	})
 
@@ -221,6 +227,10 @@ func testChaosThrottling(t *testing.T, _ provider.Instance) {
 
 		if resp.StatusCode == http.StatusOK {
 			t.Error("expected failure for persistent throttling, got 200 OK")
+		}
+		// V0.6-PERF-2: verify give-up metric was emitted.
+		if testutil.CollectAndCount(gw.Metrics, "s3_backend_retry_give_ups_total") == 0 {
+			t.Error("s3_backend_retry_give_ups_total: no series recorded after exhausted retries")
 		}
 	})
 }
@@ -254,6 +264,10 @@ func testChaosBackend500(t *testing.T, _ provider.Instance) {
 		if n := backend.totalRequests(); n < 3 {
 			t.Errorf("expected ≥3 backend requests (retries on 500), got %d", n)
 		}
+		// V0.6-PERF-2: retry metrics must have fired.
+		if testutil.CollectAndCount(gw.Metrics, "s3_backend_retries_total") == 0 {
+			t.Error("s3_backend_retries_total: no series recorded after 500 retries")
+		}
 	})
 
 	t.Run("Persistent500", func(t *testing.T) {
@@ -270,6 +284,10 @@ func testChaosBackend500(t *testing.T, _ provider.Instance) {
 
 		if resp.StatusCode == http.StatusOK {
 			t.Error("expected failure for persistent 500s, got 200 OK")
+		}
+		// V0.6-PERF-2: give-up metric must have fired.
+		if testutil.CollectAndCount(gw.Metrics, "s3_backend_retry_give_ups_total") == 0 {
+			t.Error("s3_backend_retry_give_ups_total: no series recorded after exhausted 500 retries")
 		}
 	})
 }

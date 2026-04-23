@@ -124,9 +124,16 @@ func StartGateway(t *testing.T, inst provider.Instance, opts ...Option) *Gateway
 	m := metrics.NewMetricsWithRegistry(reg)
 
 	// S3 backend client.
+	// V0.6-PERF-2: use NewClientFactory so the retry policy and optional
+	// fault-injection transport are both wired in.
 	var s3Client s3.Client
 	if !cfg.Backend.UseClientCredentials {
-		s3Client, err = s3.NewClient(&cfg.Backend)
+		factoryOpts := []s3.ClientFactoryOption{s3.WithMetrics(m)}
+		if o.backendTransport != nil {
+			factoryOpts = append(factoryOpts, s3.WithHTTPTransport(o.backendTransport))
+		}
+		factory := s3.NewClientFactory(&cfg.Backend, factoryOpts...)
+		s3Client, err = factory.GetClient()
 		if err != nil {
 			listener.Close()
 			t.Fatalf("harness.StartGateway: create S3 client: %v", err)

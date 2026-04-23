@@ -15,6 +15,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -327,6 +328,13 @@ type OnGiveUpFn func(op string, attempts int, reason string, err error)
 //   - configurable jitter backoff algorithms
 //   - context-aware sleep
 //   - per-attempt and give-up callbacks (used by the metrics sink)
+//
+// Attempt tracking: the SDK retry middleware calls GetAttemptToken before each
+// attempt (including the first) and GetRetryToken before each retry (i.e.
+// attempt ≥ 2).  We count GetRetryToken calls to know how many retries were
+// issued, and emit the give-up + attempts-per-request metrics from the release
+// closure of the initial token (via GetAttemptToken), which is called after
+// every attempt including the final one.
 type retryer struct {
 	inner      aws.Retryer
 	cfg        config.BackendRetryConfig
@@ -337,6 +345,7 @@ type retryer struct {
 	onGiveUp   OnGiveUpFn
 	prevDelay  time.Duration // used by decorrelated jitter
 	mu         sync.Mutex
+	retries    int32 // atomic: counts GetRetryToken calls (= retries, not initial attempt)
 }
 
 // newRetryer builds a retryer from the supplied config.
@@ -450,25 +459,83 @@ func (r *retryer) RetryDelay(attempt int, opErr error) (time.Duration, error) {
 	return delay, nil
 }
 
-// GetRetryToken delegates to the inner retryer's token bucket.
+// GetRetryToken delegates to the inner retryer's token bucket, and counts the
+// number of retries issued for this logical operation.  The count is used by
+// GetAttemptToken's release to compute total attempts.
 func (r *retryer) GetRetryToken(ctx context.Context, opErr error) (func(error) error, error) {
+	atomic.AddInt32(&r.retries, 1)
 	return r.inner.GetRetryToken(ctx, opErr)
 }
 
 // GetInitialToken delegates to the inner retryer.
+// The returned release function is instrumented to emit give-up and
+// attempts-per-request metrics when the operation concludes with an error
+// (i.e. all retries were exhausted or the error was non-retryable).
 func (r *retryer) GetInitialToken() func(error) error {
-	return r.inner.GetInitialToken()
+	innerRelease := r.inner.GetInitialToken()
+	return r.makeTrackedRelease(innerRelease)
 }
 
 // GetAttemptToken returns the send token from the inner retryer (RetryerV2).
+// The returned release function is instrumented identically to GetInitialToken.
 func (r *retryer) GetAttemptToken(ctx context.Context) (func(error) error, error) {
+	var innerRelease func(error) error
 	if v2, ok := r.inner.(interface {
 		GetAttemptToken(context.Context) (func(error) error, error)
 	}); ok {
-		return v2.GetAttemptToken(ctx)
+		var err error
+		innerRelease, err = v2.GetAttemptToken(ctx)
+		if err != nil {
+			return nil, err
+		}
+	} else {
+		innerRelease = r.inner.GetInitialToken()
 	}
-	// Fall back to GetInitialToken for RetryerV1.
-	return r.inner.GetInitialToken(), nil
+	return r.makeTrackedRelease(innerRelease), nil
+}
+
+// makeTrackedRelease wraps an inner release function so that after every
+// operation that involved at least one retry attempt:
+//   - emit s3_backend_attempts_per_request histogram (total attempts) always
+//   - emit s3_backend_retry_give_ups_total (give-up counter) only when the
+//     operation fails after exhausting retries
+//
+// Non-retried operations (successful first attempt, or immediately-rejected
+// non-retryable errors) do not emit the give-up counter.  The attempts
+// histogram is emitted whenever retries occurred, regardless of outcome,
+// per the plan §Phase E description.
+//
+// The release is called once per logical operation (not once per retry).
+func (r *retryer) makeTrackedRelease(inner func(error) error) func(error) error {
+	return func(opErr error) error {
+		result := inner(opErr)
+		totalRetries := int(atomic.LoadInt32(&r.retries))
+		if totalRetries == 0 {
+			// No retries: skip all attempt-tracking metrics.
+			return result
+		}
+		totalAttempts := totalRetries + 1 // first attempt + retries
+
+		if opErr != nil {
+			// Operation failed after retries: emit give-up counter.
+			// onGiveUp also calls RecordBackendAttemptsPerRequest.
+			reason, _ := classify(r.op, opErr)
+			if r.onGiveUp != nil {
+				r.onGiveUp(r.op, totalAttempts, string(reason), opErr)
+			}
+		} else {
+			// Operation succeeded after retries: emit attempts histogram only
+			// (no give-up).  The onAttemptSuccess callback is not available in
+			// the current design, so we emit via onGiveUp with nil err and
+			// "sdk_generic" reason as a harmless sentinel — the metrics sink
+			// interprets this as an attempts observation with no give-up counter.
+			// Simpler: call onGiveUp with a nil error; the sink must tolerate this.
+			if r.onGiveUp != nil {
+				r.onGiveUp(r.op, totalAttempts, string(reasonSDKGeneric), nil)
+			}
+		}
+		return result
+	}
 }
 
 // retryAfterSeconds extracts the Retry-After value in seconds from a response
@@ -583,12 +650,18 @@ func (s *metricsSink) onAttempt(op string, attempt int, reason string, delay tim
 	s.m.RecordBackendRetryBackoff(delay)
 }
 
-func (s *metricsSink) onGiveUp(op string, attempts int, reason string, _ error) {
+func (s *metricsSink) onGiveUp(op string, attempts int, reason string, err error) {
 	if s == nil || s.m == nil {
 		return
 	}
 	s.m.RecordBackendAttemptsPerRequest(op, attempts)
-	s.m.RecordBackendRetryGiveUp(op, reason)
+	// Only emit the give-up counter when the operation actually failed.
+	// A nil error means the operation succeeded after retries (attempts > 1 but
+	// no give-up); we still want to track the attempt count but not count this
+	// as a give-up event.
+	if err != nil {
+		s.m.RecordBackendRetryGiveUp(op, reason)
+	}
 }
 
 // Ensure retryer implements aws.RetryerV2.

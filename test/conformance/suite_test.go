@@ -136,6 +136,21 @@ func TestConformance(t *testing.T) {
 			{"Chaos_Throttling", provider.CapLoadTest, testChaosThrottling},
 			{"Chaos_Backend500", provider.CapLoadTest, testChaosBackend500},
 			{"Chaos_NetworkTimeout", provider.CapLoadTest, testChaosNetworkTimeout},
+
+			// V0.6-PERF-2 retry policy conformance — cap=0, runs on every provider.
+			// These use an in-process ToxicServer backend so no Docker is required.
+			// They verify Prometheus metric emission end-to-end (not just unit-test level).
+			{"PERF2_Retry_503_MetricEmitted", 0, testRetry_TransientBackend503_MetricEmitted},
+			{"PERF2_Retry_429_MetricEmitted", 0, testRetry_TransientBackend429_MetricEmitted},
+			{"PERF2_Retry_GiveUp_MetricEmitted", 0, testRetry_PersistentFailure_GiveUpMetricEmitted},
+			{"PERF2_Retry_BackoffHistogram", 0, testRetry_BackoffHistogramPopulated},
+			{"PERF2_Retry_AttemptsHistogram", 0, testRetry_AttemptsHistogramPopulated},
+			{"PERF2_Retry_MaxAttemptsRespected", 0, testRetry_MaxAttemptsRespected},
+			{"PERF2_Retry_ModeOff_SingleAttempt", 0, testRetry_ModeOff_SingleAttempt},
+			{"PERF2_Retry_4xxNotRetried", 0, testRetry_4xxNotRetried},
+			{"PERF2_Retry_RetryAfterHonoured", 0, testRetry_RetryAfterHeaderHonoured},
+			{"PERF2_Retry_ReasonLabel_503", 0, testRetry_ReasonLabel_Throttle503},
+			{"PERF2_Retry_AllMetricsRegistered", 0, testRetry_AllMetricsRegistered},
 		}
 
 			for _, tc := range cases {

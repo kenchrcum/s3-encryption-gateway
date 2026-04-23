@@ -178,6 +178,7 @@ type ClientFactory struct {
 	retryConfig    config.BackendRetryConfig // normalised at construction
 	retryerFactory *retryerFactory           // nil → use SDK default
 	m              *metrics.Metrics          // nil → no retry metrics
+	httpTransport  http.RoundTripper         // nil → use SDK default transport
 }
 
 // ClientFactoryOption is a functional option for NewClientFactory.
@@ -189,6 +190,16 @@ type ClientFactoryOption func(*ClientFactory)
 func WithMetrics(m *metrics.Metrics) ClientFactoryOption {
 	return func(f *ClientFactory) {
 		f.m = m
+	}
+}
+
+// WithHTTPTransport replaces the default http.RoundTripper used by the AWS SDK
+// for all backend requests.  Use this in tests to inject fault-injection
+// transports (e.g. FaultyRoundTripper) at the gateway→backend layer.
+// Production code should never call this.
+func WithHTTPTransport(rt http.RoundTripper) ClientFactoryOption {
+	return func(f *ClientFactory) {
+		f.httpTransport = rt
 	}
 }
 
@@ -255,6 +266,14 @@ func (f *ClientFactory) GetClientWithCredentials(accessKey, secretKey string) (C
 	// every client created by this factory uses the gateway-configured retry
 	// policy (V0.6-PERF-2 Phase D).
 	awsConfigOpts := []func(*awsconfig.LoadOptions) error{
+		// Inject a custom HTTP transport if one was supplied (used in tests for
+		// fault injection at the gateway→backend layer — WithHTTPTransport).
+		func() func(*awsconfig.LoadOptions) error {
+			if f.httpTransport != nil {
+				return awsconfig.WithHTTPClient(&http.Client{Transport: f.httpTransport})
+			}
+			return func(*awsconfig.LoadOptions) error { return nil }
+		}(),
 		awsconfig.WithRegion(region),
 		awsconfig.WithCredentialsProvider(credentials.NewStaticCredentialsProvider(
 			accessKey,
