@@ -2,6 +2,7 @@ package config
 
 import (
 	"os"
+	"strings"
 	"testing"
 	"time"
 )
@@ -506,5 +507,191 @@ per_operation:
 	}
 	if original.PerOperation["GetObject"] != 5 {
 		t.Errorf("PerOperation[GetObject]: %d", original.PerOperation["GetObject"])
+	}
+}
+
+// ---- V0.6-OBS-1 AdminProfilingConfig validation tests ------------------
+
+// minValidConfig returns a Config that passes all existing validation rules so
+// that profiling tests can inject only the fields they care about.
+func minValidConfig() *Config {
+	return &Config{
+		ListenAddr: ":8080",
+		Backend: BackendConfig{
+			AccessKey: "test-key",
+			SecretKey: "test-secret",
+		},
+		Encryption: EncryptionConfig{
+			Password: "test-password",
+		},
+	}
+}
+
+// TestAdminProfilingConfig_Validate_RequiresAdminEnabled verifies that
+// admin.profiling.enabled=true + admin.enabled=false produces an error.
+func TestAdminProfilingConfig_Validate_RequiresAdminEnabled(t *testing.T) {
+	cfg := minValidConfig()
+	cfg.Admin.Profiling.Enabled = true
+	cfg.Admin.Enabled = false // profiling requires admin
+
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("expected error when profiling enabled but admin disabled")
+	}
+	if !strings.Contains(err.Error(), "admin.profiling requires admin.enabled") {
+		t.Errorf("unexpected error message: %v", err)
+	}
+}
+
+// TestAdminProfilingConfig_Validate_NonLoopbackRequiresTLS verifies that
+// a non-loopback admin address with profiling enabled requires TLS.
+// Note: the existing admin-block validator fires first with a slightly
+// different (but equivalent) message. We accept either message.
+func TestAdminProfilingConfig_Validate_NonLoopbackRequiresTLS(t *testing.T) {
+	cfg := minValidConfig()
+	t.Setenv("ADMIN_ALLOW_INLINE_TOKEN", "1")
+	cfg.Admin.Enabled = true
+	cfg.Admin.Address = "0.0.0.0:8081" // non-loopback
+	cfg.Admin.Auth.Token = strings.Repeat("a", 64)
+	cfg.Admin.RateLimit.RequestsPerMinute = 30
+	cfg.Admin.TLS.Enabled = false
+	cfg.Admin.Profiling.Enabled = true
+	cfg.Admin.Profiling.MaxProfileSeconds = 60
+	cfg.Admin.Profiling.MaxConcurrentProfiles = 2
+
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("expected error when profiling on non-loopback without TLS")
+	}
+	// The existing admin-block validator fires first with the admin-level
+	// message; the profiling block fires second if the admin one is absent.
+	// Either message is acceptable — both require TLS on non-loopback.
+	hasTLSMsg := strings.Contains(err.Error(), "tls.enabled")
+	if !hasTLSMsg {
+		t.Errorf("expected TLS-related error, got: %v", err)
+	}
+}
+
+// TestAdminProfilingConfig_Validate_NegativeBlockRate verifies that a negative
+// block_rate is rejected.
+func TestAdminProfilingConfig_Validate_NegativeBlockRate(t *testing.T) {
+	cfg := minValidConfig()
+	t.Setenv("ADMIN_ALLOW_INLINE_TOKEN", "1")
+	cfg.Admin.Enabled = true
+	cfg.Admin.Address = "127.0.0.1:8081"
+	cfg.Admin.Auth.Token = strings.Repeat("b", 64)
+	cfg.Admin.RateLimit.RequestsPerMinute = 30
+	cfg.Admin.Profiling.Enabled = true
+	cfg.Admin.Profiling.BlockRate = -1
+	cfg.Admin.Profiling.MaxProfileSeconds = 60
+	cfg.Admin.Profiling.MaxConcurrentProfiles = 2
+
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("expected error for negative block_rate")
+	}
+	if !strings.Contains(err.Error(), "block_rate") {
+		t.Errorf("unexpected error message: %v", err)
+	}
+}
+
+// TestAdminProfilingConfig_Validate_NegativeMutexFraction verifies that a
+// negative mutex_fraction is rejected.
+func TestAdminProfilingConfig_Validate_NegativeMutexFraction(t *testing.T) {
+	cfg := minValidConfig()
+	t.Setenv("ADMIN_ALLOW_INLINE_TOKEN", "1")
+	cfg.Admin.Enabled = true
+	cfg.Admin.Address = "127.0.0.1:8081"
+	cfg.Admin.Auth.Token = strings.Repeat("c", 64)
+	cfg.Admin.RateLimit.RequestsPerMinute = 30
+	cfg.Admin.Profiling.Enabled = true
+	cfg.Admin.Profiling.MutexFraction = -1
+	cfg.Admin.Profiling.MaxProfileSeconds = 60
+	cfg.Admin.Profiling.MaxConcurrentProfiles = 2
+
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("expected error for negative mutex_fraction")
+	}
+	if !strings.Contains(err.Error(), "mutex_fraction") {
+		t.Errorf("unexpected error message: %v", err)
+	}
+}
+
+// TestAdminProfilingConfig_Validate_OutOfRangeMaxProfileSeconds verifies that
+// max_profile_seconds outside [1, 600] is rejected.
+func TestAdminProfilingConfig_Validate_OutOfRangeMaxProfileSeconds(t *testing.T) {
+	t.Setenv("ADMIN_ALLOW_INLINE_TOKEN", "1")
+
+	cases := []struct {
+		secs    int
+		wantErr bool
+	}{
+		{0, true},   // below minimum
+		{601, true}, // above maximum
+		{1, false},  // minimum — OK
+		{60, false}, // typical — OK
+		{600, false}, // maximum — OK
+	}
+
+	for _, c := range cases {
+		cfg := minValidConfig()
+		cfg.Admin.Enabled = true
+		cfg.Admin.Address = "127.0.0.1:8081"
+		cfg.Admin.Auth.Token = strings.Repeat("d", 64)
+		cfg.Admin.RateLimit.RequestsPerMinute = 30
+		cfg.Admin.Profiling.Enabled = true
+		cfg.Admin.Profiling.MaxProfileSeconds = c.secs
+		cfg.Admin.Profiling.MaxConcurrentProfiles = 2
+
+		err := cfg.Validate()
+		if c.wantErr && err == nil {
+			t.Errorf("secs=%d: expected error, got nil", c.secs)
+		}
+		if !c.wantErr && err != nil {
+			t.Errorf("secs=%d: unexpected error: %v", c.secs, err)
+		}
+	}
+}
+
+// TestAdminProfilingConfig_Validate_DefaultsPassValidation verifies that the
+// default AdminProfilingConfig (enabled=false) passes validation silently.
+func TestAdminProfilingConfig_Validate_DefaultsPassValidation(t *testing.T) {
+	cfg := minValidConfig()
+	// Profiling disabled by default — no admin setup needed.
+	err := cfg.Validate()
+	if err != nil {
+		t.Errorf("default profiling config should pass validation, got: %v", err)
+	}
+}
+
+// TestAdminProfilingEnvVars verifies that the ADMIN_PROFILING_* env vars are
+// picked up by loadFromEnv.
+func TestAdminProfilingEnvVars(t *testing.T) {
+	t.Setenv("ADMIN_PROFILING_ENABLED", "true")
+	t.Setenv("ADMIN_PROFILING_BLOCK_RATE", "100")
+	t.Setenv("ADMIN_PROFILING_MUTEX_FRACTION", "5")
+	t.Setenv("ADMIN_PROFILING_MAX_CONCURRENT", "3")
+	t.Setenv("ADMIN_PROFILING_MAX_SECONDS", "120")
+
+	// We just call loadFromEnv on a fresh Config; no need to go through
+	// full LoadConfig (which validates admin token files we don't have).
+	cfg := &Config{}
+	loadFromEnv(cfg)
+
+	if !cfg.Admin.Profiling.Enabled {
+		t.Error("Profiling.Enabled should be true")
+	}
+	if cfg.Admin.Profiling.BlockRate != 100 {
+		t.Errorf("BlockRate: want 100, got %d", cfg.Admin.Profiling.BlockRate)
+	}
+	if cfg.Admin.Profiling.MutexFraction != 5 {
+		t.Errorf("MutexFraction: want 5, got %d", cfg.Admin.Profiling.MutexFraction)
+	}
+	if cfg.Admin.Profiling.MaxConcurrentProfiles != 3 {
+		t.Errorf("MaxConcurrentProfiles: want 3, got %d", cfg.Admin.Profiling.MaxConcurrentProfiles)
+	}
+	if cfg.Admin.Profiling.MaxProfileSeconds != 120 {
+		t.Errorf("MaxProfileSeconds: want 120, got %d", cfg.Admin.Profiling.MaxProfileSeconds)
 	}
 }

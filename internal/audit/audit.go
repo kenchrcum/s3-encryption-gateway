@@ -34,6 +34,11 @@ const (
 	// Emitted when a data-plane write operation exhausts all retry attempts.
 	// Read-path give-ups are counter-only (too chatty under normal backend hiccups).
 	EventTypeBackendRetryGiveUp EventType = "backend.retry_give_up"
+
+	// V0.6-OBS-1 — pprof audit event type.
+	// Emitted on every profile fetch via the admin /debug/pprof/* endpoints.
+	// Satisfies Adkins et al., BSRS Ch. 15 "auditable debug interface" mandate.
+	EventTypePprofFetch EventType = "pprof_fetch"
 )
 
 // AuditEvent represents a single audit log event.

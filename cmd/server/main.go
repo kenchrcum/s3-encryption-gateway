@@ -687,6 +687,25 @@ func main() {
 		}
 		admin.RegisterMPUAdminRoutes(adminServer.Mux(), mpuStore, abortFn, logger)
 
+		// V0.6-OBS-1 — register pprof routes when profiling is enabled.
+		if cfg.Admin.Profiling.Enabled {
+			admin.ApplyRuntimeProfilingRates(cfg.Admin.Profiling, logger)
+			admin.RegisterPprofRoutes(
+				adminServer.Mux(),
+				cfg.Admin.Profiling,
+				m,
+				auditLogger,
+				logger,
+			)
+			m.SetAdminProfilingEnabled(true)
+			logger.WithFields(logrus.Fields{
+				"block_rate":     cfg.Admin.Profiling.BlockRate,
+				"mutex_fraction": cfg.Admin.Profiling.MutexFraction,
+				"max_seconds":    cfg.Admin.Profiling.MaxProfileSeconds,
+				"max_concurrent": cfg.Admin.Profiling.MaxConcurrentProfiles,
+			}).Warn("admin_profiling_enabled") // WARN — this surface widens blast radius
+		}
+
 		// Set admin API enabled metric
 		m.SetAdminAPIEnabled(true)
 

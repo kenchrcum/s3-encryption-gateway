@@ -73,6 +73,13 @@ type Metrics struct {
 	mpuManifestBytes     prometheus.Histogram
 	mpuManifestStorage   *prometheus.CounterVec
 
+	// V0.6-OBS-1 — admin pprof profiling metrics.
+	// s3GatewayAdminPprofRequestsTotal counts pprof fetches per endpoint and
+	// outcome. Labels: endpoint, outcome. Bounded cardinality: 11 × 4 = 44.
+	s3GatewayAdminPprofRequestsTotal *prometheus.CounterVec
+	// gatewayAdminProfilingEnabled is 1 when pprof routes are mounted.
+	gatewayAdminProfilingEnabled prometheus.Gauge
+
 	// V0.6-PERF-2 — S3 backend retry metrics (ADR 0010).
 	// s3BackendRetriesTotal counts retry attempts per operation and classifier
 	// reason. Labels: operation, reason, mode.
@@ -402,6 +409,21 @@ func newMetricsWithRegistry(reg prometheus.Registerer, cfg Config) *Metrics {
 				Buckets: []float64{0.001, 0.01, 0.05, 0.1, 0.2, 0.5, 1, 2, 5, 10, 20},
 			},
 		),
+
+		// V0.6-OBS-1 — admin pprof metrics.
+		s3GatewayAdminPprofRequestsTotal: factory.NewCounterVec(
+			prometheus.CounterOpts{
+				Name: "s3_gateway_admin_pprof_requests_total",
+				Help: "Total pprof profile fetches via the admin API, labelled by endpoint and outcome.",
+			},
+			[]string{"endpoint", "outcome"}, // endpoint ∈ 11 paths; outcome ∈ {ok,busy,bad_request,error}
+		),
+		gatewayAdminProfilingEnabled: factory.NewGauge(
+			prometheus.GaugeOpts{
+				Name: "gateway_admin_profiling_enabled",
+				Help: "Whether pprof profiling routes are mounted on the admin listener (1=enabled, 0=disabled).",
+			},
+		),
 	}
 }
 
@@ -442,6 +464,30 @@ func (m *Metrics) RecordRotationOperation(step, result string, duration time.Dur
 // SetRotationInFlightWraps sets the in-flight wraps gauge.
 func (m *Metrics) SetRotationInFlightWraps(count int64) {
 	m.kmsRotationInFlightWraps.Set(float64(count))
+}
+
+// RecordPprofRequest increments the bounded-cardinality pprof request counter.
+// endpoint is the short endpoint label (e.g. "heap", "profile"); outcome is one
+// of "ok", "busy", "bad_request", "error".
+// V0.6-OBS-1 — implements ProfilingMetrics interface for internal/admin/profiling.go.
+func (m *Metrics) RecordPprofRequest(endpoint, outcome string) {
+	if m == nil || m.s3GatewayAdminPprofRequestsTotal == nil {
+		return
+	}
+	m.s3GatewayAdminPprofRequestsTotal.WithLabelValues(endpoint, outcome).Inc()
+}
+
+// SetAdminProfilingEnabled sets the gateway_admin_profiling_enabled gauge.
+// V0.6-OBS-1.
+func (m *Metrics) SetAdminProfilingEnabled(enabled bool) {
+	if m == nil || m.gatewayAdminProfilingEnabled == nil {
+		return
+	}
+	val := 0.0
+	if enabled {
+		val = 1.0
+	}
+	m.gatewayAdminProfilingEnabled.Set(val)
 }
 
 // SetAdminAPIEnabled sets the admin API enabled gauge.

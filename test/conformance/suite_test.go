@@ -151,6 +151,16 @@ func TestConformance(t *testing.T) {
 			{"PERF2_Retry_RetryAfterHonoured", 0, testRetry_RetryAfterHeaderHonoured},
 			{"PERF2_Retry_ReasonLabel_503", 0, testRetry_ReasonLabel_Throttle503},
 			{"PERF2_Retry_AllMetricsRegistered", 0, testRetry_AllMetricsRegistered},
+
+			// V0.6-OBS-1 admin pprof profiling endpoints — cap=0, runs on every provider.
+			// These tests start a gateway with an admin listener + profiling enabled;
+			// they do not interact with the S3 backend but verify the full admin stack.
+			{"OBS1_AllPprofEndpoints200", 0, testOBS1_AllEndpointsReturn200},
+			{"OBS1_NoToken401", 0, testOBS1_NoTokenReturns401},
+			{"OBS1_WrongToken401", 0, testOBS1_WrongTokenReturns401},
+			{"OBS1_InvalidSeconds400", 0, testOBS1_InvalidSecondsReturns400},
+			{"OBS1_DataPlaneNoPprofRoutes", 0, testOBS1_DataPlaneHasNoPprofRoutes},
+			{"OBS1_MetricEmitted", 0, testOBS1_MetricEmitted},
 		}
 
 			for _, tc := range cases {

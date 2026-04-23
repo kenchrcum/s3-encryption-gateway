@@ -6,6 +6,56 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased] — v0.6
 
+### Observability
+
+- **Admin pprof profiling endpoints** (V0.6-OBS-1): production-safe runtime
+  profiling is now available at `/admin/debug/pprof/*` on the **admin
+  listener** when `admin.profiling.enabled: true`.
+
+  - **Disabled by default.** Enabling requires `admin.enabled: true`;
+    on non-loopback addresses also requires `admin.tls.enabled: true`.
+
+  - **Security-inheriting.** All 11 pprof endpoints (index, cmdline,
+    profile, symbol, trace, heap, goroutine, allocs, block, mutex,
+    threadcreate) reuse the existing admin bearer-token auth, rate
+    limiter, and TLS — no new auth surface.
+
+  - **Semaphore-bounded.** `/profile` and `/trace` are bounded by
+    `max_concurrent_profiles` (default 2) and `max_profile_seconds`
+    (default 60); excess requests return `429 Retry-After: 1`.
+
+  - **Block/mutex profiling knobs.** `block_rate` and `mutex_fraction`
+    (both default 0/off) are passed to
+    `runtime.SetBlockProfileRate` / `SetMutexProfileFraction` at startup.
+
+  - **Audited.** Every fetch emits a `pprof_fetch` audit event with
+    endpoint, duration, and HTTP status.
+
+  - **New Prometheus metrics:** `s3_gateway_admin_pprof_requests_total
+    {endpoint, outcome}` (bounded cardinality: 11 × 4 = 44 label
+    combinations) and `gateway_admin_profiling_enabled` gauge.
+
+  - **Dockerfile `STRIP_SYMBOLS` build-arg.** Both `Dockerfile` and
+    `Dockerfile.fips` now accept `--build-arg STRIP_SYMBOLS=false` to
+    produce a symbolicated binary for profiling sessions without
+    permanently removing symbols from production images. Use
+    `make profile-image` as a convenience shortcut.
+
+  - **Operator recipes** added to `docs/OBSERVABILITY.md §"Runtime
+    Profiling"` (CPU flamegraph, heap snapshot, goroutine-leak workflow).
+
+  - **Admin API reference** updated in `docs/ADMIN_API.md` with the
+    route table and response code semantics.
+
+  - **New config keys** (all optional, default `false`/`0`):
+    `admin.profiling.enabled`, `.block_rate`, `.mutex_fraction`,
+    `.max_concurrent_profiles` (default 2), `.max_profile_seconds`
+    (default 60). See `config.yaml.example` for the annotated stanza.
+
+  - **ADR 0011** filed: `docs/adr/0011-admin-profiling-endpoints.md`.
+
+  - See `docs/plans/V0.6-OBS-1-plan.md` for full design rationale.
+
 ### Performance
 
 - **Configurable S3 backend retry policy** (V0.6-PERF-2):

@@ -1,6 +1,12 @@
 # Build stage for FIPS 140-3 compliant binary
 FROM golang:1.26-bookworm AS builder
 
+# STRIP_SYMBOLS controls binary symbol-table stripping.
+# Set to "false" to produce a symbolicated binary for pprof profiling.
+# Default is "true" (stripped) for production images.
+# V0.6-OBS-1: see docs/OBSERVABILITY.md §"Runtime Profiling" for usage.
+ARG STRIP_SYMBOLS=true
+
 # Install build dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \
     git \
@@ -17,11 +23,19 @@ RUN go mod download
 # Copy source code
 COPY . .
 
-# Build the FIPS-compliant binary
-# GOFIPS140=v1.0.0 enables the Go FIPS 140-3 module at compile time
-RUN GOFIPS140=v1.0.0 CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build \
+# Build the FIPS-compliant binary.
+# GOFIPS140=v1.0.0 enables the Go FIPS 140-3 module at compile time.
+# When STRIP_SYMBOLS=false, -w -s is omitted so pprof shows function names.
+# -trimpath is always applied (reproducible builds; does not strip symbols).
+RUN if [ "${STRIP_SYMBOLS}" = "false" ]; then \
+        LDFLAGS="-X main.version=${VERSION:-dev} -X main.commit=${COMMIT:-unknown}"; \
+    else \
+        LDFLAGS="-w -s -X main.version=${VERSION:-dev} -X main.commit=${COMMIT:-unknown}"; \
+    fi && \
+    GOFIPS140=v1.0.0 CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build \
     -tags=fips \
-    -ldflags="-w -s -X main.version=${VERSION:-dev} -X main.commit=${COMMIT:-unknown}" \
+    -trimpath \
+    -ldflags="${LDFLAGS}" \
     -o /bin/s3-encryption-gateway \
     ./cmd/server
 

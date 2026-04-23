@@ -191,3 +191,34 @@ audit:
                           # Set via AUDIT_SINK_RETRY_COUNT env var
     retry_backoff: "1s"   # Initial backoff duration for retries
                           # Set via AUDIT_SINK_RETRY_BACKOFF env var
+
+# ── Admin API (V0.6-CFG-1 / V0.6-OBS-1) ────────────────────────────────────
+# The admin API runs on a separate listener from the S3 data-plane.
+# All endpoints require bearer-token authentication; non-loopback addresses
+# require TLS. See docs/ADMIN_API.md for full endpoint reference.
+
+admin:
+  enabled: false          # Set ADMIN_ENABLED=true to enable
+  address: "127.0.0.1:8081"  # Set ADMIN_ADDRESS to override
+
+  tls:
+    enabled: false        # Required for non-loopback addresses
+    # cert_file: "/etc/s3-gateway/admin-tls.crt"  # ADMIN_TLS_CERT_FILE
+    # key_file:  "/etc/s3-gateway/admin-tls.key"  # ADMIN_TLS_KEY_FILE
+
+  auth:
+    type: bearer
+    # token_file: "/etc/s3-gateway/admin-token"  # Recommended (ADMIN_AUTH_TOKEN_FILE)
+    # token: ""  # Dev only; requires ADMIN_ALLOW_INLINE_TOKEN=1 (ADMIN_AUTH_TOKEN)
+
+  rate_limit:
+    requests_per_minute: 30  # ADMIN_RATE_LIMIT_RPM
+
+  # V0.6-OBS-1 — pprof profiling endpoints on the admin listener.
+  # See docs/OBSERVABILITY.md §"Runtime Profiling" for operator recipes.
+  profiling:
+    enabled: false         # Mount /admin/debug/pprof/* when true. ADMIN_PROFILING_ENABLED
+    block_rate: 0          # 0 = disabled. See runtime.SetBlockProfileRate. ADMIN_PROFILING_BLOCK_RATE
+    mutex_fraction: 0      # 0 = disabled. See runtime.SetMutexProfileFraction. ADMIN_PROFILING_MUTEX_FRACTION
+    max_concurrent_profiles: 2  # Max in-flight /profile or /trace requests. ADMIN_PROFILING_MAX_CONCURRENT
+    max_profile_seconds: 60     # Cap on ?seconds= for CPU/trace profiles. ADMIN_PROFILING_MAX_SECONDS

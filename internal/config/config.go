@@ -417,6 +417,37 @@ type AdminConfig struct {
 	TLS       AdminTLSConfig       `yaml:"tls"`
 	Auth      AdminAuthConfig      `yaml:"auth"`
 	RateLimit AdminRateLimitConfig `yaml:"rate_limit"`
+	Profiling AdminProfilingConfig `yaml:"profiling"`
+}
+
+// AdminProfilingConfig controls the /admin/debug/pprof/* routes.
+//
+// Disabled by default. When enabled, requires AdminConfig.Enabled
+// and (on non-loopback addresses) AdminTLSConfig.Enabled. The admin
+// bearer token and rate limit apply; no new auth surface is added.
+type AdminProfilingConfig struct {
+	// Enabled mounts /admin/debug/pprof/* on the admin mux.
+	Enabled bool `yaml:"enabled" env:"ADMIN_PROFILING_ENABLED"`
+
+	// BlockRate is passed to runtime.SetBlockProfileRate at startup.
+	// 0 (default) disables block profiling. Positive values sample
+	// one event per N ns of blocking; 1 samples all (expensive).
+	BlockRate int `yaml:"block_rate" env:"ADMIN_PROFILING_BLOCK_RATE"`
+
+	// MutexFraction is passed to runtime.SetMutexProfileFraction.
+	// 0 (default) disables mutex profiling. Positive values sample
+	// 1/N contention events.
+	MutexFraction int `yaml:"mutex_fraction" env:"ADMIN_PROFILING_MUTEX_FRACTION"`
+
+	// MaxConcurrentProfiles bounds in-flight profile/trace requests.
+	// Defaults to 2. A semaphore inside the profiling handler rejects
+	// additional requests with 429 until one finishes.
+	MaxConcurrentProfiles int `yaml:"max_concurrent_profiles" env:"ADMIN_PROFILING_MAX_CONCURRENT"`
+
+	// MaxProfileSeconds caps the `seconds=` query parameter for
+	// /profile and /trace. Defaults to 60. Values above cap are
+	// rejected with 400.
+	MaxProfileSeconds int `yaml:"max_profile_seconds" env:"ADMIN_PROFILING_MAX_SECONDS"`
 }
 
 // AdminTLSConfig holds TLS settings for the admin listener.
@@ -565,6 +596,13 @@ func LoadConfig(path string) (*Config, error) {
 			},
 			RateLimit: AdminRateLimitConfig{
 				RequestsPerMinute: 30,
+			},
+			Profiling: AdminProfilingConfig{
+				Enabled:               false,
+				BlockRate:             0,
+				MutexFraction:         0,
+				MaxConcurrentProfiles: 2,
+				MaxProfileSeconds:     60,
 			},
 		},
 		MultipartState: MultipartStateConfig{
@@ -943,6 +981,30 @@ func loadFromEnv(config *Config) {
 			config.Admin.RateLimit.RequestsPerMinute = n
 		}
 	}
+	// V0.6-OBS-1 — admin profiling env bindings.
+	if v := os.Getenv("ADMIN_PROFILING_ENABLED"); v != "" {
+		config.Admin.Profiling.Enabled = v == "true" || v == "1"
+	}
+	if v := os.Getenv("ADMIN_PROFILING_BLOCK_RATE"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			config.Admin.Profiling.BlockRate = n
+		}
+	}
+	if v := os.Getenv("ADMIN_PROFILING_MUTEX_FRACTION"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			config.Admin.Profiling.MutexFraction = n
+		}
+	}
+	if v := os.Getenv("ADMIN_PROFILING_MAX_CONCURRENT"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n >= 1 {
+			config.Admin.Profiling.MaxConcurrentProfiles = n
+		}
+	}
+	if v := os.Getenv("ADMIN_PROFILING_MAX_SECONDS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			config.Admin.Profiling.MaxProfileSeconds = n
+		}
+	}
 
 	// Multipart-state / Valkey env bindings. Needed so the Helm chart can wire
 	// the Valkey subchart's service name into the gateway without requiring a
@@ -1237,6 +1299,25 @@ func (c *Config) Validate() error {
 		// Validate rate limit
 		if c.Admin.RateLimit.RequestsPerMinute <= 0 {
 			return fmt.Errorf("admin.rate_limit.requests_per_minute must be positive")
+		}
+	}
+
+	// V0.6-OBS-1 — profiling validation.
+	if c.Admin.Profiling.Enabled {
+		if !c.Admin.Enabled {
+			return fmt.Errorf("admin.profiling requires admin.enabled")
+		}
+		if !isLoopbackAddress(c.Admin.Address) && !c.Admin.TLS.Enabled {
+			return fmt.Errorf("admin.profiling on non-loopback requires admin.tls.enabled")
+		}
+		if c.Admin.Profiling.BlockRate < 0 {
+			return fmt.Errorf("admin.profiling.block_rate must be >= 0")
+		}
+		if c.Admin.Profiling.MutexFraction < 0 {
+			return fmt.Errorf("admin.profiling.mutex_fraction must be >= 0")
+		}
+		if c.Admin.Profiling.MaxProfileSeconds < 1 || c.Admin.Profiling.MaxProfileSeconds > 600 {
+			return fmt.Errorf("admin.profiling.max_profile_seconds must be between 1 and 600")
 		}
 	}
 

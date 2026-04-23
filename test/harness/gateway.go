@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/gorilla/mux"
+	"github.com/kenneth/s3-encryption-gateway/internal/admin"
 	"github.com/kenneth/s3-encryption-gateway/internal/api"
 	"github.com/kenneth/s3-encryption-gateway/internal/config"
 	"github.com/kenneth/s3-encryption-gateway/internal/crypto"
@@ -33,6 +34,13 @@ type Gateway struct {
 	// Metrics is the Prometheus registry used by this gateway instance.
 	// Conformance tests can query it to assert metric emission.
 	Metrics *prometheus.Registry
+	// AdminURL is the base HTTP address of the admin listener when
+	// WithAdminServer was used, e.g. "http://127.0.0.1:41524".
+	// Empty when no admin listener was requested.
+	AdminURL string
+	// AdminToken is the bearer token for the admin listener.
+	// Empty when no admin listener was requested.
+	AdminToken string
 
 	server   *http.Server
 	listener net.Listener
@@ -283,6 +291,84 @@ ready:
 		Metrics:  reg,
 		server:   server,
 		listener: listener,
+	}
+
+	// Optional admin listener — wire when WithAdminServer was requested.
+	if o.adminEnabled {
+		adminCfg := config.AdminConfig{
+			Enabled: true,
+			Address: "127.0.0.1:0",
+			Auth: config.AdminAuthConfig{
+				Type:  "bearer",
+				Token: o.adminToken,
+			},
+			RateLimit: config.AdminRateLimitConfig{RequestsPerMinute: 120},
+			Profiling: config.AdminProfilingConfig{
+				Enabled:               o.adminProfiling,
+				MaxConcurrentProfiles: 4,
+				MaxProfileSeconds:     60,
+			},
+		}
+		adminSrv := admin.NewServer(adminCfg, logger)
+		if o.adminProfiling {
+			admin.RegisterPprofRoutes(
+				adminSrv.Mux(),
+				adminCfg.Profiling,
+				m,  // *metrics.Metrics satisfies ProfilingMetrics
+				nil, // audit logger — nil OK in tests (checked inside handler)
+				logger,
+			)
+		}
+		// Bind to a random loopback port before Start so we can read the address.
+		adminListener, adminErr := net.Listen("tcp", "127.0.0.1:0")
+		if adminErr != nil {
+			t.Fatalf("harness: admin listener: %v", adminErr)
+		}
+		adminAddr := adminListener.Addr().String()
+		adminListener.Close() // release so admin.Server.Start can re-bind
+		// Override cfg address with the free port we found.
+		adminCfg.Address = adminAddr
+
+		// Rebuild server with the correct address.
+		adminSrv2 := admin.NewServer(adminCfg, logger)
+		if o.adminProfiling {
+			admin.RegisterPprofRoutes(
+				adminSrv2.Mux(),
+				adminCfg.Profiling,
+				m,
+				nil,
+				logger,
+			)
+		}
+		go func() {
+			if startErr := adminSrv2.Start(context.Background()); startErr != nil {
+				t.Logf("harness admin server error: %v", startErr)
+			}
+		}()
+		// Wait for admin listener to be ready.
+		adminCtx, adminCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer adminCancel()
+		adminUp := false
+		for !adminUp {
+			select {
+			case <-adminCtx.Done():
+				t.Fatal("harness: timeout waiting for admin server to start")
+			default:
+			}
+			conn, dialErr := net.DialTimeout("tcp", adminAddr, 50*time.Millisecond)
+			if dialErr == nil {
+				conn.Close()
+				adminUp = true
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+		gw.AdminURL = "http://" + adminAddr
+		gw.AdminToken = o.adminToken
+		t.Cleanup(func() {
+			shutCtx, shutCancel := context.WithTimeout(context.Background(), 3*time.Second)
+			defer shutCancel()
+			_ = adminSrv2.Shutdown(shutCtx)
+		})
 	}
 
 	t.Cleanup(func() {

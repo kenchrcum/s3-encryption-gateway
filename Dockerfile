@@ -1,6 +1,12 @@
 # Build stage
 FROM golang:1.26-alpine AS builder
 
+# STRIP_SYMBOLS controls binary symbol-table stripping.
+# Set to "false" to produce a symbolicated binary for pprof profiling.
+# Default is "true" (stripped) for production images.
+# V0.6-OBS-1: see docs/OBSERVABILITY.md §"Runtime Profiling" for usage.
+ARG STRIP_SYMBOLS=true
+
 # Install build dependencies
 RUN apk add --no-cache git make
 
@@ -14,9 +20,17 @@ RUN go mod download
 # Copy source code
 COPY . .
 
-# Build the binary
-RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build \
-    -ldflags="-w -s -X main.version=${VERSION:-dev} -X main.commit=${COMMIT:-unknown}" \
+# Build the binary.
+# When STRIP_SYMBOLS=false, -w -s is omitted so pprof shows function names.
+# -trimpath is always applied (reproducible builds; does not strip symbols).
+RUN if [ "${STRIP_SYMBOLS}" = "false" ]; then \
+        LDFLAGS="-X main.version=${VERSION:-dev} -X main.commit=${COMMIT:-unknown}"; \
+    else \
+        LDFLAGS="-w -s -X main.version=${VERSION:-dev} -X main.commit=${COMMIT:-unknown}"; \
+    fi && \
+    CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build \
+    -trimpath \
+    -ldflags="${LDFLAGS}" \
     -o /bin/s3-encryption-gateway \
     ./cmd/server
 

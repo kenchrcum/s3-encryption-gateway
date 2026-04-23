@@ -36,6 +36,14 @@ type options struct {
 	// faults at the gateway→backend layer without an external proxy.
 	// See WithBackendTransport and FaultyRoundTripper.
 	backendTransport    http.RoundTripper
+	// adminEnabled, when true, starts an admin listener alongside the gateway.
+	// The bearer token is adminToken (plain inline — test-only). The admin
+	// listener binds to a random loopback port; its address is accessible via
+	// Gateway.AdminURL.
+	adminEnabled bool
+	adminToken   string
+	// adminProfiling enables /admin/debug/pprof/* when adminEnabled is also true.
+	adminProfiling bool
 }
 
 // Option is a functional option for StartGateway.
@@ -132,4 +140,16 @@ func WithConfigMutator(fn func(*config.Config)) Option {
 // Production code must never call this; it is for tests only.
 func WithBackendTransport(rt http.RoundTripper) Option {
 	return func(o *options) { o.backendTransport = rt }
+}
+
+// WithAdminServer starts an admin listener alongside the gateway. The listener
+// binds to a random loopback port; its URL is exposed via Gateway.AdminURL.
+// token is the bearer token used for authentication (inline — test-only).
+// When profilingEnabled is true, the 11 pprof endpoints are also mounted.
+func WithAdminServer(token string, profilingEnabled bool) Option {
+	return func(o *options) {
+		o.adminEnabled = true
+		o.adminToken = token
+		o.adminProfiling = profilingEnabled
+	}
 }

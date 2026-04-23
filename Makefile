@@ -1,4 +1,4 @@
-.PHONY: build build-fips test test-fips test-conformance test-conformance-local test-conformance-minio test-conformance-external test-conformance-kms test-load test-load-range test-load-multipart test-load-soak test-load-minio test-load-garage test-load-rustfs test-load-seaweedfs test-load-prometheus test-load-baseline test-rotation test-fuzz test-comprehensive test-isolation-check lint clean run docker-build docker-push help
+.PHONY: build build-fips test test-fips test-conformance test-conformance-local test-conformance-minio test-conformance-external test-conformance-kms test-load test-load-range test-load-multipart test-load-soak test-load-minio test-load-garage test-load-rustfs test-load-seaweedfs test-load-prometheus test-load-baseline test-rotation test-fuzz test-comprehensive test-isolation-check lint clean run docker-build docker-push profile-image help
 
 # Variables
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo "dev")
@@ -232,6 +232,20 @@ docker-push:
 	@echo "Pushing Docker image..."
 	@docker push $(IMAGE_NAME):$(IMAGE_TAG)
 
+# Build a symbolicated (non-stripped) image for pprof profiling.
+# V0.6-OBS-1: use when you need full function names in pprof flamegraphs.
+# The image is tagged with ":profile" suffix to distinguish it from production.
+# Usage: make profile-image && go tool pprof -http=:0 http://localhost:8081/admin/debug/pprof/heap
+profile-image:
+	@echo "Building profile (non-stripped symbols) image for pprof..."
+	@docker build \
+		--build-arg VERSION=$(VERSION) \
+		--build-arg COMMIT=$(COMMIT) \
+		--build-arg STRIP_SYMBOLS=false \
+		-t $(IMAGE_NAME):$(IMAGE_TAG)-profile .
+	@echo "Profile image built: $(IMAGE_NAME):$(IMAGE_TAG)-profile"
+	@echo "Run with admin.profiling.enabled=true and enable pprof via config."
+
 # Run all tests including integration
 docker-all: docker-build docker-push
 
@@ -285,6 +299,7 @@ help:
 	@echo "  run                - Build and run the server"
 	@echo "  docker-build       - Build Docker image"
 	@echo "  docker-push        - Push Docker image"
+	@echo "  profile-image      - Build non-stripped image for pprof (V0.6-OBS-1)"
 	@echo "  security-scan      - Run security vulnerability scan"
 	@echo "  install-tools      - Install development tools"
 	@echo "  coverage           - Generate test coverage report"

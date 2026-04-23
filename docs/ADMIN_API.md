@@ -162,6 +162,35 @@ curl -s -X POST "$ADMIN/admin/kms/rotate/commit" \
   -H "Authorization: Bearer $TOKEN"
 ```
 
+## Runtime Profiling Endpoints (V0.6-OBS-1)
+
+Profiling endpoints are mounted when `admin.profiling.enabled: true`.
+They inherit the same bearer-token auth and rate limiter as all other admin
+endpoints. Every fetch emits an audit event (`event_type: pprof_fetch`).
+
+| Endpoint | Description |
+|---|---|
+| `GET /admin/debug/pprof/` | Profile index (HTML) |
+| `GET /admin/debug/pprof/cmdline` | Binary command line |
+| `GET /admin/debug/pprof/profile?seconds=N` | CPU profile (default 30 s; capped by `max_profile_seconds`) |
+| `GET /admin/debug/pprof/symbol` | Symbol lookup (POST body: hex address list) |
+| `GET /admin/debug/pprof/trace?seconds=N` | Execution trace (capped by `max_profile_seconds`) |
+| `GET /admin/debug/pprof/heap` | Heap allocation snapshot |
+| `GET /admin/debug/pprof/goroutine` | Goroutine stack traces |
+| `GET /admin/debug/pprof/allocs` | All past allocations |
+| `GET /admin/debug/pprof/block` | Goroutine blocking events (requires `block_rate > 0`) |
+| `GET /admin/debug/pprof/mutex` | Mutex contention (requires `mutex_fraction > 0`) |
+| `GET /admin/debug/pprof/threadcreate` | Thread creation profile |
+
+**Rate-limited responses:**
+
+- `429 Too Many Requests` with `Retry-After: 1` when
+  `max_concurrent_profiles` in-flight requests are already active.
+- `400 Bad Request` when `?seconds=` is outside `[1, max_profile_seconds]`.
+
+See `docs/OBSERVABILITY.md §"Runtime Profiling"` for operator recipes,
+security model, and Grafana dashboard snippet.
+
 ## Metrics
 
 | Metric | Type | Labels | Description |
@@ -171,6 +200,8 @@ curl -s -X POST "$ADMIN/admin/kms/rotate/commit" \
 | `kms_rotation_duration_seconds` | Histogram | `step` | Rotation step duration |
 | `kms_rotation_in_flight_wraps` | Gauge | — | In-flight WrapKey calls during drain |
 | `gateway_admin_api_enabled` | Gauge | — | Whether admin API is active |
+| `gateway_admin_profiling_enabled` | Gauge | — | Whether pprof routes are mounted (V0.6-OBS-1) |
+| `s3_gateway_admin_pprof_requests_total` | Counter | `endpoint`, `outcome` | pprof fetches by endpoint and outcome (V0.6-OBS-1) |
 
 ## Audit Events
 
@@ -180,3 +211,4 @@ All rotation operations emit structured audit events via `LogAccessWithMetadata`
 - `key_rotation.committed`
 - `key_rotation.commit_failed`
 - `key_rotation.aborted`
+- `pprof_fetch` — emitted on every pprof endpoint access (V0.6-OBS-1)

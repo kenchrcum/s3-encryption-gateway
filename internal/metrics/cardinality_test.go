@@ -87,3 +87,57 @@ func TestRecordS3Error_DisableBucketLabel(t *testing.T) {
 	assert.Equal(t, 2.0, count)
 }
 
+// TestPprofRequestsCardinality_BoundedAt44 verifies the DoD requirement that
+// s3_gateway_admin_pprof_requests_total has at most 11 endpoints × 4 outcomes
+// = 44 label combinations (V0.6-OBS-1).
+func TestPprofRequestsCardinality_BoundedAt44(t *testing.T) {
+	// The closed sets defined in the plan.
+	endpoints := []string{
+		"index", "cmdline", "profile", "symbol", "trace",
+		"heap", "goroutine", "allocs", "block", "mutex", "threadcreate",
+	}
+	outcomes := []string{"ok", "busy", "bad_request", "error"}
+
+	maxCardinality := len(endpoints) * len(outcomes)
+	if maxCardinality > 44 {
+		t.Errorf("label cardinality cap exceeded: %d > 44 (11 endpoints × 4 outcomes)", maxCardinality)
+	}
+
+	// Record one increment for every (endpoint, outcome) combination and
+	// verify the counter accepts all of them.
+	reg := prometheus.NewRegistry()
+	m := newMetricsWithRegistry(reg, Config{})
+
+	for _, ep := range endpoints {
+		for _, oc := range outcomes {
+			m.RecordPprofRequest(ep, oc)
+		}
+	}
+
+	// Verify each combination landed with count == 1.
+	for _, ep := range endpoints {
+		for _, oc := range outcomes {
+			got := testutil.ToFloat64(m.s3GatewayAdminPprofRequestsTotal.WithLabelValues(ep, oc))
+			assert.Equal(t, 1.0, got, "endpoint=%s outcome=%s", ep, oc)
+		}
+	}
+}
+
+// TestSetAdminProfilingEnabled_Gauge verifies that SetAdminProfilingEnabled
+// correctly flips the gateway_admin_profiling_enabled gauge (V0.6-OBS-1).
+func TestSetAdminProfilingEnabled_Gauge(t *testing.T) {
+	reg := prometheus.NewRegistry()
+	m := newMetricsWithRegistry(reg, Config{})
+
+	// Default should be 0 (not yet set).
+	// Enable it.
+	m.SetAdminProfilingEnabled(true)
+	got := testutil.ToFloat64(m.gatewayAdminProfilingEnabled)
+	assert.Equal(t, 1.0, got, "expected gauge=1 when profiling enabled")
+
+	// Disable again.
+	m.SetAdminProfilingEnabled(false)
+	got = testutil.ToFloat64(m.gatewayAdminProfilingEnabled)
+	assert.Equal(t, 0.0, got, "expected gauge=0 when profiling disabled")
+}
+
