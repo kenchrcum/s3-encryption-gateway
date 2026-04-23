@@ -97,11 +97,19 @@ func TestConformance(t *testing.T) {
 				{"ObjectLock_LegalHold", provider.CapObjectLock, testObjectLockLegalHold},
 				{"ObjectLock_BypassRefused", provider.CapObjectLock, testObjectLockBypassRefused},
 
-				// Metadata round-trip (catches cipher: authentication failed bugs).
-				{"Metadata_RoundTrip", 0, testMetadataRoundTrip},
+			// Metadata round-trip (catches cipher: authentication failed bugs).
+			{"Metadata_RoundTrip", 0, testMetadataRoundTrip},
 
-			// Concurrent operations.
-			{"Concurrent_PutGet", 0, testConcurrentPutGet},
+		// Concurrent operations.
+		{"Concurrent_PutGet", 0, testConcurrentPutGet},
+
+		// V0.6-PERF-1 streaming regression guards.
+		// These verify that the zero-copy refactors (Phases B, C, D, E) do not
+		// introduce correctness regressions against real backends.
+		{"PERF1_CopyObject_LargeChunked", 0, testCopyObject_LargeChunked},
+		{"PERF1_ChunkedRangedRead_Large", 0, testChunkedRangedRead_Large},
+		{"PERF1_Compression_RoundTrip", 0, testCompression_RoundTrip},
+		{"PERF1_UploadPart_OversizeCap", provider.CapMultipartUpload, testUploadPart_OversizeCap},
 
 		// Encrypted multipart uploads (ADR-0009 / V0.6-SEC-3).
 		// Requires Docker for a Valkey container (state store).
