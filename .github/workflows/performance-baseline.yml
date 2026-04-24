@@ -1,0 +1,228 @@
+name: Performance Baseline
+
+# V0.6-QA-1 — nightly regression gate + advisory PR gate.
+#
+# Nightly 02:30 UTC (30 min after conformance.yml at 02:00 UTC to avoid
+# runner queue collision) runs the full micro + per-provider macro corpus
+# and fails the job if any tracked statistic regresses beyond the §6.1
+# threshold. On release tag publication, artefacts are attached.
+#
+# PR runs a quick 3-count micro-only job that posts a benchstat delta
+# comment. Advisory only — never fails the PR.
+
+on:
+  schedule:
+    - cron: '30 2 * * *'
+  workflow_dispatch:
+  release:
+    types: [ published ]
+  pull_request:
+    branches: [ main ]
+
+permissions:
+  contents: read
+  issues: write        # for perf-regression issue creation
+  pull-requests: write # for advisory PR comment
+
+concurrency:
+  # Cancel superseded PR advisory runs; nightly runs never collide.
+  group: perf-${{ github.event_name }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  # ── Nightly micro regression gate ──────────────────────────────────────────
+  bench-micro-nightly:
+    name: Micro benchmarks (nightly regression gate)
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' || github.event_name == 'release'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+
+      - name: Install benchstat
+        run: go install golang.org/x/perf/cmd/benchstat@latest
+
+      - name: Run micro benchmarks
+        run: |
+          mkdir -p /tmp/qa1
+          bash scripts/bench-baseline.sh /tmp/qa1/micro-new.txt
+
+      - name: Compare against committed baseline
+        id: compare
+        run: |
+          scripts/bench-compare.sh micro docs/perf/v0.6-qa-1/micro-baseline.txt /tmp/qa1/micro-new.txt \
+            | tee /tmp/qa1/micro-compare.txt
+
+      - name: Upload artefacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: perf-micro-${{ github.run_id }}
+          path: |
+            docs/perf/v0.6-qa-1/micro-baseline.txt
+            /tmp/qa1/micro-new.txt
+            /tmp/qa1/micro-compare.txt
+          if-no-files-found: warn
+
+      - name: Summary
+        if: always()
+        run: |
+          {
+            echo "## V0.6-QA-1 micro regression gate"
+            echo ""
+            echo '```'
+            cat /tmp/qa1/micro-compare.txt 2>/dev/null || echo "(no comparator output)"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Open perf-regression issue on failure
+        if: failure() && github.event_name == 'schedule'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          title="perf: micro regression on $(date -u +%Y-%m-%d)"
+          body=$'Nightly V0.6-QA-1 micro gate failed.\n\nArtefacts: '"$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"$'\n\nComparator output:\n\n```\n'"$(cat /tmp/qa1/micro-compare.txt 2>/dev/null || echo '(empty)')"$'\n```\n\nSee docs/PERFORMANCE.md.'
+          # Dedup by searching for an open perf-regression issue.
+          existing="$(gh issue list --label perf-regression --state open --search 'micro regression' --json number --jq '.[0].number' || true)"
+          if [[ -n "${existing:-}" ]]; then
+            gh issue comment "$existing" --body "$body"
+          else
+            gh issue create --label perf-regression --title "$title" --body "$body"
+          fi
+
+  # ── Nightly macro regression gate (per-provider matrix) ────────────────────
+  bench-macro-nightly:
+    name: Macro benchmarks / ${{ matrix.provider }} (nightly regression gate)
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' || github.event_name == 'release'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        provider: [minio, garage, rustfs, seaweedfs]
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+
+      - name: Install jq
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq jq
+
+      - name: Run macro soak — ${{ matrix.provider }}
+        env:
+          BENCH_RUNNER: github-ubuntu-latest
+        run: |
+          bash scripts/bench-macro.sh ${{ matrix.provider }}
+          # The script writes to docs/perf/v0.6-qa-1/macro-<prov>.json; copy
+          # to /tmp for comparison against the committed baseline.
+          mkdir -p /tmp/qa1
+          cp docs/perf/v0.6-qa-1/macro-${{ matrix.provider }}.json /tmp/qa1/macro-${{ matrix.provider }}-new.json
+          # Restore the committed baseline so the comparator sees it.
+          git checkout -- docs/perf/v0.6-qa-1/macro-${{ matrix.provider }}.json
+
+      - name: Compare against committed baseline
+        id: compare
+        run: |
+          scripts/bench-compare.sh macro \
+            docs/perf/v0.6-qa-1/macro-${{ matrix.provider }}.json \
+            /tmp/qa1/macro-${{ matrix.provider }}-new.json \
+            | tee /tmp/qa1/macro-${{ matrix.provider }}-compare.txt
+
+      - name: Upload artefacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: perf-macro-${{ matrix.provider }}-${{ github.run_id }}
+          path: |
+            docs/perf/v0.6-qa-1/macro-${{ matrix.provider }}.json
+            /tmp/qa1/macro-${{ matrix.provider }}-new.json
+            /tmp/qa1/macro-${{ matrix.provider }}-compare.txt
+          if-no-files-found: warn
+
+      - name: Summary
+        if: always()
+        run: |
+          {
+            echo "## V0.6-QA-1 macro regression gate — ${{ matrix.provider }}"
+            echo ""
+            echo '```'
+            cat /tmp/qa1/macro-${{ matrix.provider }}-compare.txt 2>/dev/null || echo "(no comparator output)"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Open perf-regression issue on failure
+        if: failure() && github.event_name == 'schedule'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          title="perf: macro regression / ${{ matrix.provider }} on $(date -u +%Y-%m-%d)"
+          body=$'Nightly V0.6-QA-1 macro gate failed for ${{ matrix.provider }}.\n\nArtefacts: '"$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"$'\n\nComparator output:\n\n```\n'"$(cat /tmp/qa1/macro-${{ matrix.provider }}-compare.txt 2>/dev/null || echo '(empty)')"$'\n```\n\nSee docs/PERFORMANCE.md.'
+          existing="$(gh issue list --label perf-regression --state open --search 'macro regression ${{ matrix.provider }}' --json number --jq '.[0].number' || true)"
+          if [[ -n "${existing:-}" ]]; then
+            gh issue comment "$existing" --body "$body"
+          else
+            gh issue create --label perf-regression --title "$title" --body "$body"
+          fi
+
+  # ── Advisory PR gate — micro only, never fails the job ─────────────────────
+  bench-pr-advisory:
+    name: Micro benchmarks (PR advisory)
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+
+      - name: Install benchstat
+        run: go install golang.org/x/perf/cmd/benchstat@latest
+
+      - name: Run quick micro benchmarks (3×3s)
+        env:
+          BENCH_TIME: 3s
+          BENCH_COUNT: "3"
+        run: |
+          mkdir -p /tmp/qa1
+          bash scripts/bench-baseline.sh /tmp/qa1/micro-pr.txt
+
+      - name: Diff against committed baseline (advisory)
+        id: diff
+        continue-on-error: true
+        run: |
+          # Produce the benchstat delta table and capture it for the comment.
+          benchstat docs/perf/v0.6-qa-1/micro-baseline.txt /tmp/qa1/micro-pr.txt > /tmp/qa1/advisory.txt 2>&1
+          {
+            echo '<!-- perf-advisory-comment -->'
+            echo '### 📊 V0.6-QA-1 Micro Benchmark Advisory'
+            echo ''
+            echo 'This run is **advisory only** (3×3s vs committed baseline); it never fails the PR. See [`docs/PERFORMANCE.md`](docs/PERFORMANCE.md) for the full methodology.'
+            echo ''
+            echo '```'
+            cat /tmp/qa1/advisory.txt
+            echo '```'
+          } > /tmp/qa1/pr-comment.md
+
+      - name: Post sticky PR comment
+        if: always()
+        uses: peter-evans/create-or-update-comment@v4
+        with:
+          issue-number: ${{ github.event.pull_request.number }}
+          body-file: /tmp/qa1/pr-comment.md
+          edit-mode: replace
+          # Match on the HTML comment marker so repeat runs update in place.
+          body-includes: '<!-- perf-advisory-comment -->'
+
+      - name: Summary
+        if: always()
+        run: |
+          {
+            echo "## V0.6-QA-1 PR advisory"
+            echo ""
+            cat /tmp/qa1/pr-comment.md 2>/dev/null || echo "(no advisory output)"
+          } >> "$GITHUB_STEP_SUMMARY"

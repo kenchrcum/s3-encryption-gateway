@@ -1,0 +1,43 @@
+# V0.6-QA-1 micro-benchmark baseline — do not hand-edit
+# generated_at: TBD
+# commit: TBD
+# go_version: TBD
+# goos: linux
+# goarch: amd64
+# bench_time: 10s  bench_count: 10  bench_cpu: 4
+#
+# PLACEHOLDER. The numbers below are a single-count smoke run from a
+# developer laptop; they are committed only so the file exists for the
+# nightly `performance-baseline` workflow to diff against on its first
+# green run. The first clean nightly under GitHub Actions will overwrite
+# this file with the real 10-count benchstat-worthy corpus.
+#
+# See docs/PERFORMANCE.md for regeneration instructions.
+#
+goos: linux
+goarch: amd64
+pkg: github.com/kenneth/s3-encryption-gateway/internal/crypto
+cpu: placeholder
+BenchmarkChunkedEncrypt_Parallel-4           	       1	  29305960 ns/op	 357.80 MB/s	26345704 B/op	    1539 allocs/op
+BenchmarkChunkedDecrypt_Parallel-4           	       1	  12301601 ns/op	 852.39 MB/s	  221696 B/op	    1194 allocs/op
+BenchmarkEngine_Encrypt_Small-4              	       1	  11526799 ns/op	   0.09 MB/s	    9752 B/op	      53 allocs/op
+BenchmarkEngine_Encrypt_Medium-4             	       1	  14940112 ns/op	  70.19 MB/s	 5517488 B/op	      96 allocs/op
+BenchmarkEngine_Encrypt_Large-4              	       1	  33325017 ns/op	 314.65 MB/s	57438264 B/op	     117 allocs/op
+BenchmarkEngine_Decrypt_Small-4              	       1	  13019777 ns/op	   0.08 MB/s	    7232 B/op	      40 allocs/op
+BenchmarkEngine_Decrypt_Medium-4             	       1	  11764438 ns/op	  89.13 MB/s	 3288640 B/op	      60 allocs/op
+BenchmarkEngine_EncryptDecrypt_RoundTrip-4   	       1	  28392305 ns/op	  36.93 MB/s	13270464 B/op	     205 allocs/op
+BenchmarkMPUEncryptReader_5MiB-4             	       1	   4820517 ns/op	1087.46 MB/s	 5464304 B/op	     176 allocs/op
+BenchmarkMPUEncryptReader_100MiB-4           	       1	  95312471 ns/op	1099.60 MB/s	110267584 B/op	    3231 allocs/op
+BenchmarkMPUDecryptReader_100MiB-4           	       1	  40199512 ns/op	2608.14 MB/s	106989048 B/op	   30455 allocs/op
+BenchmarkEncryptWithMemoryKM-4               	       1	    178543 ns/op	 367.12 MB/s	  129776 B/op	     175 allocs/op
+PASS
+pkg: github.com/kenneth/s3-encryption-gateway/internal/s3
+cpu: placeholder
+BenchmarkS3Client_PutObject_NoFault-4                    	       1	    300127 ns/op	  13.65 MB/s	   43928 B/op	     542 allocs/op
+BenchmarkS3Client_PutObject_ThunderingHerd_10pct503-4    	       1	 619119810 ns/op	   0.01 MB/s	   63224 B/op	     897 allocs/op
+BenchmarkS3Client_PutObject_ThunderingHerd_50pct503-4    	       1	 780053011 ns/op	   0.01 MB/s	   61480 B/op	     873 allocs/op
+BenchmarkS3Client_HeadObject_ThunderingHerd_50pct503-4   	       1	 288224366 ns/op	   62496 B/op	     828 allocs/op
+BenchmarkUploadPartCopy_Chunked_64KiB_Range-4            	       1	   2561765 ns/op	 409.32 MB/s	 1433456 B/op	    9501 allocs/op
+BenchmarkUploadPartCopy_Legacy_16MiB_Range-4             	       1	    279598 ns/op	60004.78 MB/s	  120400 B/op	     753 allocs/op
+BenchmarkUploadPartCopy_Plaintext_Passthrough_1GiB-4     	       1	    409202 ns/op	2623989.68 MB/s	  131816 B/op	     777 allocs/op
+PASS

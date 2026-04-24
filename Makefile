@@ -1,4 +1,4 @@
-.PHONY: build build-fips test test-fips test-conformance test-conformance-local test-conformance-minio test-conformance-external test-conformance-kms test-load test-load-range test-load-multipart test-load-soak test-load-minio test-load-garage test-load-rustfs test-load-seaweedfs test-load-prometheus test-load-baseline test-rotation test-fuzz test-comprehensive test-isolation-check lint clean run docker-build docker-push profile-image help
+.PHONY: build build-fips test test-fips test-conformance test-conformance-local test-conformance-minio test-conformance-external test-conformance-kms test-load test-load-range test-load-multipart test-load-soak test-load-minio test-load-garage test-load-rustfs test-load-seaweedfs test-load-prometheus test-load-baseline test-rotation test-fuzz test-comprehensive test-isolation-check bench-lint bench-micro-baseline bench-macro-minio bench-macro-garage bench-macro-rustfs bench-macro-seaweedfs bench-baseline lint clean run docker-build docker-push profile-image help
 
 # Variables
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo "dev")
@@ -171,6 +171,41 @@ test-load-baseline:
 		2>&1 | tee testdata/baselines/soak_$(shell date +%Y%m%d_%H%M%S).log
 	@echo "Baseline log written to testdata/baselines/"
 
+# ── V0.6-QA-1 performance baseline targets ──────────────────────────────────
+#
+# bench-lint           Grep-level check that every Benchmark* includes
+#                      b.ReportAllocs() and either b.SetBytes() or a
+#                      documented exemption comment.  Runs in PR CI.
+# bench-micro-baseline Produces docs/perf/v0.6-qa-1/micro-baseline.txt via
+#                      the canonical go test -bench invocation from
+#                      docs/plans/V0.6-QA-1-plan.md §3.1.
+# bench-macro-<prov>   Runs the soak harness against one local provider and
+#                      writes docs/perf/v0.6-qa-1/macro-<provider>.json.
+# bench-baseline       Runs micro + all four macros serially; used
+#                      on-demand and by the nightly `performance-baseline`
+#                      workflow. Expect ~30-40 min wall-clock.
+
+bench-lint:
+	@bash scripts/bench-lint.sh
+
+bench-micro-baseline:
+	@bash scripts/bench-baseline.sh docs/perf/v0.6-qa-1/micro-baseline.txt
+
+bench-macro-minio:
+	@bash scripts/bench-macro.sh minio
+
+bench-macro-garage:
+	@bash scripts/bench-macro.sh garage
+
+bench-macro-rustfs:
+	@bash scripts/bench-macro.sh rustfs
+
+bench-macro-seaweedfs:
+	@bash scripts/bench-macro.sh seaweedfs
+
+bench-baseline: bench-micro-baseline bench-macro-minio bench-macro-garage bench-macro-rustfs bench-macro-seaweedfs
+	@echo "bench-baseline: complete. Artefacts under docs/perf/v0.6-qa-1/."
+
 # Run key rotation conformance tests (tier-2, all registered providers).
 test-rotation:
 	@echo "Running key rotation conformance tests (all registered providers)..."
@@ -290,6 +325,10 @@ help:
 	@echo "  test-load-seaweedfs- Full soak: SeaweedFS provider only"
 	@echo "  test-load-baseline - Soak run with log capture to testdata/baselines/"
 	@echo "  test-load-prometheus-Soak run with custom duration (set SOAK_DURATION)"
+	@echo "  bench-lint         - Check every Benchmark* has ReportAllocs() + SetBytes() (V0.6-QA-1)"
+	@echo "  bench-micro-baseline - Run micro benchmarks, write docs/perf/v0.6-qa-1/micro-baseline.txt"
+	@echo "  bench-macro-<prov>   - Run soak on one provider, write macro-<prov>.json (minio|garage|rustfs|seaweedfs)"
+	@echo "  bench-baseline     - Run micro + all four macros (full V0.6-QA-1 baseline)"
 	@echo "  test-rotation      - Run key rotation conformance tests (tier-2, all providers)"
 	@echo "  test-comprehensive - Run comprehensive test suite (tier-1 + local conformance + isolation check)"
 	@echo "  test-coverage      - Run tests with HTML coverage report"

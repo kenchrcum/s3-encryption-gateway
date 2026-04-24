@@ -651,6 +651,16 @@ See [`docs/ROADMAP.md`](docs/ROADMAP.md) for the complete roadmap.
 
 ---
 
+## Performance
+
+Per-provider performance baselines and regression gates live in
+[`docs/PERFORMANCE.md`](docs/PERFORMANCE.md). The nightly
+`performance-baseline` workflow re-runs 19 micro-benchmarks plus per-provider
+soak tests (MinIO, Garage, RustFS, SeaweedFS) and fails the job on
+`> 15 %` throughput regressions or p99 latency growth.
+
+---
+
 ## Contributing
 
 We welcome contributions! Please see [`docs/DEVELOPMENT_GUIDE.md`](docs/DEVELOPMENT_GUIDE.md) for development setup and guidelines.

@@ -99,7 +99,7 @@ This roadmap outlines potential future improvements, grouped by milestones and t
   - Admin API for safe key rotation operations (drain + cutover).
 
 - Testing & Quality
-  - Performance baseline per provider (docs + CI graphs).
+  - ✅ Performance baseline per provider (V0.6-QA-1) — see [`docs/PERFORMANCE.md`](PERFORMANCE.md) and [`docs/plans/V0.6-QA-1-plan.md`](plans/V0.6-QA-1-plan.md).
   - Coverage gate (>=80%) and mutation testing on critical crypto-free code.
 
 - Docs

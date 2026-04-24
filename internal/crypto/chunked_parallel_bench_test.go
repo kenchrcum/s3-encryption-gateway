@@ -20,6 +20,7 @@ func BenchmarkChunkedEncrypt_Parallel(b *testing.B) {
 		data[i] = byte(i % 256)
 	}
 
+	b.SetBytes(int64(size))
 	b.ResetTimer()
 	b.ReportAllocs()
 
@@ -62,6 +63,7 @@ func BenchmarkChunkedDecrypt_Parallel(b *testing.B) {
 		b.Fatalf("Failed to read encrypted data: %v", err)
 	}
 
+	b.SetBytes(int64(size))
 	b.ResetTimer()
 	b.ReportAllocs()
 

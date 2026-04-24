@@ -45,6 +45,9 @@ jobs:
       - name: go vet HSM
         run: go vet -tags=hsm ./...
 
+      - name: bench-lint (V0.6-QA-1 §5.4)
+        run: bash scripts/bench-lint.sh
+
   # ── Isolation check — PR only ────────────────────────────────────────────────
   isolation-check:
     name: Test isolation check

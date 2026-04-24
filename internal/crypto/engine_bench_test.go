@@ -19,6 +19,7 @@ func BenchmarkEngine_Encrypt_Small(b *testing.B) {
 		data[i] = byte(i % 256)
 	}
 
+	b.SetBytes(int64(len(data)))
 	b.ResetTimer()
 	b.ReportAllocs()
 
@@ -48,6 +49,7 @@ func BenchmarkEngine_Encrypt_Medium(b *testing.B) {
 		data[i] = byte(i % 256)
 	}
 
+	b.SetBytes(int64(len(data)))
 	b.ResetTimer()
 	b.ReportAllocs()
 
@@ -76,6 +78,7 @@ func BenchmarkEngine_Encrypt_Large(b *testing.B) {
 		data[i] = byte(i % 256)
 	}
 
+	b.SetBytes(int64(len(data)))
 	b.ResetTimer()
 	b.ReportAllocs()
 
@@ -118,6 +121,7 @@ func BenchmarkEngine_Decrypt_Small(b *testing.B) {
 		b.Fatalf("Failed to read encrypted data: %v", err)
 	}
 
+	b.SetBytes(int64(len(data)))
 	b.ResetTimer()
 	b.ReportAllocs()
 
@@ -158,6 +162,7 @@ func BenchmarkEngine_Decrypt_Medium(b *testing.B) {
 		b.Fatalf("Failed to read encrypted data: %v", err)
 	}
 
+	b.SetBytes(int64(len(data)))
 	b.ResetTimer()
 	b.ReportAllocs()
 
@@ -186,6 +191,7 @@ func BenchmarkEngine_EncryptDecrypt_RoundTrip(b *testing.B) {
 		data[i] = byte(i % 256)
 	}
 
+	b.SetBytes(int64(len(data)))
 	b.ResetTimer()
 	b.ReportAllocs()
 

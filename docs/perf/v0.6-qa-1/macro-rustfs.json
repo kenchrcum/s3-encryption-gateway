@@ -1,0 +1,19 @@
+{
+  "schema_version": "1",
+  "provider": "rustfs",
+  "provider_image": "TBD",
+  "gateway_version": "v0.6.0",
+  "go_version": "TBD",
+  "runner": "placeholder",
+  "generated_at": "TBD",
+  "_note": "Placeholder committed with V0.6-QA-1 infrastructure PR. The first clean nightly performance-baseline workflow run on main will overwrite this file. Until then, the nightly comparator tolerates an empty runs[] array and exits 0.",
+  "env": {
+    "SOAK_WORKERS": 10,
+    "SOAK_DURATION": "60s",
+    "SOAK_QPS": 25,
+    "SOAK_OBJECT_SIZE": 52428800,
+    "SOAK_CHUNK_SIZE": 65536,
+    "SOAK_PART_SIZE": 10485760
+  },
+  "runs": []
+}

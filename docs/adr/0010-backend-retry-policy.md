@@ -120,13 +120,19 @@ in `internal/s3/retry.go` that:
 customisation, no Prometheus metrics, and 429 is still not retried
 by HTTP status alone.
 
-### B: Circuit breakers
+### <a name="b-circuit-breakers"></a>B: Circuit breakers
 
 **Deferred.** Half-open / open / closed state machines are the natural
 complement to retry policy, but introduce considerable state complexity
-(shared across replicas). Tracked as a potential v0.7 item if real-world
-data from V0.6-QA-1 baselines shows need. Reference: *Designing
-Distributed Systems, 2nd Ed.* ch. 3.
+(shared across replicas). Tracked as a potential v0.7 item; the
+evidence base is the V0.6-QA-1 per-provider SLO annex at
+[`docs/perf/v0.6-qa-1/slo-summary.md`](../perf/v0.6-qa-1/slo-summary.md)
+(methodology in [`docs/PERFORMANCE.md#circuit-breaker-decision-input`](../PERFORMANCE.md#circuit-breaker-decision-input)).
+Until the first three green nightlies populate that table's p99 column,
+the design question cannot be answered on data; the current evidence is
+that retries + exponential backoff with jitter adequately absorb the
+transient-503 class of faults the suite exercises today. Reference:
+*Designing Distributed Systems, 2nd Ed.* ch. 3.
 
 ### C: Hedged / speculative requests
 

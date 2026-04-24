@@ -116,10 +116,30 @@ func humanBytes(b int64) string {
 // ── Shared results counter ──────────────────────────────────────────────────
 
 // loadResults is a minimal atomic counter struct shared across goroutines.
+//
+// V0.6-QA-1 Phase A adds latency sampling: every worker appends its per-call
+// duration under mu. Samples are consumed once at reportResults time.
 type loadResults struct {
 	total   int64
 	success int64
 	failed  int64
+
+	// Latency samples (per-request duration in ns). Guarded by mu.
+	// Under SOAK_JSON_OUT=<path> the summary JSON includes p50/p95/p99;
+	// under plain test runs the slice is still populated but unused.
+	mu         sync.Mutex
+	latencies  []time.Duration
+	totalBytes int64 // bytes successfully transferred — for throughput_mbps
+}
+
+// recordLatency appends a single per-request latency sample. Safe under
+// concurrent callers. Caller supplies bytes = 0 for error cases so throughput
+// is computed over the successful byte stream only.
+func (r *loadResults) recordLatency(d time.Duration, bytes int64) {
+	r.mu.Lock()
+	r.latencies = append(r.latencies, d)
+	r.totalBytes += bytes
+	r.mu.Unlock()
 }
 
 // ── Range load test ─────────────────────────────────────────────────────────
@@ -160,6 +180,10 @@ func testRangeLoad(t *testing.T, inst provider.Instance) {
 	}
 
 	var res loadResults
+	sampler := NewHeapSampler(500 * time.Millisecond)
+	sampler.Start()
+	defer sampler.Stop()
+
 	runWorkers(t, p, func(workerID int, idx int64, client *http.Client) {
 		rc := cases[idx%int64(len(cases))]
 		req, err := http.NewRequest("GET", objectURL(gw, inst.Bucket, objectKey), nil)
@@ -169,23 +193,33 @@ func testRangeLoad(t *testing.T, inst provider.Instance) {
 		}
 		req.Header.Set("Range", rc.header)
 
+		t0 := time.Now()
 		resp, err := client.Do(req)
 		atomic.AddInt64(&res.total, 1)
 		if err != nil {
 			atomic.AddInt64(&res.failed, 1)
+			res.recordLatency(time.Since(t0), 0)
 			return
 		}
-		io.Copy(io.Discard, resp.Body)
+		n, _ := io.Copy(io.Discard, resp.Body)
 		resp.Body.Close()
+		dur := time.Since(t0)
 
 		if resp.StatusCode == rc.expectedCode {
 			atomic.AddInt64(&res.success, 1)
+			// Count bytes only for 206 responses; 416 contributes zero payload.
+			if resp.StatusCode == http.StatusPartialContent {
+				res.recordLatency(dur, n)
+			} else {
+				res.recordLatency(dur, 0)
+			}
 		} else {
 			atomic.AddInt64(&res.failed, 1)
+			res.recordLatency(dur, 0)
 		}
 	})
 
-	reportResults(t, "RangeLoad", p, &res)
+	reportResults(t, "Load_RangeRead", p, &res, sampler.Max())
 }
 
 // ── Multipart load test ─────────────────────────────────────────────────────
@@ -206,18 +240,28 @@ func testMultipartLoad(t *testing.T, inst provider.Instance) {
 	part2 := []byte("tail") // last part may be < 5 MiB
 
 	var res loadResults
+	sampler := NewHeapSampler(500 * time.Millisecond)
+	sampler.Start()
+	defer sampler.Stop()
+
+	// Successful MPU uploads the sum of both parts' sizes.
+	payloadBytes := int64(len(part1) + len(part2))
+
 	runWorkers(t, p, func(workerID int, idx int64, client *http.Client) {
 		key := fmt.Sprintf("mpu-load/w%d/%d-%d", workerID, time.Now().UnixNano(), idx)
 		atomic.AddInt64(&res.total, 1)
+		t0 := time.Now()
 		if err := doFullMPU(gw, inst.Bucket, key, client, part1, part2); err != nil {
 			t.Logf("MPU worker %d: %v", workerID, err)
 			atomic.AddInt64(&res.failed, 1)
+			res.recordLatency(time.Since(t0), 0)
 		} else {
 			atomic.AddInt64(&res.success, 1)
+			res.recordLatency(time.Since(t0), payloadBytes)
 		}
 	})
 
-	reportResults(t, "MultipartLoad", p, &res)
+	reportResults(t, "Load_Multipart", p, &res, sampler.Max())
 }
 
 // ── Shared worker harness ────────────────────────────────────────────────────
@@ -264,8 +308,12 @@ func runWorkers(t *testing.T, p loadTestParams, fn workFn) {
 	wg.Wait()
 }
 
-// reportResults logs a summary and asserts the pass criteria.
-func reportResults(t *testing.T, label string, p loadTestParams, res *loadResults) {
+// reportResults logs a summary, asserts the pass criteria, and — when
+// SOAK_JSON_OUT is set — appends a SummaryRecord to that file (V0.6-QA-1).
+//
+// heapMax comes from a HeapSampler started before runWorkers; pass 0 when
+// no sampler is wired (older call sites).
+func reportResults(t *testing.T, label string, p loadTestParams, res *loadResults, heapMax uint64) {
 	t.Helper()
 	throughput := float64(res.total) / p.duration.Seconds()
 	t.Logf("%s: total=%d success=%d failed=%d throughput=%.1f req/s",
@@ -276,6 +324,45 @@ func reportResults(t *testing.T, label string, p loadTestParams, res *loadResult
 	}
 	if res.failed > 0 {
 		t.Errorf("%s: %d/%d requests failed", label, res.failed, res.total)
+	}
+
+	// V0.6-QA-1 Phase A: emit structured summary when requested.
+	jsonPath := os.Getenv("SOAK_JSON_OUT")
+	if jsonPath == "" {
+		return
+	}
+
+	res.mu.Lock()
+	samples := make([]time.Duration, len(res.latencies))
+	copy(samples, res.latencies)
+	totalBytes := res.totalBytes
+	res.mu.Unlock()
+
+	percentiles := Percentiles(samples)
+
+	var mbps float64
+	if p.duration > 0 {
+		mbps = float64(totalBytes) / (1024.0 * 1024.0) / p.duration.Seconds()
+	}
+
+	retries, err := ReadRetryCounterTotal(nil)
+	if err != nil {
+		// Non-fatal: record 0 and log.
+		t.Logf("%s: ReadRetryCounterTotal: %v", label, err)
+		retries = 0
+	}
+
+	rec := SummaryRecord{
+		Test:              label,
+		ThroughputMBPS:    mbps,
+		LatencyNS:         percentiles,
+		Errors:            res.failed,
+		RetriesTotal:      retries,
+		HeapInuseMaxBytes: heapMax,
+		CPUSeconds:        0, // Linux-only; kept at 0 for now — see plan §3.2.
+	}
+	if err := AppendJSONRecord(jsonPath, rec); err != nil {
+		t.Logf("%s: AppendJSONRecord(%q): %v", label, jsonPath, err)
 	}
 }
 

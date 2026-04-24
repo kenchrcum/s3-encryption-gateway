@@ -107,6 +107,7 @@ func BenchmarkEncryptWithMemoryKM(b *testing.B) {
 	}
 
 	data := make([]byte, 64*1024)
+	b.SetBytes(int64(len(data)))
 	b.ResetTimer()
 	b.ReportAllocs()
 	for i := 0; i < b.N; i++ {

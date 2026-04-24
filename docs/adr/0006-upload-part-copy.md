@@ -214,7 +214,7 @@ Full-object buffering for legacy sources is necessary but dangerous. A conservat
 
 - **ADR 0002**: *Multipart Upload Interoperability* – establishes plaintext-part design; this ADR upholds it.
 - **V0.6-SEC-1 Plan**: Provides in-memory KeyManager infrastructure for unit tests.
-- **V0.6-QA-1**: Benchmarks for this implementation feed performance baselines.
+- **V0.6-QA-1**: Benchmarks for this implementation (`BenchmarkUploadPartCopy_{Chunked_64KiB_Range,Legacy_16MiB_Range,Plaintext_Passthrough_1GiB}` in `internal/s3/upload_part_copy_bench_test.go`) feed the per-provider performance baseline corpus. See [`docs/PERFORMANCE.md`](../PERFORMANCE.md).
 
 ## Future Considerations
 

@@ -147,6 +147,7 @@ func buildBenchClient(b testing.TB, transport http.RoundTripper) *s3.Client {
 func BenchmarkS3Client_PutObject_NoFault(b *testing.B) {
 	client := buildBenchClient(b, benchOKTransport{})
 	payload := bytes.Repeat([]byte("x"), 4*1024) // 4 KiB body
+	b.SetBytes(int64(len(payload)))
 	b.ResetTimer()
 	b.ReportAllocs()
 	for i := 0; i < b.N; i++ {
@@ -170,6 +171,7 @@ func BenchmarkS3Client_PutObject_ThunderingHerd_10pct503(b *testing.B) {
 	transport := newBenchFaultyTransport(benchOKTransport{}, 42, rules)
 	client := buildBenchClient(b, transport)
 	payload := bytes.Repeat([]byte("x"), 4*1024)
+	b.SetBytes(int64(len(payload)))
 	b.ResetTimer()
 	b.ReportAllocs()
 	for i := 0; i < b.N; i++ {
@@ -190,6 +192,7 @@ func BenchmarkS3Client_PutObject_ThunderingHerd_50pct503(b *testing.B) {
 	transport := newBenchFaultyTransport(benchOKTransport{}, 42, rules)
 	client := buildBenchClient(b, transport)
 	payload := bytes.Repeat([]byte("x"), 4*1024)
+	b.SetBytes(int64(len(payload)))
 	b.ResetTimer()
 	b.ReportAllocs()
 	for i := 0; i < b.N; i++ {
@@ -204,6 +207,8 @@ func BenchmarkS3Client_PutObject_ThunderingHerd_50pct503(b *testing.B) {
 
 // BenchmarkS3Client_HeadObject_ThunderingHerd_50pct503 exercises the
 // read-path (idempotent) retry under heavy fault load.
+// b.SetBytes omitted because HEAD has no payload body; the benchmark measures
+// per-request control-plane latency and retry cost, not throughput.
 func BenchmarkS3Client_HeadObject_ThunderingHerd_50pct503(b *testing.B) {
 	rules := []benchFaultRule{{statusCode: 503, probabilityPct: 50}}
 	transport := newBenchFaultyTransport(benchHeadOKTransport{}, 42, rules)

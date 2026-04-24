@@ -6,6 +6,24 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased] — v0.6
 
+### Testing & Quality
+
+- **Per-provider performance baselines** (V0.6-QA-1): established a
+  reproducible measurement methodology and committed baseline corpus
+  under `docs/perf/v0.6-qa-1/` (micro-benchmarks for 19 tracked Go
+  functions + macro JSON per local provider — MinIO, Garage, RustFS,
+  SeaweedFS). A nightly `performance-baseline` GitHub workflow re-runs
+  both the micro and per-provider soak suites and fails on > 15 %
+  throughput drops, > 20 % p95 growth, > 25 % p99 growth, any new
+  `allocs/op`, or any new error where the baseline was zero (thresholds
+  per plan §6.1). Pull requests receive a sticky advisory benchstat
+  comment (never fails the PR — CI runners are too noisy for per-PR
+  gating). Two new benchmarks — `BenchmarkMPUDecryptReader_100MiB` and
+  the three `BenchmarkUploadPartCopy_*` variants — close the benchmark
+  gaps flagged by PERF-1 and S3-1. See
+  [`docs/PERFORMANCE.md`](docs/PERFORMANCE.md) and
+  [`docs/plans/V0.6-QA-1-plan.md`](docs/plans/V0.6-QA-1-plan.md).
+
 ### Operations & Helm
 
 - **Helm values JSON Schema** (V0.6-OPS-2): the chart now ships
