@@ -137,7 +137,7 @@ jobs:
         with:
           script: |
             const pkg = '${{ matrix.package }}';
-            const rate = '${{ steps.mutation.outputs.kill_rate || "unknown" }}';
+            const rate = '${{ steps.mutation.outputs.kill_rate || ''unknown'' }}';
             const title = `mutation-regression: ${pkg} kill-rate below 70%`;
             const body = [
               `## Mutation Regression: \`${pkg}\``,
