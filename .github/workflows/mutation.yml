@@ -1,0 +1,190 @@
+name: Mutation Testing
+
+# Nightly Gremlins mutation testing run.
+# V0.6-QA-2 §4 Phase C
+#
+# Schedule: 03:00 UTC (30 min after performance-baseline.yml at 02:30 UTC
+# to avoid runner queue collision with V0.6-QA-1).
+# Also triggered manually via workflow_dispatch for on-demand runs.
+#
+# Scope: four packages where logic inversions are most dangerous —
+#   internal/config, internal/api, internal/s3, internal/middleware
+# Threshold: 70% kill-rate (leaves ~30% headroom for equivalent mutants)
+# See V0.6-QA-2-plan.md §1.3 for rationale.
+
+on:
+  schedule:
+    - cron: '0 3 * * *'
+  workflow_dispatch:
+    inputs:
+      package:
+        description: 'Single package to test (leave empty for all four)'
+        required: false
+        default: ''
+
+jobs:
+  # ── Smoke test: verify Gremlins is correctly installed ──────────────────────
+  mutation-smoke:
+    name: Mutation / smoke test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+
+      - name: Install Gremlins
+        run: go install github.com/go-gremlins/gremlins/cmd/gremlins@latest
+
+      - name: Smoke test (synthetic package)
+        run: |
+          echo "=== Gremlins smoke test ==="
+          gremlins unleash --version || true
+          echo "Gremlins installed successfully"
+
+  # ── Per-package mutation testing ────────────────────────────────────────────
+  mutation:
+    name: Mutation / ${{ matrix.package }}
+    runs-on: ubuntu-latest
+    needs: [mutation-smoke]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - package: ./internal/config
+            short_name: config
+          - package: ./internal/api
+            short_name: api
+          - package: ./internal/s3
+            short_name: s3
+          - package: ./internal/middleware
+            short_name: middleware
+
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+
+      - name: Install Gremlins
+        run: go install github.com/go-gremlins/gremlins/cmd/gremlins@latest
+
+      - name: Create mutation report dir
+        run: mkdir -p docs/mutation
+
+      - name: Run Gremlins on ${{ matrix.package }}
+        id: mutation
+        run: |
+          set +e
+          gremlins unleash \
+            --threshold-efficacy=70 \
+            --only-covered \
+            --output=json \
+            --json-output="docs/mutation/${{ matrix.short_name }}.json" \
+            ${{ matrix.package }} 2>&1
+          GREMLINS_EXIT=$?
+          set -e
+
+          echo "gremlins_exit=${GREMLINS_EXIT}" >> "$GITHUB_OUTPUT"
+
+          # Parse kill-rate from JSON if jq available
+          if command -v jq >/dev/null 2>&1 && [[ -f "docs/mutation/${{ matrix.short_name }}.json" ]]; then
+            TOTAL=$(jq '[.mutants // [] | length] | add // 0' docs/mutation/${{ matrix.short_name }}.json 2>/dev/null || echo 0)
+            KILLED=$(jq '[.mutants // [] | .[] | select(.status == "KILLED")] | length' docs/mutation/${{ matrix.short_name }}.json 2>/dev/null || echo 0)
+            if [[ "$TOTAL" -gt 0 ]]; then
+              RATE=$(echo "scale=1; $KILLED * 100 / $TOTAL" | bc)
+            else
+              RATE="N/A"
+            fi
+            echo "kill_rate=${RATE}" >> "$GITHUB_OUTPUT"
+            echo "Killed: ${KILLED}/${TOTAL} (${RATE}%)"
+          fi
+
+          exit $GREMLINS_EXIT
+        continue-on-error: true
+
+      - name: Upload mutation report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mutation-${{ matrix.short_name }}
+          path: docs/mutation/${{ matrix.short_name }}.json
+          retention-days: 30
+
+      - name: Step summary
+        if: always()
+        run: |
+          {
+            echo "## Mutation Testing: ${{ matrix.package }}"
+            echo ""
+            echo "| Metric | Value |"
+            echo "|--------|-------|"
+            echo "| Kill-rate threshold | 70% |"
+            echo "| Kill-rate | ${{ steps.mutation.outputs.kill_rate || 'unknown' }}% |"
+            echo "| Status | ${{ steps.mutation.outputs.gremlins_exit == '0' && 'PASS' || 'FAIL' }} |"
+            if [[ -f "docs/mutation/${{ matrix.short_name }}.json" ]]; then
+              echo ""
+              echo "### Report"
+              echo '```json'
+              head -50 "docs/mutation/${{ matrix.short_name }}.json" || true
+              echo '```'
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Open mutation-regression issue on failure
+        if: steps.mutation.outputs.gremlins_exit != '0'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const pkg = '${{ matrix.package }}';
+            const rate = '${{ steps.mutation.outputs.kill_rate || "unknown" }}';
+            const title = `mutation-regression: ${pkg} kill-rate below 70%`;
+            const body = [
+              `## Mutation Regression: \`${pkg}\``,
+              '',
+              `**Kill-rate:** ${rate}%`,
+              `**Threshold:** 70%`,
+              `**Run:** ${context.runId}`,
+              `**Branch:** ${context.ref}`,
+              '',
+              'The nightly Gremlins mutation testing detected that the kill-rate',
+              `for \`${pkg}\` has fallen below the 70% threshold.`,
+              '',
+              '### How to reproduce',
+              '```bash',
+              `make mutation-report-pkg PKG=${pkg}`,
+              '```',
+              '',
+              '### How to fix',
+              '1. Review the surviving mutants in the uploaded JSON artefact.',
+              '2. Add tests that catch the surviving mutations.',
+              '3. Re-run `make mutation-report` to verify the kill-rate recovers.',
+              '',
+              'See `docs/COVERAGE.md` for interpretation guidance.',
+            ].join('\n');
+
+            // Dedup: close any existing open issue with the same title
+            const existing = await github.rest.issues.listForRepo({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              state: 'open',
+              labels: 'mutation-regression',
+            });
+
+            const match = existing.data.find(i => i.title === title);
+            if (match) {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: match.number,
+                body: `Regression still present in run ${context.runId} (${rate}% < 70%).`,
+              });
+            } else {
+              await github.rest.issues.create({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                title,
+                body,
+                labels: ['mutation-regression', 'area:testing', 'milestone:v0.6'],
+              });
+            }

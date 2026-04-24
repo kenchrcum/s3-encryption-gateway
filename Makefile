@@ -1,4 +1,4 @@
-.PHONY: build build-fips test test-fips test-conformance test-conformance-local test-conformance-minio test-conformance-external test-conformance-kms test-load test-load-range test-load-multipart test-load-soak test-load-minio test-load-garage test-load-rustfs test-load-seaweedfs test-load-prometheus test-load-baseline test-rotation test-fuzz test-comprehensive test-isolation-check bench-lint bench-micro-baseline bench-macro-minio bench-macro-garage bench-macro-rustfs bench-macro-seaweedfs bench-baseline lint clean run docker-build docker-push profile-image help
+.PHONY: build build-fips test test-fips test-conformance test-conformance-local test-conformance-minio test-conformance-external test-conformance-kms test-load test-load-range test-load-multipart test-load-soak test-load-minio test-load-garage test-load-rustfs test-load-seaweedfs test-load-prometheus test-load-baseline test-rotation test-fuzz test-comprehensive test-isolation-check bench-lint bench-micro-baseline bench-macro-minio bench-macro-garage bench-macro-rustfs bench-macro-seaweedfs bench-baseline lint clean run docker-build docker-push profile-image coverage-gate coverage-html coverage-fips mutation-report mutation-report-pkg help
 
 # Variables
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo "dev")
@@ -6,6 +6,11 @@ COMMIT ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo "unknown")
 BINARY_NAME := s3-encryption-gateway
 IMAGE_NAME ?= kenchrcum/s3-encryption-gateway
 IMAGE_TAG ?= $(VERSION)
+
+# V0.6-QA-2 — Coverage gate and mutation testing settings
+COVERAGE_THRESHOLD ?= 80
+MUTATION_THRESHOLD ?= 70
+PKG ?= ./internal/config
 
 # Build the binary
 build:
@@ -296,10 +301,48 @@ install-tools:
 	@go install golang.org/x/tools/cmd/goimports@latest
 	@go install golang.org/x/vuln/cmd/govulncheck@latest
 
-# Generate test coverage report
+# Generate test coverage report (legacy target)
 coverage:
 	@go test -coverprofile=coverage.out ./...
 	@go tool cover -func=coverage.out
+
+# ── V0.6-QA-2 Coverage Gate targets ─────────────────────────────────────────
+
+# coverage-gate — Enforce ≥COVERAGE_THRESHOLD% project-wide statement coverage.
+# Uses scripts/coverage-gate.sh; excludes packages in scripts/coverage-exclude.txt.
+# Override threshold: make coverage-gate COVERAGE_THRESHOLD=85
+coverage-gate:
+	@COVERAGE_THRESHOLD=$(COVERAGE_THRESHOLD) bash scripts/coverage-gate.sh $(COVERAGE_THRESHOLD)
+
+# coverage-html — Open an HTML coverage report in the browser.
+# Requires coverage.out to exist (run make coverage-gate first).
+coverage-html: coverage-gate
+	@go tool cover -html=coverage.out -o coverage.html
+	@echo "HTML report: coverage.html"
+	@if command -v xdg-open >/dev/null 2>&1; then xdg-open coverage.html; \
+	elif command -v open >/dev/null 2>&1; then open coverage.html; \
+	else echo "Open coverage.html in your browser"; fi
+
+# coverage-fips — Run coverage gate with FIPS build tag.
+# Both the default profile and this FIPS profile must meet COVERAGE_THRESHOLD.
+coverage-fips:
+	@COVERAGE_THRESHOLD=$(COVERAGE_THRESHOLD) \
+	COVERAGE_TAGS=fips \
+	COVERAGE_PROFILE=coverage-fips.out \
+	FIPS_COVERAGE_PROFILE=coverage-fips.out \
+	bash scripts/coverage-gate.sh $(COVERAGE_THRESHOLD)
+
+# ── V0.6-QA-2 Mutation Testing targets ───────────────────────────────────────
+
+# mutation-report — Run Gremlins on all four in-scope packages.
+# Requires gremlins to be installed: go install github.com/go-gremlins/gremlins/cmd/gremlins@latest
+mutation-report:
+	@bash scripts/mutation-report.sh
+
+# mutation-report-pkg — Run Gremlins on a single package.
+# Usage: make mutation-report-pkg PKG=./internal/config
+mutation-report-pkg:
+	@bash scripts/mutation-report.sh $(PKG)
 
 # Help target
 help:
@@ -341,5 +384,10 @@ help:
 	@echo "  profile-image      - Build non-stripped image for pprof (V0.6-OBS-1)"
 	@echo "  security-scan      - Run security vulnerability scan"
 	@echo "  install-tools      - Install development tools"
-	@echo "  coverage           - Generate test coverage report"
+	@echo "  coverage           - Generate test coverage report (legacy)"
+	@echo "  coverage-gate      - Enforce ≥COVERAGE_THRESHOLD% coverage (default: 80) (V0.6-QA-2)"
+	@echo "  coverage-html      - Generate and open HTML coverage report (V0.6-QA-2)"
+	@echo "  coverage-fips      - Run coverage gate with -tags=fips (V0.6-QA-2)"
+	@echo "  mutation-report    - Run Gremlins mutation testing on all in-scope packages (V0.6-QA-2)"
+	@echo "  mutation-report-pkg PKG=./internal/config - Mutation testing on a single package (V0.6-QA-2)"
 	@echo "  help               - Show this help message"

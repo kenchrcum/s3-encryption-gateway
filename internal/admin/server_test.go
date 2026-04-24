@@ -7,8 +7,10 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/kenneth/s3-encryption-gateway/internal/config"
 	"github.com/sirupsen/logrus"
@@ -380,5 +382,235 @@ func TestWriteAdminError_Shape(t *testing.T) {
 	body := w.Body.String()
 	if !strings.Contains(body, "Unauthorized") {
 		t.Fatalf("expected error body to contain 'Unauthorized', got: %s", body)
+	}
+}
+
+// --- WriteAdminErrorWithRotation Tests ---
+
+func TestWriteAdminErrorWithRotation_Shape(t *testing.T) {
+	w := httptest.NewRecorder()
+	WriteAdminErrorWithRotation(w, http.StatusConflict, "RotationConflict", "rotation in progress", "rotation-id-abc")
+
+	if w.Code != http.StatusConflict {
+		t.Fatalf("expected 409, got %d", w.Code)
+	}
+	ct := w.Header().Get("Content-Type")
+	if !strings.HasPrefix(ct, "application/json") {
+		t.Fatalf("expected application/json content type, got %s", ct)
+	}
+	body := w.Body.String()
+	if !strings.Contains(body, "RotationConflict") {
+		t.Errorf("expected body to contain 'RotationConflict', got: %s", body)
+	}
+	if !strings.Contains(body, "rotation-id-abc") {
+		t.Errorf("expected body to contain 'rotation-id-abc', got: %s", body)
+	}
+	if !strings.Contains(body, "rotation in progress") {
+		t.Errorf("expected body to contain message, got: %s", body)
+	}
+}
+
+// --- NewServer and Server lifecycle Tests ---
+
+func TestNewServer_CreatesMux(t *testing.T) {
+	cfg := config.AdminConfig{
+		Address: "127.0.0.1:0",
+		Auth: config.AdminAuthConfig{
+			Token: randomToken(t),
+		},
+	}
+	s := NewServer(cfg, testLogger())
+	if s == nil {
+		t.Fatal("NewServer() returned nil")
+	}
+	mux := s.Mux()
+	if mux == nil {
+		t.Fatal("Server.Mux() returned nil")
+	}
+}
+
+func TestServer_BoundAddr_BeforeStart(t *testing.T) {
+	cfg := config.AdminConfig{
+		Address: "127.0.0.1:0",
+		Auth: config.AdminAuthConfig{
+			Token: randomToken(t),
+		},
+	}
+	s := NewServer(cfg, testLogger())
+	addr := s.BoundAddr()
+	if addr != "" {
+		t.Errorf("BoundAddr() before Start() = %q, want empty string", addr)
+	}
+}
+
+func TestServer_StartShutdown(t *testing.T) {
+	token := randomToken(t)
+	cfg := config.AdminConfig{
+		Address: "127.0.0.1:0", // OS assigns port
+		Auth: config.AdminAuthConfig{
+			Token: token,
+		},
+	}
+	s := NewServer(cfg, testLogger())
+
+	// Register a simple handler
+	s.Mux().HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+
+	// Start server in a goroutine
+	errCh := make(chan error, 1)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	go func() {
+		errCh <- s.Start(ctx)
+	}()
+
+	// Wait for the server to bind (poll BoundAddr)
+	var addr string
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		addr = s.BoundAddr()
+		if addr != "" {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	if addr == "" {
+		t.Fatal("Server did not bind within 3 seconds")
+	}
+
+	// Make a request to verify the server is running
+	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, "http://"+addr+"/health", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("request to server failed: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("expected 200, got %d", resp.StatusCode)
+	}
+
+	// Shutdown the server
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer shutdownCancel()
+	if err := s.Shutdown(shutdownCtx); err != nil {
+		t.Errorf("Shutdown() error: %v", err)
+	}
+
+	// Wait for Start() to exit
+	select {
+	case err := <-errCh:
+		if err != nil && err != http.ErrServerClosed {
+			t.Errorf("Start() error: %v", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Error("Start() did not exit after Shutdown")
+	}
+}
+
+func TestServer_Shutdown_BeforeStart(t *testing.T) {
+	cfg := config.AdminConfig{
+		Address: "127.0.0.1:0",
+		Auth: config.AdminAuthConfig{
+			Token: "test-token",
+		},
+	}
+	s := NewServer(cfg, testLogger())
+
+	// Shutdown before Start should return nil (not panic)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	err := s.Shutdown(ctx)
+	if err != nil {
+		t.Errorf("Shutdown() before Start() returned error: %v", err)
+	}
+}
+
+// --- RateLimiter cleanup tests ---
+
+func TestRateLimiter_Cleanup_RemovesExpiredEntries(t *testing.T) {
+	// Create a rate limiter with very short TTL (via a direct test of cleanup)
+	rl := NewRateLimiter(100, testLogger())
+
+	// Add some entries by calling allow()
+	rl.allow("10.0.0.1")
+	rl.allow("10.0.0.2")
+
+	// Manually set bucket lastCheck to a time in the past beyond the stale threshold
+	staleTime := time.Now().Add(-10 * time.Minute) // > 5 minute stale threshold
+	rl.mu.Lock()
+	for _, b := range rl.buckets {
+		b.lastCheck = staleTime
+	}
+	rl.mu.Unlock()
+
+	// Run cleanup with "now" = current time (stale threshold = 5 minutes ago)
+	rl.mu.Lock()
+	rl.cleanup(time.Now())
+	count := len(rl.buckets)
+	rl.mu.Unlock()
+
+	if count != 0 {
+		t.Errorf("cleanup() did not remove expired entries; %d remain", count)
+	}
+}
+
+// --- buildTokenSource tests ---
+
+func TestBuildTokenSource_InlineToken(t *testing.T) {
+	cfg := config.AdminConfig{
+		Auth: config.AdminAuthConfig{
+			Token: "my-inline-token",
+		},
+	}
+	s := NewServer(cfg, testLogger())
+	source := s.buildTokenSource()
+	got := source()
+	if string(got) != "my-inline-token" {
+		t.Errorf("buildTokenSource() inline = %q, want %q", string(got), "my-inline-token")
+	}
+}
+
+func TestBuildTokenSource_TokenFile(t *testing.T) {
+	// Write a token to a temp file
+	tmpFile, err := os.CreateTemp(t.TempDir(), "admin-token-*.txt")
+	if err != nil {
+		t.Fatalf("failed to create temp file: %v", err)
+	}
+	defer tmpFile.Close()
+
+	token := "file-token-xyz"
+	tmpFile.WriteString(token + "\n") // trailing newline is trimmed
+	tmpFile.Close()
+
+	cfg := config.AdminConfig{
+		Auth: config.AdminAuthConfig{
+			TokenFile: tmpFile.Name(),
+		},
+	}
+	s := NewServer(cfg, testLogger())
+	source := s.buildTokenSource()
+	got := source()
+	if string(got) != token {
+		t.Errorf("buildTokenSource() file = %q, want %q", string(got), token)
+	}
+}
+
+func TestBuildTokenSource_TokenFile_Missing(t *testing.T) {
+	cfg := config.AdminConfig{
+		Auth: config.AdminAuthConfig{
+			TokenFile: "/nonexistent/path/to/token.txt",
+		},
+	}
+	s := NewServer(cfg, testLogger())
+	source := s.buildTokenSource()
+	// Should return nil (not panic) when file is missing
+	got := source()
+	if got != nil {
+		t.Errorf("buildTokenSource() with missing file should return nil, got: %q", string(got))
 	}
 }

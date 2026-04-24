@@ -214,3 +214,50 @@ func TestEncodeDecodeBase64URL(t *testing.T) {
 		t.Errorf("Base64URL round-trip failed: got %v, want %v", decoded, original)
 	}
 }
+
+// TestCompactNumericValue verifies the no-op compaction function.
+func TestCompactNumericValue(t *testing.T) {
+	tests := []struct {
+		input string
+		want  string
+	}{
+		{"1024", "1024"},
+		{"65536", "65536"},
+		{"0", "0"},
+		{"", ""},
+	}
+
+	for _, tc := range tests {
+		got := CompactNumericValue(tc.input)
+		if got != tc.want {
+			t.Errorf("CompactNumericValue(%q) = %q, want %q", tc.input, got, tc.want)
+		}
+	}
+}
+
+// TestExpandNumericValue verifies valid numeric strings are expanded correctly.
+func TestExpandNumericValue(t *testing.T) {
+	tests := []struct {
+		input   string
+		want    string
+		wantErr bool
+	}{
+		{"1024", "1024", false},
+		{"65536", "65536", false},
+		{"0", "0", false},
+		{"-1", "-1", false},
+		{"not-a-number", "", true},
+		{"1.5", "", true},
+	}
+
+	for _, tc := range tests {
+		got, err := ExpandNumericValue(tc.input)
+		if (err != nil) != tc.wantErr {
+			t.Errorf("ExpandNumericValue(%q) error = %v, wantErr %v", tc.input, err, tc.wantErr)
+			continue
+		}
+		if !tc.wantErr && got != tc.want {
+			t.Errorf("ExpandNumericValue(%q) = %q, want %q", tc.input, got, tc.want)
+		}
+	}
+}

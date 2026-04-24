@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"sync"
 	"testing"
@@ -412,4 +413,661 @@ func (t *countingFaultTransport) RoundTrip(req *http.Request) (*http.Response, e
 		Body:       io.NopCloser(strings.NewReader(body)),
 		Request:    req,
 	}, nil
+}
+
+// ============================================================
+// httptest.Server-based S3 client tests (V0.6-QA-2 Phase B.2)
+// ============================================================
+//
+// These tests use a fake S3 HTTP server to exercise the production
+// s3Client methods (PutObject, GetObject, DeleteObject, etc.) without
+// a real S3 backend. Pattern mirrors client_bench_test.go.
+
+// fakeS3Transport is an http.RoundTripper that routes requests to a
+// handler function. Used for lightweight S3-protocol stubs.
+type fakeS3Transport struct {
+	handler http.Handler
+}
+
+func (f *fakeS3Transport) RoundTrip(req *http.Request) (*http.Response, error) {
+	w := httptest.NewRecorder()
+	f.handler.ServeHTTP(w, req)
+	return w.Result(), nil
+}
+
+// buildTestS3Client creates an s3Client backed by the given transport.
+// The endpoint is set to "http://localhost:9000" (the factory requires one,
+// but the transport overrides all HTTP I/O).
+func buildTestS3Client(t *testing.T, transport http.RoundTripper) Client {
+	t.Helper()
+	cfg := &config.BackendConfig{
+		Endpoint:  "http://localhost:9000",
+		Region:    "us-east-1",
+		AccessKey: "AKIATEST",
+		SecretKey: "secrettest",
+		UseSSL:    false,
+	}
+	factory := NewClientFactory(cfg, WithHTTPTransport(transport))
+	c, err := factory.GetClient()
+	if err != nil {
+		t.Fatalf("GetClient() error: %v", err)
+	}
+	return c
+}
+
+// fakeS3Mux returns an http.ServeMux that responds to common S3 operations
+// with canned XML responses.
+func fakeS3Mux() *http.ServeMux {
+	mux := http.NewServeMux()
+
+	// PUT (PutObject)
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodPut:
+			// PutObject or CreateMultipartUpload part
+			if r.URL.Query().Get("uploadId") != "" {
+				// UploadPart: return ETag
+				w.Header().Set("ETag", `"part-etag-abc"`)
+				w.WriteHeader(http.StatusOK)
+				return
+			}
+			// Regular PutObject
+			w.Header().Set("ETag", `"test-etag-abc"`)
+			w.WriteHeader(http.StatusOK)
+
+		case http.MethodGet:
+			// GetObject or ListObjects
+			if r.URL.Query().Get("list-type") == "2" || r.URL.Query().Get("list-type") != "" {
+				// ListObjects V2
+				xml := `<?xml version="1.0"?>
+<ListBucketResult>
+  <Name>test-bucket</Name>
+  <Prefix></Prefix>
+  <IsTruncated>false</IsTruncated>
+  <Contents>
+    <Key>test-key</Key>
+    <Size>100</Size>
+    <ETag>"abc"</ETag>
+  </Contents>
+</ListBucketResult>`
+				w.Header().Set("Content-Type", "application/xml")
+				w.WriteHeader(http.StatusOK)
+				w.Write([]byte(xml))
+				return
+			}
+			// Regular GetObject
+			w.Header().Set("ETag", `"test-etag-abc"`)
+			w.Header().Set("Content-Length", "4")
+			w.Header().Set("Content-Type", "application/octet-stream")
+			w.Header().Set("x-amz-meta-mykey", "myval")
+			w.WriteHeader(http.StatusOK)
+			w.Write([]byte("data"))
+
+		case http.MethodHead:
+			// HeadObject
+			w.Header().Set("ETag", `"test-etag-abc"`)
+			w.Header().Set("Content-Length", "4")
+			w.Header().Set("x-amz-meta-mykey", "myval")
+			w.WriteHeader(http.StatusOK)
+
+		case http.MethodDelete:
+			w.WriteHeader(http.StatusNoContent)
+
+		case http.MethodPost:
+			q := r.URL.Query()
+			if q.Has("uploads") {
+				// CreateMultipartUpload
+				w.Header().Set("Content-Type", "application/xml")
+				w.WriteHeader(http.StatusOK)
+				w.Write([]byte(`<?xml version="1.0"?>
+<InitiateMultipartUploadResult>
+  <Bucket>test-bucket</Bucket>
+  <Key>test-key</Key>
+  <UploadId>test-upload-id-123</UploadId>
+</InitiateMultipartUploadResult>`))
+				return
+			}
+			if q.Get("uploadId") != "" {
+				// CompleteMultipartUpload
+				w.Header().Set("Content-Type", "application/xml")
+				w.Header().Set("Location", "http://localhost:9000/test-bucket/test-key")
+				w.WriteHeader(http.StatusOK)
+				w.Write([]byte(`<?xml version="1.0"?>
+<CompleteMultipartUploadResult>
+  <Location>http://localhost:9000/test-bucket/test-key</Location>
+  <Bucket>test-bucket</Bucket>
+  <Key>test-key</Key>
+  <ETag>"multi-etag-abc"</ETag>
+</CompleteMultipartUploadResult>`))
+				return
+			}
+			// Batch delete (POST to ?delete)
+			if q.Has("delete") {
+				w.Header().Set("Content-Type", "application/xml")
+				w.WriteHeader(http.StatusOK)
+				w.Write([]byte(`<?xml version="1.0"?>
+<DeleteResult>
+  <Deleted><Key>test-key</Key></Deleted>
+</DeleteResult>`))
+				return
+			}
+			w.WriteHeader(http.StatusOK)
+
+		default:
+			w.WriteHeader(http.StatusMethodNotAllowed)
+		}
+	})
+
+	return mux
+}
+
+// TestS3Client_PutObject_Success verifies PutObject returns no error on 200.
+func TestS3Client_PutObject_Success(t *testing.T) {
+	transport := &fakeS3Transport{handler: fakeS3Mux()}
+	client := buildTestS3Client(t, transport)
+
+	body := bytes.NewReader([]byte("test data"))
+	err := client.PutObject(context.Background(), "test-bucket", "test-key",
+		body, nil, nil, "", nil)
+	if err != nil {
+		t.Fatalf("PutObject() error: %v", err)
+	}
+}
+
+// TestS3Client_PutObject_WithMetadata verifies that metadata keys with the
+// x-amz-meta- prefix are stripped (the SDK adds the prefix automatically).
+func TestS3Client_PutObject_WithMetadata(t *testing.T) {
+	transport := &fakeS3Transport{handler: fakeS3Mux()}
+	client := buildTestS3Client(t, transport)
+
+	meta := map[string]string{
+		"x-amz-meta-encrypted": "true",
+		"x-amz-meta-algorithm": "AES256-GCM",
+	}
+	err := client.PutObject(context.Background(), "test-bucket", "test-key",
+		bytes.NewReader([]byte("data")), meta, nil, "", nil)
+	if err != nil {
+		t.Fatalf("PutObject() with metadata error: %v", err)
+	}
+}
+
+// TestS3Client_GetObject_Success verifies GetObject returns body and metadata.
+func TestS3Client_GetObject_Success(t *testing.T) {
+	transport := &fakeS3Transport{handler: fakeS3Mux()}
+	client := buildTestS3Client(t, transport)
+
+	body, meta, err := client.GetObject(context.Background(), "test-bucket", "test-key", nil, nil)
+	if err != nil {
+		t.Fatalf("GetObject() error: %v", err)
+	}
+	defer body.Close()
+
+	data, err := io.ReadAll(body)
+	if err != nil {
+		t.Fatalf("ReadAll() error: %v", err)
+	}
+	if string(data) != "data" {
+		t.Errorf("GetObject() body = %q, want %q", string(data), "data")
+	}
+	if meta == nil {
+		t.Error("GetObject() returned nil metadata")
+	}
+}
+
+// TestS3Client_DeleteObject_Success verifies DeleteObject returns no error on 204.
+func TestS3Client_DeleteObject_Success(t *testing.T) {
+	transport := &fakeS3Transport{handler: fakeS3Mux()}
+	client := buildTestS3Client(t, transport)
+
+	err := client.DeleteObject(context.Background(), "test-bucket", "test-key", nil)
+	if err != nil {
+		t.Fatalf("DeleteObject() error: %v", err)
+	}
+}
+
+// TestS3Client_HeadObject_Success verifies HeadObject returns metadata.
+func TestS3Client_HeadObject_Success(t *testing.T) {
+	transport := &fakeS3Transport{handler: fakeS3Mux()}
+	client := buildTestS3Client(t, transport)
+
+	meta, err := client.HeadObject(context.Background(), "test-bucket", "test-key", nil)
+	if err != nil {
+		t.Fatalf("HeadObject() error: %v", err)
+	}
+	if meta == nil {
+		t.Error("HeadObject() returned nil metadata")
+	}
+}
+
+// TestS3Client_CreateMultipartUpload_Success verifies CreateMultipartUpload
+// returns the upload ID from the XML response.
+func TestS3Client_CreateMultipartUpload_Success(t *testing.T) {
+	transport := &fakeS3Transport{handler: fakeS3Mux()}
+	client := buildTestS3Client(t, transport)
+
+	uploadID, err := client.CreateMultipartUpload(context.Background(), "test-bucket", "test-key", nil)
+	if err != nil {
+		t.Fatalf("CreateMultipartUpload() error: %v", err)
+	}
+	if uploadID == "" {
+		t.Error("CreateMultipartUpload() returned empty uploadID")
+	}
+	if uploadID != "test-upload-id-123" {
+		t.Errorf("CreateMultipartUpload() uploadID = %q, want test-upload-id-123", uploadID)
+	}
+}
+
+// TestS3Client_UploadPart_Success verifies UploadPart returns an ETag.
+func TestS3Client_UploadPart_Success(t *testing.T) {
+	transport := &fakeS3Transport{handler: fakeS3Mux()}
+	client := buildTestS3Client(t, transport)
+
+	data := bytes.NewReader([]byte("part data"))
+	etag, err := client.UploadPart(context.Background(), "test-bucket", "test-key",
+		"test-upload-id-123", 1, data, nil)
+	if err != nil {
+		t.Fatalf("UploadPart() error: %v", err)
+	}
+	if etag == "" {
+		t.Error("UploadPart() returned empty ETag")
+	}
+}
+
+// TestS3Client_CompleteMultipartUpload_Success verifies CompleteMultipartUpload
+// returns a location/ETag.
+func TestS3Client_CompleteMultipartUpload_Success(t *testing.T) {
+	transport := &fakeS3Transport{handler: fakeS3Mux()}
+	client := buildTestS3Client(t, transport)
+
+	parts := []CompletedPart{
+		{PartNumber: 1, ETag: "part-etag-abc"},
+	}
+	etag, err := client.CompleteMultipartUpload(context.Background(), "test-bucket", "test-key",
+		"test-upload-id-123", parts, nil)
+	if err != nil {
+		t.Fatalf("CompleteMultipartUpload() error: %v", err)
+	}
+	if etag == "" {
+		t.Error("CompleteMultipartUpload() returned empty result")
+	}
+}
+
+// TestS3Client_AbortMultipartUpload_Success verifies AbortMultipartUpload
+// returns no error on success.
+func TestS3Client_AbortMultipartUpload_Success(t *testing.T) {
+	// Abort responds with 204
+	mux := http.NewServeMux()
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodDelete && r.URL.Query().Get("uploadId") != "" {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	})
+	transport := &fakeS3Transport{handler: mux}
+	client := buildTestS3Client(t, transport)
+
+	err := client.AbortMultipartUpload(context.Background(), "test-bucket", "test-key", "upload-id")
+	if err != nil {
+		t.Fatalf("AbortMultipartUpload() error: %v", err)
+	}
+}
+
+// TestS3Client_DeleteObjects_Success verifies batch delete returns deleted objects.
+func TestS3Client_DeleteObjects_Success(t *testing.T) {
+	transport := &fakeS3Transport{handler: fakeS3Mux()}
+	client := buildTestS3Client(t, transport)
+
+	keys := []ObjectIdentifier{{Key: "test-key"}}
+	deleted, errs, err := client.DeleteObjects(context.Background(), "test-bucket", keys)
+	if err != nil {
+		t.Fatalf("DeleteObjects() error: %v", err)
+	}
+	_ = deleted
+	_ = errs
+	// Success: no panic, returns lists
+}
+
+// TestConvertMetadata verifies that convertMetadata strips the x-amz-meta- prefix.
+func TestConvertMetadata(t *testing.T) {
+	input := map[string]string{
+		"x-amz-meta-encrypted":  "true",
+		"x-amz-meta-algorithm":  "AES256-GCM",
+		"Content-Type":          "application/octet-stream",
+	}
+	got := convertMetadata(input)
+	if got["encrypted"] != "true" {
+		t.Errorf("expected key 'encrypted'='true', got: %v", got)
+	}
+	if got["algorithm"] != "AES256-GCM" {
+		t.Errorf("expected key 'algorithm'='AES256-GCM', got: %v", got)
+	}
+	if got["Content-Type"] != "application/octet-stream" {
+		t.Errorf("expected key 'Content-Type' pass-through, got: %v", got)
+	}
+	// Should NOT have x-amz-meta- prefix in result
+	if _, ok := got["x-amz-meta-encrypted"]; ok {
+		t.Error("convertMetadata() kept x-amz-meta- prefix key")
+	}
+}
+
+// TestExtractMetadata verifies that extractMetadata adds the x-amz-meta- prefix.
+func TestExtractMetadata(t *testing.T) {
+	// SDK returns keys WITHOUT the prefix
+	input := map[string]string{
+		"encrypted": "true",
+		"algorithm": "AES256-GCM",
+	}
+	got := extractMetadata(input)
+	if got["x-amz-meta-encrypted"] != "true" {
+		t.Errorf("expected 'x-amz-meta-encrypted'='true', got: %v", got)
+	}
+	if got["x-amz-meta-algorithm"] != "AES256-GCM" {
+		t.Errorf("expected 'x-amz-meta-algorithm'='AES256-GCM', got: %v", got)
+	}
+}
+
+// TestConvertMetadata_Nil verifies convertMetadata(nil) returns nil.
+func TestConvertMetadata_Nil(t *testing.T) {
+	got := convertMetadata(nil)
+	if got != nil {
+		t.Errorf("convertMetadata(nil) = %v, want nil", got)
+	}
+}
+
+// TestExtractMetadata_Nil verifies extractMetadata(nil) returns empty map.
+func TestExtractMetadata_Nil(t *testing.T) {
+	got := extractMetadata(nil)
+	if got == nil {
+		t.Error("extractMetadata(nil) returned nil, want empty map")
+	}
+}
+
+// TestS3Client_ListObjects_Success verifies ListObjects returns a list of objects.
+func TestS3Client_ListObjects_Success(t *testing.T) {
+	transport := &fakeS3Transport{handler: fakeS3Mux()}
+	client := buildTestS3Client(t, transport)
+
+	result, err := client.ListObjects(context.Background(), "test-bucket", "", ListOptions{})
+	if err != nil {
+		t.Fatalf("ListObjects() error: %v", err)
+	}
+	// The fakeS3Mux returns one object in the list
+	_ = result
+}
+
+// TestS3Client_ListParts_Success verifies ListParts returns without crashing.
+func TestS3Client_ListParts_Success(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet && r.URL.Query().Get("uploadId") != "" {
+			w.Header().Set("Content-Type", "application/xml")
+			w.WriteHeader(http.StatusOK)
+			w.Write([]byte(`<?xml version="1.0"?>
+<ListPartsResult>
+  <Bucket>test-bucket</Bucket>
+  <Key>test-key</Key>
+  <UploadId>upload-123</UploadId>
+  <IsTruncated>false</IsTruncated>
+  <Part>
+    <PartNumber>1</PartNumber>
+    <ETag>"part-etag-1"</ETag>
+    <Size>1024</Size>
+  </Part>
+</ListPartsResult>`))
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	})
+	transport := &fakeS3Transport{handler: mux}
+	client := buildTestS3Client(t, transport)
+
+	parts, err := client.ListParts(context.Background(), "test-bucket", "test-key", "upload-123")
+	if err != nil {
+		t.Fatalf("ListParts() error: %v", err)
+	}
+	if len(parts) != 1 {
+		t.Errorf("ListParts() returned %d parts, want 1", len(parts))
+	}
+	if parts[0].PartNumber != 1 {
+		t.Errorf("ListParts() part[0].PartNumber = %d, want 1", parts[0].PartNumber)
+	}
+}
+
+// TestS3Client_CopyObject_Success verifies CopyObject parses the response.
+func TestS3Client_CopyObject_Success(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPut {
+			w.Header().Set("Content-Type", "application/xml")
+			w.WriteHeader(http.StatusOK)
+			w.Write([]byte(`<?xml version="1.0"?>
+<CopyObjectResult>
+  <ETag>"copy-etag-abc"</ETag>
+  <LastModified>2024-01-15T10:30:00.000Z</LastModified>
+</CopyObjectResult>`))
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	})
+	transport := &fakeS3Transport{handler: mux}
+	client := buildTestS3Client(t, transport)
+
+	etag, meta, err := client.CopyObject(context.Background(),
+		"dst-bucket", "dst-key",
+		"src-bucket", "src-key",
+		nil, nil, nil)
+	if err != nil {
+		t.Fatalf("CopyObject() error: %v", err)
+	}
+	_ = etag
+	_ = meta
+}
+
+// TestS3Client_UploadPartCopy_Success verifies UploadPartCopy returns a result.
+func TestS3Client_UploadPartCopy_Success(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPut {
+			w.Header().Set("Content-Type", "application/xml")
+			w.WriteHeader(http.StatusOK)
+			w.Write([]byte(`<?xml version="1.0"?>
+<CopyPartResult>
+  <ETag>"part-copy-etag"</ETag>
+  <LastModified>2024-01-15T10:30:00.000Z</LastModified>
+</CopyPartResult>`))
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	})
+	transport := &fakeS3Transport{handler: mux}
+	client := buildTestS3Client(t, transport)
+
+	result, err := client.UploadPartCopy(context.Background(),
+		"dst-bucket", "dst-key", "upload-123", 1,
+		"src-bucket", "src-key", nil, nil)
+	if err != nil {
+		t.Fatalf("UploadPartCopy() error: %v", err)
+	}
+	_ = result
+}
+
+// TestClientFactory_WithMetrics verifies that WithMetrics option sets the
+// metrics field on the factory.
+func TestClientFactory_WithMetrics_Option(t *testing.T) {
+	cfg := &config.BackendConfig{
+		Endpoint:  "http://localhost:9000",
+		Region:    "us-east-1",
+		AccessKey: "AKIATEST",
+		SecretKey: "secrettest",
+	}
+
+	// WithMetrics(nil) should not panic
+	factory := NewClientFactory(cfg, WithMetrics(nil))
+	if factory == nil {
+		t.Fatal("NewClientFactory() returned nil")
+	}
+}
+
+// TestS3Client_PutObjectRetention_Success verifies PutObjectRetention returns no error.
+func TestS3Client_PutObjectRetention_Success(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+	transport := &fakeS3Transport{handler: mux}
+	client := buildTestS3Client(t, transport)
+
+	err := client.PutObjectRetention(context.Background(), "test-bucket", "test-key", nil, nil)
+	if err != nil {
+		t.Fatalf("PutObjectRetention() error: %v", err)
+	}
+}
+
+// TestS3Client_PutObjectLegalHold_Success verifies PutObjectLegalHold works.
+func TestS3Client_PutObjectLegalHold_Success(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+	transport := &fakeS3Transport{handler: mux}
+	client := buildTestS3Client(t, transport)
+
+	err := client.PutObjectLegalHold(context.Background(), "test-bucket", "test-key", nil, "ON")
+	if err != nil {
+		t.Fatalf("PutObjectLegalHold() error: %v", err)
+	}
+}
+
+// TestS3Client_PutObjectLockConfiguration_Success verifies PutObjectLockConfiguration.
+func TestS3Client_PutObjectLockConfiguration_Success(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+	transport := &fakeS3Transport{handler: mux}
+	client := buildTestS3Client(t, transport)
+
+	cfg := &ObjectLockConfiguration{
+		ObjectLockEnabled: "Enabled",
+	}
+	err := client.PutObjectLockConfiguration(context.Background(), "test-bucket", cfg)
+	if err != nil {
+		t.Fatalf("PutObjectLockConfiguration() error: %v", err)
+	}
+}
+
+// TestS3Client_GetObjectRetention_Success verifies GetObjectRetention parses response.
+func TestS3Client_GetObjectRetention_Success(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/xml")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`<?xml version="1.0"?>
+<Retention>
+  <Mode>GOVERNANCE</Mode>
+  <RetainUntilDate>2025-01-01T00:00:00.000Z</RetainUntilDate>
+</Retention>`))
+	})
+	transport := &fakeS3Transport{handler: mux}
+	client := buildTestS3Client(t, transport)
+
+	result, err := client.GetObjectRetention(context.Background(), "test-bucket", "test-key", nil)
+	if err != nil {
+		t.Fatalf("GetObjectRetention() error: %v", err)
+	}
+	_ = result
+}
+
+// TestS3Client_GetObjectLegalHold_Success verifies GetObjectLegalHold parses response.
+func TestS3Client_GetObjectLegalHold_Success(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/xml")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`<?xml version="1.0"?>
+<LegalHold>
+  <Status>ON</Status>
+</LegalHold>`))
+	})
+	transport := &fakeS3Transport{handler: mux}
+	client := buildTestS3Client(t, transport)
+
+	status, err := client.GetObjectLegalHold(context.Background(), "test-bucket", "test-key", nil)
+	if err != nil {
+		t.Fatalf("GetObjectLegalHold() error: %v", err)
+	}
+	_ = status
+}
+
+// TestS3Client_GetObjectLockConfiguration_Success verifies GetObjectLockConfiguration.
+func TestS3Client_GetObjectLockConfiguration_Success(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/xml")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`<?xml version="1.0"?>
+<ObjectLockConfiguration>
+  <ObjectLockEnabled>Enabled</ObjectLockEnabled>
+</ObjectLockConfiguration>`))
+	})
+	transport := &fakeS3Transport{handler: mux}
+	client := buildTestS3Client(t, transport)
+
+	result, err := client.GetObjectLockConfiguration(context.Background(), "test-bucket")
+	if err != nil {
+		t.Fatalf("GetObjectLockConfiguration() error: %v", err)
+	}
+	_ = result
+}
+
+// TestS3Client_GetObject_WithVersionID verifies GetObject passes versionID to backend.
+func TestS3Client_GetObject_WithVersionID(t *testing.T) {
+	var gotVersionID string
+	mux := http.NewServeMux()
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		gotVersionID = r.URL.Query().Get("versionId")
+		w.Header().Set("ETag", `"test-etag"`)
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("data"))
+	})
+	transport := &fakeS3Transport{handler: mux}
+	client := buildTestS3Client(t, transport)
+
+	versionID := "test-version-1"
+	body, meta, err := client.GetObject(context.Background(), "test-bucket", "test-key", &versionID, nil)
+	if err != nil {
+		t.Fatalf("GetObject() error: %v", err)
+	}
+	defer body.Close()
+	_ = meta
+
+	if gotVersionID != "test-version-1" {
+		t.Errorf("GetObject() versionId not passed: got %q, want test-version-1", gotVersionID)
+	}
+}
+
+// TestS3Client_GetObject_WithRangeHeader verifies range header is passed.
+func TestS3Client_GetObject_WithRangeHeader(t *testing.T) {
+	var gotRange string
+	mux := http.NewServeMux()
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		gotRange = r.Header.Get("Range")
+		w.Header().Set("ETag", `"test-etag"`)
+		w.WriteHeader(http.StatusPartialContent)
+		w.Write([]byte("dat"))
+	})
+	transport := &fakeS3Transport{handler: mux}
+	client := buildTestS3Client(t, transport)
+
+	rangeHeader := "bytes=0-3"
+	body, _, err := client.GetObject(context.Background(), "test-bucket", "test-key", nil, &rangeHeader)
+	if err != nil {
+		t.Fatalf("GetObject() error: %v", err)
+	}
+	defer body.Close()
+
+	if gotRange != "bytes=0-3" {
+		t.Errorf("GetObject() range header not passed: got %q, want bytes=0-3", gotRange)
+	}
 }

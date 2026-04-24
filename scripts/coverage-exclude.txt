@@ -1,0 +1,49 @@
+# coverage-exclude.txt — Packages excluded from the coverage gate.
+#
+# Each entry is a relative package path (relative to the module root),
+# one per line. Lines starting with # are comments. Blank lines are ignored.
+#
+# IMPORTANT: Every exclusion must have a rationale comment above it so that
+# the exclusion list remains auditable. Do not add exclusions without a reason.
+#
+# V0.6-QA-2 §2.2 — Non-Goals (explicit exclusions with rationale)
+
+# Reason: main() and init() require process-level integration testing
+# (start the binary, send real traffic over the network). Unit coverage of
+# main functions is not meaningful — the real signal comes from the
+# tier-2 conformance suite and the nightly load tests.
+# Reference: Software Engineering at Google ch. 11 §"Code Coverage" —
+# "coverage of process entrypoints is more meaningfully measured by
+# integration/smoke tests, not unit coverage."
+cmd/server
+
+# Reason: internal/debug is the pprof HTTP-endpoint registration layer
+# (V0.6-OBS-1). Its sole logic is "register these handlers on this mux",
+# which is exercised by the integration tests and the admin pprof tests
+# in internal/admin. There is no testable decision logic beyond
+# "handler registered".
+internal/debug
+
+# Reason: test/provider/external.go contains stubs for credential-gated
+# external S3 providers (AWS, Wasabi, B2). Their code paths are only
+# reachable with live external credentials that are not available in the
+# standard unit-test or PR-gate environment. Covered in the nightly
+# external-providers conformance run instead.
+test/provider/external.go
+
+# Reason: test/provider/cosmian.go contains a stub for the Cosmian KMIP
+# provider. Requires a live Cosmian KMS container and credentials. Covered
+# by the nightly KMS conformance run (make test-conformance-kms).
+test/provider/cosmian.go
+
+# Reason: test/harness contains the in-process gateway test harness used
+# exclusively by tier-2 conformance tests. It requires Docker (Testcontainers)
+# and cannot be exercised by unit tests. Covered in the tier-2 conformance
+# CI jobs (conformance-minio, conformance-local).
+test/harness
+
+# Reason: test/provider contains S3 provider registration and discovery
+# code used exclusively by conformance tests. The registration stubs require
+# live credentials (external) or Docker (local). The entire package is
+# covered by the tier-2 conformance CI run.
+test/provider
