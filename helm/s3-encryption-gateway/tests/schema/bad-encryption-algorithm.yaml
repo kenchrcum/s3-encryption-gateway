@@ -1,0 +1,6 @@
+# bad-encryption-algorithm.yaml — preferredAlgorithm must be AES256-GCM or ChaCha20-Poly1305.
+# Expected error substring: "Must be one of"
+config:
+  encryption:
+    preferredAlgorithm:
+      value: "DES-ECB"

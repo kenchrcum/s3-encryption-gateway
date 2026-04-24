@@ -8,6 +8,33 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Operations & Helm
 
+- **Helm values JSON Schema** (V0.6-OPS-2): the chart now ships
+  `values.schema.json` (JSON Schema draft-07), validated by `helm lint`,
+  `helm install`, and `helm upgrade` before the chart renders.
+
+  - **~140 leaf keys covered** with type constraints, enums, patterns, and
+    descriptions. Typos like `config.encriptoin.*` are now caught at lint
+    time, not at pod startup.
+  - **Schema-encoded invariants** (I1–I3, I5, I7): `track + valkey.enabled`
+    conflict, dual-ingress conflict, weighted-without-Traefik conflict,
+    KeyManager provider validation, and TLS cert requirement.
+  - **New `values.prod.yaml` overlay**: hardened production defaults —
+    3-replica HA floor, HPA (3–20 replicas), PDB (minAvailable: 2),
+    NetworkPolicy, Prometheus ServiceMonitor, TLS via cert-manager, audit
+    logging, rate limiting, preStop hook, and zone-level topology spread.
+  - **New `values.dev.yaml` overlay**: minimal local-development defaults —
+    1 replica, debug log level, audit logging, in-cluster Valkey subchart.
+  - **15 negative schema tests** (`tests/schema/bad-*.yaml`) and 6 positive
+    tests (`tests/schema/good-*.yaml`), with `run-negative.sh` harness.
+  - **CI extended** with 5 new jobs: `lint-base`, `lint-overlays`,
+    `schema-negative`, `schema-drift`, `render-overlays`.
+  - **Chart version bumped 0.5.10 → 0.6.0** (additive, non-breaking for
+    valid values; schema rejects values that always silently produced broken
+    deployments).
+
+  See `docs/plans/V0.6-OPS-2-plan.md` and the "Values Validation" section in
+  `helm/s3-encryption-gateway/README.md`.
+
 - **Blue/green and canary deployment recipes** (V0.6-OPS-1): the Helm chart
   now ships production-safe progressive-delivery topologies for zero-downtime
   upgrades of the S3 Encryption Gateway.

@@ -1,0 +1,96 @@
+# values.prod.yaml — Hardened production defaults for S3 Encryption Gateway
+#
+# Apply AFTER the base values:
+#   helm install s3gw helm/s3-encryption-gateway \
+#     -f helm/s3-encryption-gateway/values.yaml \
+#     -f helm/s3-encryption-gateway/values.prod.yaml \
+#     -f my-secrets.yaml            # backend creds, encryption password, etc.
+#
+# What this overlay does (Kubernetes Best Practices 2e, O'Reilly 2023 Ch. 4–5):
+#   - Sets a 3-replica HA floor with HPA up to 20
+#   - Enables PDB (minAvailable: 2) to protect against node drains
+#   - Enables NetworkPolicy (Ingress + Egress namespace isolation)
+#   - Enables Prometheus ServiceMonitor (requires kube-prometheus-stack)
+#   - Enforces tighter resource limits (2 vCPU / 1 GiB)
+#   - Enables TLS via cert-manager
+#   - Enables audit logging and rate limiting
+#   - Sets lifecycle preStop hook + extended terminationGracePeriodSeconds
+#   - Adds topology spread constraints for zone-level HA
+#
+# NOT set here (operator-specific — add via a third -f overlay or --set):
+#   - config.backend.accessKey / secretKey / endpoint
+#   - config.encryption.password (or keyManager settings)
+#   - ingress host / TLS secret
+#   - certManager.issuer
+
+# HA floor — scale down to 3 is safe with the HPA and PDB below.
+replicaCount: 3
+
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 1000
+  fsGroup: 1000
+  seccompProfile:
+    type: RuntimeDefault
+
+autoscaling:
+  enabled: true
+  minReplicas: 3
+  maxReplicas: 20
+  targetCPUUtilizationPercentage: 65
+
+podDisruptionBudget:
+  enabled: true
+  minAvailable: 2
+
+networkPolicy:
+  enabled: true
+  policyTypes:
+    - Ingress
+    - Egress
+  namespaceIsolation: true
+
+serviceMonitor:
+  enabled: true
+  interval: 15s
+
+resources:
+  limits:
+    cpu: 2000m
+    memory: 1Gi
+  requests:
+    cpu: 200m
+    memory: 256Mi
+
+# Graceful shutdown: allow kube-proxy propagation + active request drain.
+# Tune terminationGracePeriodSeconds upward for workloads with long-running
+# multipart uploads or large CopyObject calls.
+terminationGracePeriodSeconds: 60
+lifecycle:
+  preStop:
+    exec:
+      command: ["sh", "-c", "sleep 10"]
+
+# Zone-level topology spread ensures pods land in distinct AZs.
+topologySpreadConstraints:
+  - maxSkew: 1
+    topologyKey: topology.kubernetes.io/zone
+    whenUnsatisfiable: ScheduleAnyway
+    labelSelector:
+      matchLabels:
+        app.kubernetes.io/name: s3-encryption-gateway
+
+config:
+  tls:
+    enabled:
+      value: "true"
+    useCertManager:
+      value: "true"
+
+  audit:
+    enabled:
+      value: "true"
+
+  rateLimit:
+    enabled:
+      value: "true"

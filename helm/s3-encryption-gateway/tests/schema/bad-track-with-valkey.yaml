@@ -1,0 +1,10 @@
+# bad-track-with-valkey.yaml — I1: track set + valkey.enabled: true is invalid.
+# Expected error substring: "'allOf' failed"
+track: blue
+valkey:
+  enabled: true
+config:
+  multipartState:
+    valkey:
+      addr:
+        value: "valkey.shared:6379"

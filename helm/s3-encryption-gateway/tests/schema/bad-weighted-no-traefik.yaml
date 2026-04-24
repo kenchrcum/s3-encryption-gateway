@@ -1,0 +1,14 @@
+# bad-weighted-no-traefik.yaml — I3: weighted.enabled requires traefik.enabled.
+# Expected error substring: "'allOf' failed"
+ingress:
+  traefik:
+    enabled: false
+    weighted:
+      enabled: true
+      services:
+        - name: gw-stable
+          port: 80
+          weight: 90
+        - name: gw-canary
+          port: 80
+          weight: 10

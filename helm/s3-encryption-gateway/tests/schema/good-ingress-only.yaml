@@ -1,0 +1,5 @@
+# good-ingress-only.yaml — I2 satisfied: only standard ingress enabled.
+ingress:
+  enabled: true
+  traefik:
+    enabled: false

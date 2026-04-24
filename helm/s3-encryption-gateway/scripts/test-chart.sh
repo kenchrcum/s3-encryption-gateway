@@ -13,13 +13,13 @@ echo "Testing Helm chart: $CHART_DIR"
 echo ""
 echo "Test 1: Default configuration with backend credentials"
 helm template test "$CHART_DIR" \
-  --set config.backend.useClientCredentials.value=false \
+  --set-string config.backend.useClientCredentials.value=false \
   --set config.backend.accessKey.value=test-access-key \
   --set config.backend.secretKey.value=test-secret-key \
   --set config.encryption.password.value=test-password > /dev/null
 
 if helm template test "$CHART_DIR" \
-  --set config.backend.useClientCredentials.value=false \
+  --set-string config.backend.useClientCredentials.value=false \
   --set config.backend.accessKey.value=test-access-key \
   --set config.backend.secretKey.value=test-secret-key \
   --set config.encryption.password.value=test-password 2>&1 | grep -q "BACKEND_ACCESS_KEY"; then
@@ -30,7 +30,7 @@ else
 fi
 
 if helm template test "$CHART_DIR" \
-  --set config.backend.useClientCredentials.value=false \
+  --set-string config.backend.useClientCredentials.value=false \
   --set config.backend.accessKey.value=test-access-key \
   --set config.backend.secretKey.value=test-secret-key \
   --set config.encryption.password.value=test-password 2>&1 | grep -q "BACKEND_SECRET_KEY"; then
@@ -79,6 +79,25 @@ else
   echo "✗ Chart linting failed"
   helm lint "$CHART_DIR"
   exit 1
+fi
+
+# Test 4: Schema validation — helm lint with a known-bad values file must fail
+echo ""
+echo "Test 4: Schema validation rejects invalid values"
+BAD_VALUES="$CHART_DIR/tests/schema/bad-replica-string.yaml"
+if helm lint "$CHART_DIR" -f "$BAD_VALUES" > /dev/null 2>&1; then
+  echo "✗ helm lint should have FAILED for bad values: $BAD_VALUES"
+  exit 1
+else
+  echo "✓ helm lint correctly rejected invalid replicaCount type (string instead of integer)"
+fi
+
+BAD_TRACK="$CHART_DIR/tests/schema/bad-track-with-valkey.yaml"
+if helm lint "$CHART_DIR" -f "$BAD_TRACK" > /dev/null 2>&1; then
+  echo "✗ helm lint should have FAILED for bad values: $BAD_TRACK"
+  exit 1
+else
+  echo "✓ helm lint correctly rejected track+valkey.enabled=true invariant violation (I1)"
 fi
 
 echo ""

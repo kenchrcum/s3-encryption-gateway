@@ -1,0 +1,5 @@
+# bad-log-level.yaml — logLevel.value must be one of: debug, info, warn, error.
+# Expected error substring: "Must be one of"
+config:
+  logLevel:
+    value: "verbose"

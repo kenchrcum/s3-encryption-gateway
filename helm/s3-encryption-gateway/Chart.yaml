@@ -13,7 +13,7 @@ maintainers:
   - name: kenchrcum
     url: https://github.com/kenchrcum
 type: application
-version: 0.5.10
+version: 0.6.0
 appVersion: "0.5.10"
 dependencies:
   # Valkey subchart for encrypted multipart upload state (V0.6-SEC-3 / ADR-0009).

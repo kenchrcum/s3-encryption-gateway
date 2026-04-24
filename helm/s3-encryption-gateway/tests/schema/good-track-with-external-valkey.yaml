@@ -1,0 +1,9 @@
+# good-track-with-external-valkey.yaml — I1 satisfied: track set, valkey disabled, addr set.
+track: blue
+valkey:
+  enabled: false
+config:
+  multipartState:
+    valkey:
+      addr:
+        value: "valkey-shared.mpu-state.svc.cluster.local:6379"

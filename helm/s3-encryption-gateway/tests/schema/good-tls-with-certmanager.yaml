@@ -1,0 +1,7 @@
+# good-tls-with-certmanager.yaml — I7 satisfied: TLS enabled via cert-manager (no manual certs needed).
+config:
+  tls:
+    enabled:
+      value: "true"
+    useCertManager:
+      value: "true"

@@ -1,0 +1,6 @@
+# bad-both-ingress.yaml — I2: both ingress.enabled and ingress.traefik.enabled.
+# Expected error substring: "'not' failed"
+ingress:
+  enabled: true
+  traefik:
+    enabled: true

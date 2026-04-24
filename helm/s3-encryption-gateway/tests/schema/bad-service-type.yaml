@@ -1,0 +1,4 @@
+# bad-service-type.yaml — service.type must be one of the k8s Service types.
+# Expected error substring: "Must be one of"
+service:
+  type: "InternalLoadBalancer"

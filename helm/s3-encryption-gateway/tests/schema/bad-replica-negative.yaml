@@ -1,0 +1,3 @@
+# bad-replica-negative.yaml — replicaCount must be >= 0.
+# Expected error substring: "minimum: got"
+replicaCount: -1

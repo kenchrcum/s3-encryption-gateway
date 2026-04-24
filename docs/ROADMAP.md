@@ -93,7 +93,7 @@ This roadmap outlines potential future improvements, grouped by milestones and t
 
 - Operations & Helm/K8s
   - ✅ Blue/green and canary examples (V0.6-OPS-1) — see `docs/OPS_DEPLOYMENT.md`.
-  - Helm values validation (schema/JSONSchema) and default overlays (V0.6-OPS-2).
+  - ✅ Helm values validation (schema/JSONSchema) and default overlays (V0.6-OPS-2) — see `docs/plans/V0.6-OPS-2-plan.md`.
 
 - Config & UX
   - Admin API for safe key rotation operations (drain + cutover).

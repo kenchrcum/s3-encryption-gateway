@@ -790,6 +790,64 @@ ingress-nginx is in maintenance-mode upstream. The recommended migration is:
 
 ---
 
+## 14. Choosing a Values Overlay (V0.6-OPS-2)
+
+The chart ships four values overlay files. Compose them with `helm install -f` in
+the order shown — later overlays take precedence over earlier ones.
+
+| Overlay | When to use | Enables | Disables |
+|---------|-------------|---------|----------|
+| `values.yaml` | Always — base defaults | Single-replica, info log, TLS off | HPA, PDB, NetworkPolicy, ServiceMonitor |
+| `values.prod.yaml` | Production clusters | 3-replica HA floor, HPA (3–20), PDB (minAvailable: 2), NetworkPolicy, ServiceMonitor, TLS via cert-manager, audit, rate-limit, preStop hook | — |
+| `values.dev.yaml` | Local kind/minikube | Debug log, audit logging, in-cluster Valkey subchart | HPA, PDB, NetworkPolicy, ServiceMonitor |
+| `values.fips.yaml` | FIPS 140-3 regulated environments | FIPS image tag (`latest-fips`), `GOFIPS140=v1.0.0` env var, compliance pod annotations | — |
+
+**Composition order examples:**
+
+```bash
+# Production (most common):
+helm install s3gw . \
+  -f values.yaml \
+  -f values.prod.yaml \
+  -f my-cluster-secrets.yaml    # backend creds, encryption password
+
+# Production + FIPS:
+helm install s3gw . \
+  -f values.yaml \
+  -f values.prod.yaml \
+  -f values.fips.yaml \
+  -f my-cluster-secrets.yaml
+
+# Local development:
+helm install s3gw . \
+  -f values.yaml \
+  -f values.dev.yaml \
+  --set config.backend.endpoint.value=http://minio.local:9000 \
+  --set config.backend.accessKey.value=minioadmin \
+  --set config.backend.secretKey.value=minioadmin \
+  --set config.encryption.password.value=dev-only-insecure
+
+# Blue/green production:
+helm install gw-blue . \
+  -f values.yaml \
+  -f values.prod.yaml \
+  -f examples/values-blue.yaml \
+  -f my-cluster-secrets.yaml
+```
+
+**Values not set by any overlay (operator-supplied):**
+
+- `config.backend.accessKey` / `secretKey` / `endpoint`
+- `config.encryption.password` (or `keyManager.*` for KMS)
+- `ingress.*` host and TLS secret
+- `certManager.issuer.*`
+
+All four overlays are validated by `values.schema.json` on every `helm lint`
+run. See §§ "Values Validation" in `helm/s3-encryption-gateway/README.md`
+and the full plan at `docs/plans/V0.6-OPS-2-plan.md`.
+
+---
+
 ## 13. References
 
 1. Bilgin Ibryam & Roland Huss, *Kubernetes Patterns, 2nd Edition* (O'Reilly, 2023),
@@ -812,3 +870,4 @@ ingress-nginx is in maintenance-mode upstream. The recommended migration is:
     https://doc.traefik.io/traefik/providers/kubernetes-crd/
 11. Kubernetes Gateway API — HTTPRoute:
     https://gateway-api.sigs.k8s.io/api-types/httproute/
+

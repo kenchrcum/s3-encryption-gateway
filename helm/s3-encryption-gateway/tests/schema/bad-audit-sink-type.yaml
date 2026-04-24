@@ -1,0 +1,7 @@
+# bad-audit-sink-type.yaml — audit.sink.type.value must be stdout, file, or http.
+# Expected error substring: "Must be one of"
+config:
+  audit:
+    sink:
+      type:
+        value: "kafka"

@@ -1,0 +1,15 @@
+# good-weighted-with-traefik.yaml — I3 satisfied: weighted requires and has traefik.enabled.
+ingress:
+  enabled: false
+  traefik:
+    enabled: true
+    host: "s3.example.com"
+    weighted:
+      enabled: true
+      services:
+        - name: gw-stable
+          port: 80
+          weight: 95
+        - name: gw-canary
+          port: 80
+          weight: 5

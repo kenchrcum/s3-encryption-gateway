@@ -1,0 +1,4 @@
+# bad-port-range.yaml — service.port must be <= 65535.
+# Expected error substring: "maximum: got"
+service:
+  port: 70000

@@ -1,0 +1,58 @@
+# values.dev.yaml — Local development / testing defaults for S3 Encryption Gateway
+#
+# Apply AFTER the base values:
+#   helm install s3gw helm/s3-encryption-gateway \
+#     -f helm/s3-encryption-gateway/values.yaml \
+#     -f helm/s3-encryption-gateway/values.dev.yaml \
+#     --set config.backend.endpoint.value=http://minio.local:9000 \
+#     --set config.backend.accessKey.value=minioadmin \
+#     --set config.backend.secretKey.value=minioadmin \
+#     --set config.encryption.password.value=dev-only-insecure
+#
+# What this overlay does:
+#   - Reduces to 1 replica (no HA needed locally)
+#   - Disables HPA, PDB, NetworkPolicy, ServiceMonitor (lighter footprint)
+#   - Reduces resource limits (suitable for local kind/minikube)
+#   - Enables debug log level and audit logging (helpful during development)
+#   - Enables the in-cluster Valkey subchart (no external Valkey needed)
+#
+# DO NOT use this overlay in production or staging.
+
+replicaCount: 1
+
+autoscaling:
+  enabled: false
+
+podDisruptionBudget:
+  enabled: false
+
+networkPolicy:
+  enabled: false
+
+serviceMonitor:
+  enabled: false
+
+resources:
+  limits:
+    cpu: 500m
+    memory: 256Mi
+  requests:
+    cpu: 50m
+    memory: 64Mi
+
+config:
+  logLevel:
+    value: "debug"
+
+  audit:
+    enabled:
+      value: "true"    # Surface all operations in dev logs
+
+# Enable the in-cluster Valkey subchart for local multipart upload state.
+# In production and blue/green deployments, set valkey.enabled: false and
+# configure config.multipartState.valkey.addr instead.
+valkey:
+  enabled: true
+  architecture: standalone
+  auth:
+    enabled: false

@@ -935,6 +935,50 @@ for the complete runbook.
   state across traffic flips. Set `valkey.enabled: false` and configure
   `config.multipartState.valkey.addr` on all releases.
 
+## Values Validation
+
+This chart ships a `values.schema.json` ([JSON Schema draft-07](http://json-schema.org/draft-07/schema)) that validates all values **client-side** before the chart reaches the cluster.
+
+Helm enforces the schema during `helm lint`, `helm install`, `helm upgrade`, and `helm template`. Errors appear with JSON-path-prefixed messages like:
+
+```
+at '/replicaCount': got string, want integer
+at '/config/logLevel/value': Must be one of: debug, info, warn, error
+at '': 'not' failed  (both ingress.enabled and ingress.traefik.enabled are true)
+```
+
+**What the schema catches early (before template rendering):**
+
+| Rule | Description |
+|------|-------------|
+| Type mismatches | `replicaCount: "2"` (string) is rejected; must be an integer |
+| Enum violations | `logLevel: verbose` rejected; must be one of `debug/info/warn/error` |
+| I1 — track + Valkey | Setting `track: blue` with `valkey.enabled: true` is rejected |
+| I2 — ingress mutex | `ingress.enabled: true` + `ingress.traefik.enabled: true` is rejected |
+| I3 — weighted requires Traefik | `weighted.enabled: true` without `traefik.enabled: true` is rejected |
+| I5 — KeyManager provider | `keyManager.enabled=true` with an unknown provider is rejected |
+| I7 — TLS cert required | `tls.enabled=true` + `useCertManager=false` without `certFile`/`keyFile` is rejected |
+
+> The schema is intentionally permissive at the root (`additionalProperties: true`) so that overlays like `values.fips.yaml` can add arbitrary pod annotations and extraEnv entries without triggering false positives. Strict `additionalProperties: false` is applied only at well-structured sub-trees (`config.backend.*`, `config.encryption.*`, `ingress.traefik.weighted.*`).
+
+If `helm lint` fails with a JSON-path error, consult the description in
+`values.schema.json` at that path — the description contains the fix.
+To bypass schema validation in an emergency (template guards still fire):
+```bash
+helm install ... --disable-openapi-validation
+```
+
+### Schema source
+
+- `helm/s3-encryption-gateway/values.schema.json` — hand-written, ~1 400 lines with `$defs` reuse
+- `helm/s3-encryption-gateway/tests/schema/` — positive and negative test cases
+- `helm/s3-encryption-gateway/tests/schema/run-negative.sh` — local harness
+- `.github/workflows/helm-test.yml` jobs: `lint-overlays`, `schema-negative`, `schema-drift`, `render-overlays`
+
+See `docs/plans/V0.6-OPS-2-plan.md` for the full design document.
+
+---
+
 ### Quick start
 
 ```bash

@@ -1,0 +1,9 @@
+# bad-keymanager-no-provider.yaml — I5: keyManager.enabled=true needs valid provider.
+# Expected error substring: "Must be one of"
+config:
+  encryption:
+    keyManager:
+      enabled:
+        value: "true"
+      provider:
+        value: "unknown-provider"

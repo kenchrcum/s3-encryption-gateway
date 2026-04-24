@@ -1,0 +1,7 @@
+# good-traefik-only.yaml — I2 satisfied: only traefik ingress enabled.
+ingress:
+  enabled: false
+  traefik:
+    enabled: true
+    entryPoints: ["websecure"]
+    host: "s3.example.com"

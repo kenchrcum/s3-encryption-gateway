@@ -1,0 +1,3 @@
+# bad-replica-string.yaml — replicaCount must be an integer, not a string.
+# Expected error substring: "got string, want integer"
+replicaCount: "2"

@@ -1,0 +1,16 @@
+# good-keymanager-cosmian.yaml — I5 satisfied: keyManager enabled with valid cosmian provider.
+config:
+  encryption:
+    keyManager:
+      enabled:
+        value: "true"
+      provider:
+        value: "cosmian"
+      cosmian:
+        endpoint:
+          value: "http://cosmian-kms.kms.svc.cluster.local:9998/kmip/2_1"
+        keys:
+          valueFrom:
+            secretKeyRef:
+              name: cosmian-kms-secrets
+              key: kmip-keys

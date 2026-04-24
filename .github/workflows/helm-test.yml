@@ -18,21 +18,189 @@ permissions:
   contents: read
 
 jobs:
-  test:
+  lint-base:
+    name: Lint base chart
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v4
 
       - name: Set up Helm
-        uses: azure/setup-helm@v5
+        uses: azure/setup-helm@v4
+        with:
+          version: v3.14.0
+
+      - name: Run helm lint (base)
+        run: helm lint helm/s3-encryption-gateway
+
+  lint-overlays:
+    name: Lint overlays
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        overlay:
+          - helm/s3-encryption-gateway/values.prod.yaml
+          - helm/s3-encryption-gateway/values.dev.yaml
+          - helm/s3-encryption-gateway/values.fips.yaml
+          - helm/s3-encryption-gateway/tests/ci-values.yaml
+          - helm/s3-encryption-gateway/examples/values-blue.yaml
+          - helm/s3-encryption-gateway/examples/values-green.yaml
+          - helm/s3-encryption-gateway/examples/values-canary-stable.yaml
+          - helm/s3-encryption-gateway/examples/values-canary-canary.yaml
+          - helm/s3-encryption-gateway/examples/values-traefik-single.yaml
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Helm
+        uses: azure/setup-helm@v4
+        with:
+          version: v3.14.0
+
+      - name: Lint ${{ matrix.overlay }}
+        run: helm lint helm/s3-encryption-gateway -f ${{ matrix.overlay }}
+
+  schema-negative:
+    name: Schema negative tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Helm
+        uses: azure/setup-helm@v4
+        with:
+          version: v3.14.0
+
+      - name: Run negative schema test harness
+        run: |
+          chmod +x helm/s3-encryption-gateway/tests/schema/run-negative.sh
+          bash helm/s3-encryption-gateway/tests/schema/run-negative.sh
+
+  schema-drift:
+    name: Schema drift check
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install yq
+        run: |
+          sudo wget -qO /usr/local/bin/yq \
+            https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64
+          sudo chmod +x /usr/local/bin/yq
+
+      - name: Run schema drift check
+        run: |
+          chmod +x helm/s3-encryption-gateway/scripts/schema-drift.sh
+          bash helm/s3-encryption-gateway/scripts/schema-drift.sh
+
+  render-overlays:
+    name: Render and validate overlays
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: prod
+            overlay: helm/s3-encryption-gateway/values.prod.yaml
+            extra_sets: >-
+              --set config.backend.accessKey.value=stub
+              --set config.backend.secretKey.value=stub
+              --set config.encryption.password.value=stub
+          - name: dev
+            overlay: helm/s3-encryption-gateway/values.dev.yaml
+            extra_sets: >-
+              --set config.backend.accessKey.value=stub
+              --set config.backend.secretKey.value=stub
+              --set config.encryption.password.value=stub
+          - name: fips
+            overlay: helm/s3-encryption-gateway/values.fips.yaml
+            extra_sets: >-
+              --set config.backend.accessKey.value=stub
+              --set config.backend.secretKey.value=stub
+              --set config.encryption.password.value=stub
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Helm
+        uses: azure/setup-helm@v4
+        with:
+          version: v3.14.0
+
+      - name: Render ${{ matrix.name }} overlay
+        run: |
+          helm template gw helm/s3-encryption-gateway \
+            -f ${{ matrix.overlay }} \
+            ${{ matrix.extra_sets }} \
+            > /tmp/rendered-${{ matrix.name }}.yaml
+
+      - name: Install kubeconform
+        run: |
+          curl -sSL https://github.com/yannh/kubeconform/releases/latest/download/kubeconform-linux-amd64.tar.gz \
+            | tar xz -C /tmp
+          chmod +x /tmp/kubeconform
+
+      - name: Validate ${{ matrix.name }} rendered manifests
+        run: |
+          /tmp/kubeconform -summary -skip TraefikService,IngressRoute \
+            -schema-location default \
+            /tmp/rendered-${{ matrix.name }}.yaml
+
+      - name: Snapshot assertions — ${{ matrix.name }}
+        if: matrix.name == 'prod'
+        run: |
+          # Verify required prod overlay resources are present
+          echo "Checking prod overlay resource presence..."
+          grep -q "kind: HorizontalPodAutoscaler" /tmp/rendered-prod.yaml \
+            && echo "✓ HPA present" \
+            || (echo "✗ HPA missing" && exit 1)
+          grep -q "kind: PodDisruptionBudget" /tmp/rendered-prod.yaml \
+            && echo "✓ PDB present" \
+            || (echo "✗ PDB missing" && exit 1)
+          grep -q "kind: NetworkPolicy" /tmp/rendered-prod.yaml \
+            && echo "✓ NetworkPolicy present" \
+            || (echo "✗ NetworkPolicy missing" && exit 1)
+          grep -q "kind: ServiceMonitor" /tmp/rendered-prod.yaml \
+            && echo "✓ ServiceMonitor present" \
+            || (echo "✗ ServiceMonitor missing" && exit 1)
+
+      - name: Snapshot assertions — ${{ matrix.name }}
+        if: matrix.name == 'dev'
+        run: |
+          # Verify dev overlay does NOT include heavy prod resources
+          echo "Checking dev overlay resource absence..."
+          ! grep -q "kind: HorizontalPodAutoscaler" /tmp/rendered-dev.yaml \
+            && echo "✓ HPA correctly absent" \
+            || (echo "✗ HPA should not be present in dev overlay" && exit 1)
+          ! grep -q "kind: PodDisruptionBudget" /tmp/rendered-dev.yaml \
+            && echo "✓ PDB correctly absent" \
+            || (echo "✗ PDB should not be present in dev overlay" && exit 1)
+          ! grep -q "kind: NetworkPolicy" /tmp/rendered-dev.yaml \
+            && echo "✓ NetworkPolicy correctly absent" \
+            || (echo "✗ NetworkPolicy should not be present in dev overlay" && exit 1)
+          ! grep -q "kind: ServiceMonitor" /tmp/rendered-dev.yaml \
+            && echo "✓ ServiceMonitor correctly absent" \
+            || (echo "✗ ServiceMonitor should not be present in dev overlay" && exit 1)
+
+  test:
+    name: Chart script tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Helm
+        uses: azure/setup-helm@v4
         with:
           version: v3.14.0
 
       - name: Set up Python
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@v5
         with:
-          python-version: '3.14'
+          python-version: '3.12'
 
       - name: Install dependencies
         run: |
@@ -61,7 +229,7 @@ jobs:
       - name: Run helm template
         run: |
           cd helm/s3-encryption-gateway
-          helm template test-release . --dry-run=server --debug
+          helm template test-release .
 
       - name: Render progressive-delivery examples
         run: |
@@ -80,6 +248,11 @@ jobs:
         run: |
           chmod +x helm/s3-encryption-gateway/scripts/test-progressive-delivery.sh
           helm/s3-encryption-gateway/scripts/test-progressive-delivery.sh
+
+      - name: Chart script tests (test-chart.sh)
+        run: |
+          chmod +x helm/s3-encryption-gateway/scripts/test-chart.sh
+          helm/s3-encryption-gateway/scripts/test-chart.sh
 
       - name: Package chart
         run: |

@@ -1,0 +1,6 @@
+# bad-track-no-valkey-addr.yaml — I1: track set but no external Valkey addr.
+# Expected error substring: "'anyOf' failed"
+track: green
+valkey:
+  enabled: false
+# config.multipartState.valkey.addr intentionally omitted
