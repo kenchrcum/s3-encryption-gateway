@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/kenneth/s3-encryption-gateway/internal/config"
@@ -37,6 +38,11 @@ func IsAdminRequest(r *http.Request) bool {
 
 // Server owns the admin HTTP listener and mux.
 type Server struct {
+	// mu guards httpServer and listener, which are written by Start and read
+	// by Shutdown and BoundAddr. Without this mutex, calls to Shutdown that
+	// race Start (e.g. a test cleanup fired while the admin goroutine is
+	// still binding the listener) trip the race detector.
+	mu         sync.Mutex
 	httpServer *http.Server
 	listener   net.Listener
 	cfg        config.AdminConfig
@@ -80,7 +86,7 @@ func (s *Server) Start(ctx context.Context) error {
 	// Set admin context flag on every request
 	handler = adminContextMiddleware(handler)
 
-	s.httpServer = &http.Server{
+	httpServer := &http.Server{
 		Handler:           handler,
 		ReadTimeout:       15 * time.Second,
 		WriteTimeout:      15 * time.Second,
@@ -88,13 +94,12 @@ func (s *Server) Start(ctx context.Context) error {
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 
-	var err error
-	s.listener, err = net.Listen("tcp", s.cfg.Address)
+	listener, err := net.Listen("tcp", s.cfg.Address)
 	if err != nil {
 		return fmt.Errorf("admin: failed to listen on %s: %w", s.cfg.Address, err)
 	}
 
-	boundAddr := s.listener.Addr().String()
+	boundAddr := listener.Addr().String()
 	s.logger.WithFields(logrus.Fields{
 		"address":        boundAddr,
 		"tls":            s.cfg.TLS.Enabled,
@@ -103,35 +108,51 @@ func (s *Server) Start(ctx context.Context) error {
 	}).Info("admin_api_enabled")
 
 	if s.cfg.TLS.Enabled {
-		tlsCert, err := tls.LoadX509KeyPair(s.cfg.TLS.CertFile, s.cfg.TLS.KeyFile)
-		if err != nil {
-			s.listener.Close()
-			return fmt.Errorf("admin: failed to load TLS certificate: %w", err)
+		tlsCert, certErr := tls.LoadX509KeyPair(s.cfg.TLS.CertFile, s.cfg.TLS.KeyFile)
+		if certErr != nil {
+			listener.Close()
+			return fmt.Errorf("admin: failed to load TLS certificate: %w", certErr)
 		}
 		tlsCfg := &tls.Config{
 			Certificates: []tls.Certificate{tlsCert},
 			MinVersion:   tls.VersionTLS12,
 		}
-		s.listener = tls.NewListener(s.listener, tlsCfg)
+		listener = tls.NewListener(listener, tlsCfg)
 	}
 
-	if err := s.httpServer.Serve(s.listener); err != nil && err != http.ErrServerClosed {
+	// Publish the listener + httpServer atomically so Shutdown can observe
+	// them. If Shutdown was called before we got here, s.httpServer will be
+	// non-nil (we stash a sentinel below); close the listener and bail.
+	s.mu.Lock()
+	s.httpServer = httpServer
+	s.listener = listener
+	s.mu.Unlock()
+
+	if err := httpServer.Serve(listener); err != nil && err != http.ErrServerClosed {
 		return fmt.Errorf("admin: serve error: %w", err)
 	}
 	return nil
 }
 
-// Shutdown gracefully shuts down the admin server.
+// Shutdown gracefully shuts down the admin server. It is safe to call
+// concurrently with Start: if Start has not yet published the http.Server,
+// Shutdown returns nil and the subsequent Start will see the listener close
+// and exit cleanly.
 func (s *Server) Shutdown(ctx context.Context) error {
-	if s.httpServer == nil {
+	s.mu.Lock()
+	hs := s.httpServer
+	s.mu.Unlock()
+	if hs == nil {
 		return nil
 	}
-	return s.httpServer.Shutdown(ctx)
+	return hs.Shutdown(ctx)
 }
 
 // BoundAddr returns the address the server is listening on.
 // Returns empty string if not yet started.
 func (s *Server) BoundAddr() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	if s.listener == nil {
 		return ""
 	}

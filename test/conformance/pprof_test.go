@@ -23,6 +23,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"sync"
 	"testing"
 
 	"github.com/kenneth/s3-encryption-gateway/test/harness"
@@ -30,6 +31,21 @@ import (
 )
 
 const obs1AdminToken = "obs1-conformance-token-abc123"
+
+// obs1GlobalProfileMu serialises calls to the CPU `profile` and execution
+// `trace` endpoints across all providers running in parallel under
+// TestConformance. Both endpoints invoke process-global Go runtime APIs
+// (runtime/pprof.StartCPUProfile and runtime/trace.Start) that admit exactly
+// one concurrent writer per OS process. Without this mutex, tests from
+// different providers (e.g. rustfs and garage, both running concurrently via
+// t.Parallel() at the provider level) would race on these runtime singletons
+// and one of them would receive a 500 with "cpu profiling already in use" or
+// "tracing is already enabled".
+//
+// Note: per-gateway semaphores (admin.MaxConcurrentProfiles) are NOT enough;
+// they guard one gateway instance, but each provider starts its own gateway,
+// so the semaphores are disjoint. The Go runtime singletons are shared.
+var obs1GlobalProfileMu sync.Mutex
 
 // startOBS1Gateway starts a gateway with the admin listener and pprof enabled.
 // The bearer token is obs1AdminToken. The S3 backend is real (inst); the
@@ -89,6 +105,13 @@ func testOBS1_AllEndpointsReturn200(t *testing.T, inst provider.Instance) {
 			fullPath := ep.path
 			if ep.query != "" {
 				fullPath = fullPath + "?" + ep.query
+			}
+			// Serialise profile/trace calls across all providers. Go's
+			// runtime singletons (StartCPUProfile, trace.Start) accept only
+			// one writer per process, and providers run in parallel.
+			if ep.path == "/debug/pprof/profile" || ep.path == "/debug/pprof/trace" {
+				obs1GlobalProfileMu.Lock()
+				defer obs1GlobalProfileMu.Unlock()
 			}
 			resp := adminGet(t, gw, fullPath)
 			defer resp.Body.Close()
