@@ -8,6 +8,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Testing & Quality
 
+- **Coverage gate ≥ 80% and mutation testing** (V0.6-QA-2): The project now
+  enforces a hard ≥ 80% statement coverage gate on every PR and push to `main`
+  via `scripts/coverage-gate.sh`, wired into the `coverage-gate` CI job in
+  `.github/workflows/conformance.yml`. The FIPS build profile (`-tags=fips`)
+  is gated separately. Nightly mutation testing via
+  [Gremlins](https://github.com/go-gremlins/gremlins) runs on `internal/config`,
+  `internal/api`, `internal/s3`, and `internal/middleware` with a ≥ 70%
+  kill-rate target; `internal/crypto` is covered by fuzz tests instead.
+  See [`docs/COVERAGE.md`](docs/COVERAGE.md) for the exclusion policy and
+  regeneration guide.
+
 - **Per-provider performance baselines** (V0.6-QA-1): established a
   reproducible measurement methodology and committed baseline corpus
   under `docs/perf/v0.6-qa-1/` (micro-benchmarks for 19 tracked Go

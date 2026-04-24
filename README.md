@@ -659,6 +659,13 @@ Per-provider performance baselines and regression gates live in
 soak tests (MinIO, Garage, RustFS, SeaweedFS) and fails the job on
 `> 15 %` throughput regressions or p99 latency growth.
 
+## Test Coverage
+
+The project enforces a **≥ 80% statement coverage gate** on every PR via
+`make coverage-gate`. Nightly mutation testing (Gremlins) runs on the
+critical non-crypto packages. See [`docs/COVERAGE.md`](docs/COVERAGE.md)
+for the exclusion policy, regeneration guide, and mutation testing scope.
+
 ---
 
 ## Contributing
