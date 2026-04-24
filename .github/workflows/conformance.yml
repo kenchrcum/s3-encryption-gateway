@@ -184,6 +184,8 @@ jobs:
           retention-days: 7
 
       - name: Coverage gate (FIPS)
+        env:
+          GOFIPS140: v1.0.0
         run: |
           COVERAGE_TAGS=fips COVERAGE_PROFILE=coverage-fips.out bash scripts/coverage-gate.sh 75
 
