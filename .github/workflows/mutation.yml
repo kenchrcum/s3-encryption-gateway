@@ -134,10 +134,13 @@ jobs:
       - name: Open mutation-regression issue on failure
         if: steps.mutation.outputs.gremlins_exit != '0'
         uses: actions/github-script@v7
+        env:
+          MUTATION_PKG: ${{ matrix.package }}
+          MUTATION_KILL_RATE: ${{ steps.mutation.outputs.kill_rate || 'unknown' }}
         with:
           script: |
-            const pkg = '${{ matrix.package }}';
-            const rate = '${{ steps.mutation.outputs.kill_rate || ''unknown'' }}';
+            const pkg = process.env.MUTATION_PKG;
+            const rate = process.env.MUTATION_KILL_RATE;
             const title = `mutation-regression: ${pkg} kill-rate below 70%`;
             const body = [
               `## Mutation Regression: \`${pkg}\``,
