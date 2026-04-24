@@ -1,0 +1,77 @@
+{{/*
+Template-time validation guard-rails for blue/green and canary topologies.
+
+These guards are rendered as an empty string but cause `helm template` to
+fail with a clear, actionable error message when misconfigured. They run
+before any resource templates are rendered.
+
+Guard 1 — track + valkey.enabled
+When a track label is set (indicating a blue/green or canary topology),
+the per-release Valkey subchart MUST be disabled. Both colours/tracks must
+share a single external Valkey cluster so that multipart upload state
+(Valkey key `mpu:<sha256(uploadId)>`) survives a traffic flip mid-upload.
+See docs/OPS_DEPLOYMENT.md §2 — Stateful Invariants, ADR 0009.
+*/}}
+{{- if and .Values.track .Values.valkey.enabled -}}
+{{- fail (printf
+  "When `track=%q` is set (blue/green or canary topology), `valkey.enabled` must be `false` and `config.multipartState.valkey.addr` must point to a shared external Valkey cluster. Per-release Valkey subchart instances do NOT share state and will cause multipart upload failures on traffic cutover. See docs/OPS_DEPLOYMENT.md §2."
+  .Values.track) -}}
+{{- end -}}
+
+{{/*
+Guard 2 — track without a shared external Valkey address.
+When a track is set, either an external Valkey addr.value or addr.valueFrom
+must be configured (unless the operator has explicitly opted out of
+encrypted multipart uploads, which is not yet a chart-level option). This
+guard catches the most common misconfiguration: setting track but forgetting
+the shared Valkey address.
+*/}}
+{{- if .Values.track -}}
+{{- $valkeyAddrSet := false -}}
+{{- if .Values.config.multipartState.valkey.addr.value -}}
+  {{- $valkeyAddrSet = true -}}
+{{- end -}}
+{{- if .Values.config.multipartState.valkey.addr.valueFrom -}}
+  {{- $valkeyAddrSet = true -}}
+{{- end -}}
+{{- if not $valkeyAddrSet -}}
+{{- fail (printf
+  "When `track=%q` is set, `config.multipartState.valkey.addr.value` (or `.valueFrom`) must be configured to point at a shared external Valkey cluster. Without a shared Valkey, multipart uploads started on one colour will fail when continued on the other after a traffic flip. See docs/OPS_DEPLOYMENT.md §2."
+  .Values.track) -}}
+{{- end -}}
+{{- end -}}
+
+{{/*
+Guard 3 — mutually exclusive ingress paths.
+The standard `networking.k8s.io/v1` Ingress and the Traefik IngressRoute CRD
+serve the same purpose and must not both be enabled on the same release.
+Enable one, not both. See docs/OPS_DEPLOYMENT.md §3.
+*/}}
+{{- if and .Values.ingress.enabled .Values.ingress.traefik.enabled -}}
+{{- fail "Cannot enable both `ingress.enabled` (standard networking.k8s.io/v1 Ingress) and `ingress.traefik.enabled` (Traefik IngressRoute) on the same release. Choose one. See docs/OPS_DEPLOYMENT.md §3." -}}
+{{- end -}}
+
+{{/*
+Guard 4 — weighted TraefikService requires traefik.enabled.
+A weighted TraefikService is meaningless without an accompanying IngressRoute.
+The chart renders both together; `ingress.traefik.enabled` must be true.
+*/}}
+{{- if and .Values.ingress.traefik.weighted.enabled (not .Values.ingress.traefik.enabled) -}}
+{{- fail "`ingress.traefik.weighted.enabled` requires `ingress.traefik.enabled: true`. Enable both together to render the weighted TraefikService and its companion IngressRoute." -}}
+{{- end -}}
+
+{{/*
+Guard 5 — weighted services must sum to 100.
+Traefik normalises weights that do not sum to 100 silently. This chart
+surface the misconfiguration at render time so the operator sees it
+immediately rather than debugging unexpected traffic distributions.
+*/}}
+{{- if .Values.ingress.traefik.weighted.enabled -}}
+{{- $sum := 0 -}}
+{{- range .Values.ingress.traefik.weighted.services -}}
+{{- $sum = add $sum (int .weight) -}}
+{{- end -}}
+{{- if ne $sum 100 -}}
+{{- fail (printf "`ingress.traefik.weighted.services` weights must sum to 100; got %d. Adjust the weights so that all entries add up to exactly 100." $sum) -}}
+{{- end -}}
+{{- end -}}

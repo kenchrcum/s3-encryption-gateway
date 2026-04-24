@@ -6,6 +6,71 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased] — v0.6
 
+### Operations & Helm
+
+- **Blue/green and canary deployment recipes** (V0.6-OPS-1): the Helm chart
+  now ships production-safe progressive-delivery topologies for zero-downtime
+  upgrades of the S3 Encryption Gateway.
+
+  - **New chart value `track`** (default `""`): labels pods for selector-based
+    traffic routing. Set to `"blue"`, `"green"`, `"stable"`, or `"canary"`.
+    Single-release deployments see no change (backward compatible; empty track
+    emits no label).
+
+  - **New `ingress.traefik.*` values**: first-class Traefik v3 CRD support.
+    - `ingress.traefik.enabled: true` renders a `traefik.io/v1alpha1`
+      `IngressRoute` as the replacement for the standard `networking.k8s.io/v1`
+      Ingress. Mutually exclusive with `ingress.enabled` (chart enforces this).
+    - `ingress.traefik.weighted.enabled: true` renders a `kind: Weighted`
+      `TraefikService` + companion `IngressRoute` for the canary traffic-split
+      topology. Weights must sum to 100 (chart enforces this).
+
+  - **New `terminationGracePeriodSeconds` and `lifecycle` values**: expose
+    pod lifecycle knobs for safe connection draining during traffic flips.
+    Default `terminationGracePeriodSeconds: 30` preserves existing behaviour.
+
+  - **Template-time guard-rails** (`templates/validate.yaml`):
+    - `track` + `valkey.enabled: true` → render-time error (shared Valkey
+      required for MPU state continuity across traffic flips).
+    - `track` without a Valkey address → render-time error.
+    - `ingress.enabled` + `ingress.traefik.enabled` both true → render-time error.
+    - `ingress.traefik.weighted.enabled` without `ingress.traefik.enabled` → error.
+    - Weighted services not summing to 100 → render-time error.
+
+  - **New chart templates**: `templates/ingressroute.yaml`,
+    `templates/traefikservice.yaml` (both opt-in; emit zero output by default).
+
+  - **Per-track Prometheus relabeling**: `ServiceMonitor` and `PodMonitor`
+    templates now emit a `track` relabel rule when `track` is set, enabling
+    per-track PromQL queries and Grafana dashboard filtering.
+
+  - **Example values files** (`helm/s3-encryption-gateway/examples/`):
+    `values-blue.yaml`, `values-green.yaml`, `values-canary-stable.yaml`,
+    `values-canary-canary.yaml`, `values-traefik-single.yaml`.
+
+  - **Raw manifest examples** (`docs/examples/`):
+    - `bluegreen/service.yaml` — operator-owned shared Service for the
+      selector-flip pattern.
+    - `bluegreen/external-valkey.yaml` — minimal shared Valkey StatefulSet.
+    - `bluegreen/cutover.sh` — cutover and rollback script.
+    - `canary/traefikservice.yaml`, `canary/ingressroute.yaml` — operator-owned
+      Traefik resources for the weighted canary split.
+    - `canary/promote.sh` — progressive weight promotion (5 → 25 → 50 → 100).
+    - `canary/rollback.sh` — emergency rollback script.
+    - `gateway-api/httproute.yaml` — portable Gateway API `HTTPRoute` equivalent
+      (documentation appendix; not a chart template in v0.6).
+
+  - **Operator runbook**: `docs/OPS_DEPLOYMENT.md` is the single authoritative
+    source for blue/green and canary procedures, including the stateful
+    invariants (shared Valkey, key-version parity, draining semantics),
+    per-track observability, troubleshooting guide, Gateway API appendix,
+    and Argo Rollouts / Flagger optional overlay recipe.
+
+  - **CI**: `.github/workflows/helm-test.yml` extended with progressive-delivery
+    render checks and guard-rail smoke tests.
+
+  - See `docs/plans/V0.6-OPS-1-plan.md` for full design rationale.
+
 ### Observability
 
 - **Admin pprof profiling endpoints** (V0.6-OBS-1): production-safe runtime

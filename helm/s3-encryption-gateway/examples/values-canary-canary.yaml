@@ -1,0 +1,82 @@
+# helm/s3-encryption-gateway/examples/values-canary-canary.yaml
+#
+# Canary side of a Traefik-fronted canary topology.
+# See docs/OPS_DEPLOYMENT.md §4 for the full step-by-step procedure.
+#
+# TOPOLOGY OVERVIEW:
+#   - This release: the new version under test, initially receives 5 % of
+#     traffic. Weights are progressively shifted to 100 % via promote.sh.
+#   - gw-stable release: the existing version; receives the remaining 95 %.
+#   - The weighted TraefikService + IngressRoute are operator-owned raw
+#     manifests under docs/examples/canary/ (not rendered by this chart).
+#
+# PRECONDITIONS:
+#   1. Traefik ≥ v3.0 is the cluster ingress controller.
+#   2. Shared external Valkey at the address below — REQUIRED for
+#      multipart uploads that may bounce between stable and canary pods
+#      within a single client session.
+#   3. The ENCRYPTION_PASSWORD / active KMS key_version MUST match the
+#      stable release exactly. Do NOT advance the key version before
+#      completing the promote and completing the role-swap.
+
+# ---------------------------------------------------------------------------
+replicaCount: 2
+
+track: canary
+
+# Canary has its own Service — the weighted TraefikService references it.
+service:
+  enabled: true
+
+valkey:
+  enabled: false
+
+config:
+  backend:
+    endpoint:
+      value: "https://s3.amazonaws.com"
+    region:
+      value: "us-east-1"
+    accessKey:
+      valueFrom:
+        secretKeyRef:
+          name: s3-encryption-gateway-secrets
+          key: backend-access-key
+    secretKey:
+      valueFrom:
+        secretKeyRef:
+          name: s3-encryption-gateway-secrets
+          key: backend-secret-key
+
+  encryption:
+    password:
+      valueFrom:
+        secretKeyRef:
+          name: s3-encryption-gateway-secrets
+          key: encryption-password
+
+  multipartState:
+    valkey:
+      addr:
+        value: "valkey-shared.mpu-state.svc.cluster.local:6379"
+
+terminationGracePeriodSeconds: 60
+lifecycle:
+  preStop:
+    exec:
+      command: ["sh", "-c", "sleep 10"]
+
+podDisruptionBudget:
+  enabled: true
+  minAvailable: 1   # Canary fleet is typically smaller.
+
+serviceMonitor:
+  enabled: true
+  labels:
+    track: canary   # Enables per-track SLI dashboards during soak window.
+
+# IngressRoute is operator-owned (docs/examples/canary/); not chart-rendered.
+ingress:
+  enabled: false
+  traefik:
+    enabled: false

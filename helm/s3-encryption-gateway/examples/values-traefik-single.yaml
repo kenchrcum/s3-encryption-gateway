@@ -1,0 +1,75 @@
+# helm/s3-encryption-gateway/examples/values-traefik-single.yaml
+#
+# Single-release deployment using a Traefik IngressRoute CRD instead of the
+# standard networking.k8s.io/v1 Ingress.
+#
+# This is the recommended starting point for operators running Traefik ≥ v3.0
+# who want to migrate from the standard Ingress path. It is also the first
+# step before adopting a blue/green or canary topology.
+#
+# API GROUP NOTE: This chart emits `traefik.io/v1alpha1` (Traefik v3+).
+# Operators on Traefik v2.x must upgrade Traefik first — the API group
+# changed from `traefik.containo.us` to `traefik.io` in v3.0.
+#
+# MUTUAL EXCLUSIVITY: `ingress.enabled` and `ingress.traefik.enabled` cannot
+# both be true on the same release. The chart enforces this at render time.
+
+# ---------------------------------------------------------------------------
+replicaCount: 2
+
+# No track label for a standard single-release deployment.
+track: ""
+
+service:
+  enabled: true
+  port: 80
+  targetPort: 8080
+
+valkey:
+  enabled: false
+
+config:
+  backend:
+    endpoint:
+      value: "https://s3.amazonaws.com"
+    region:
+      value: "us-east-1"
+    accessKey:
+      valueFrom:
+        secretKeyRef:
+          name: s3-encryption-gateway-secrets
+          key: backend-access-key
+    secretKey:
+      valueFrom:
+        secretKeyRef:
+          name: s3-encryption-gateway-secrets
+          key: backend-secret-key
+
+  encryption:
+    password:
+      valueFrom:
+        secretKeyRef:
+          name: s3-encryption-gateway-secrets
+          key: encryption-password
+
+# Standard Ingress is disabled; Traefik IngressRoute is used instead.
+ingress:
+  enabled: false
+  traefik:
+    enabled: true
+    entryPoints:
+      - websecure
+    host: "s3.example.com"
+    tls:
+      secretName: s3-example-com-tls
+    # Uncomment to attach Traefik middlewares (e.g. rate-limiting, auth):
+    # middlewares:
+    #   - name: my-middleware
+    #     namespace: default
+    weighted:
+      enabled: false
+
+terminationGracePeriodSeconds: 30
+
+serviceMonitor:
+  enabled: true

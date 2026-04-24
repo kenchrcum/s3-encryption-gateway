@@ -18,6 +18,9 @@ spec:
       labels:
         {{- include "s3-encryption-gateway.selectorLabels" . | nindent 8 }}
     spec:
+      {{- if .Values.terminationGracePeriodSeconds }}
+      terminationGracePeriodSeconds: {{ .Values.terminationGracePeriodSeconds }}
+      {{- end }}
       {{- with .Values.imagePullSecrets }}
       imagePullSecrets:
         {{- toYaml . | nindent 8 }}
@@ -277,6 +280,10 @@ spec:
         {{- end }}
         resources:
           {{- toYaml .Values.resources | nindent 10 }}
+        {{- with .Values.lifecycle }}
+        lifecycle:
+          {{- toYaml . | nindent 10 }}
+        {{- end }}
         {{- if or (and (or (eq .Values.config.tls.enabled.value "true") (eq .Values.config.tls.enabled.value "1")) (and .Values.config.tls.useCertManager.value (or (eq .Values.config.tls.useCertManager.value "true") (eq .Values.config.tls.useCertManager.value "1")))) .Values.extraVolumeMounts }}
         volumeMounts:
           {{- if and (or (eq .Values.config.tls.enabled.value "true") (eq .Values.config.tls.enabled.value "1")) (and .Values.config.tls.useCertManager.value (or (eq .Values.config.tls.useCertManager.value "true") (eq .Values.config.tls.useCertManager.value "1"))) }}

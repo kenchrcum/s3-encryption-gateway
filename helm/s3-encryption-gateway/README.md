@@ -914,6 +914,47 @@ kubectl port-forward <pod-name> 8080:8080
 curl http://localhost:8080/health
 ```
 
+## Progressive Delivery
+
+The chart ships production-safe blue/green and canary deployment recipes for
+zero-downtime upgrades. See **[docs/OPS_DEPLOYMENT.md](../../docs/OPS_DEPLOYMENT.md)**
+for the complete runbook.
+
+### Key points
+
+- **Zero breaking changes.** The `track` value defaults to `""` (no label).
+  Existing single-release deployments are byte-for-byte unchanged.
+- **Fail-closed guard-rails.** Setting `track` without a shared external Valkey
+  address, or enabling both `ingress.enabled` and `ingress.traefik.enabled`,
+  causes `helm template` to fail with a clear, actionable message.
+- **Traefik v3 first-class support.** New `ingress.traefik.enabled` and
+  `ingress.traefik.weighted.enabled` values render Traefik `IngressRoute` and
+  `TraefikService` CRDs (requires Traefik ≥ v3.0).
+- **Shared Valkey is mandatory for blue/green and canary.** Both colours/tracks
+  must point at the same external Valkey cluster to preserve multipart upload
+  state across traffic flips. Set `valkey.enabled: false` and configure
+  `config.multipartState.valkey.addr` on all releases.
+
+### Quick start
+
+```bash
+# Blue side:
+helm install gw-blue . \
+  --values examples/values-blue.yaml \
+  --set config.multipartState.valkey.addr.value=valkey-shared.mpu-state.svc.cluster.local:6379
+
+# Green side (new version):
+helm install gw-green . \
+  --set image.tag=v0.6.1 \
+  --values examples/values-green.yaml \
+  --set config.multipartState.valkey.addr.value=valkey-shared.mpu-state.svc.cluster.local:6379
+
+# Cutover:
+docs/examples/bluegreen/cutover.sh green
+# Rollback:
+docs/examples/bluegreen/cutover.sh blue
+```
+
 ## Support
 
 For issues, feature requests, or questions:

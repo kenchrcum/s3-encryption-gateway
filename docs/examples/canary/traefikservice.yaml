@@ -1,0 +1,58 @@
+# docs/examples/canary/traefikservice.yaml
+#
+# Operator-owned Traefik weighted TraefikService for the canary topology.
+# Applied ONCE alongside the two chart releases (gw-stable and gw-canary).
+# The weights are updated progressively via promote.sh during the canary soak.
+#
+# REQUIRES: Traefik ≥ v3.0 with the CRD API group `traefik.io/v1alpha1`.
+# Pre-v3 Traefik used `traefik.containo.us/v1alpha1`; upgrade first.
+#
+# USAGE:
+#   kubectl apply -f docs/examples/canary/traefikservice.yaml -n s3-gateway
+#
+# PROMOTE (step from 5 % to higher):
+#   docs/examples/canary/promote.sh 25
+#   docs/examples/canary/promote.sh 50
+#   docs/examples/canary/promote.sh 100
+#
+# ROLLBACK:
+#   docs/examples/canary/rollback.sh
+#
+# SERVICE NAME NOTE:
+#   The `name` fields below refer to the Kubernetes Service names rendered by
+#   each chart release. By default (Helm release name = "gw-stable" / "gw-canary"),
+#   the chart renders Services named:
+#     gw-stable-s3-encryption-gateway
+#     gw-canary-s3-encryption-gateway
+#   Adjust the names below if your release names differ.
+#
+# See docs/OPS_DEPLOYMENT.md §4 for the complete canary procedure.
+# ---------------------------------------------------------------------------
+apiVersion: traefik.io/v1alpha1
+kind: TraefikService
+metadata:
+  name: gateway-weighted
+  namespace: s3-gateway   # adjust to your namespace
+  labels:
+    app.kubernetes.io/name: s3-encryption-gateway
+    app.kubernetes.io/managed-by: operator
+spec:
+  weighted:
+    services:
+      - name: gw-stable-s3-encryption-gateway   # Service from the stable release
+        port: 80
+        weight: 95
+      - name: gw-canary-s3-encryption-gateway   # Service from the canary release
+        port: 80
+        weight: 5
+    # sticky.cookie pins a given S3 client session to one backend.
+    # Recommended: S3 SDKs keep TCP connections alive for minutes, so the
+    # cookie effectively pins in-flight multipart uploads to one colour
+    # and reduces Valkey round-trips. Correctness still requires shared Valkey,
+    # but stickiness improves the canary UX.
+    sticky:
+      cookie:
+        name: gw-pin
+        httpOnly: true
+        secure: true
+        sameSite: lax

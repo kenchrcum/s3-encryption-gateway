@@ -1,0 +1,86 @@
+# helm/s3-encryption-gateway/examples/values-green.yaml
+#
+# Green side of a blue/green deployment.
+# See docs/OPS_DEPLOYMENT.md §3 for the full step-by-step procedure.
+#
+# PRECONDITIONS (enforced by template guards + runbook checklist):
+#   1. A shared external Valkey cluster is reachable at the address below.
+#      The per-release Valkey subchart is DISABLED (valkey.enabled: false).
+#   2. The ENCRYPTION_PASSWORD / active KMS key_version MUST match the
+#      blue release exactly before the traffic flip. Key rotation happens
+#      on green AFTER the flip completes — never before.
+#   3. The shared Service (docs/examples/bluegreen/service.yaml) is deployed
+#      separately and starts pointing at track=blue. After validation,
+#      run docs/examples/bluegreen/cutover.sh green to flip to this release.
+#   4. Run scripts/verify-key-parity.sh to confirm both releases share the
+#      same KEY_MANAGER_PROVIDER / COSMIAN_KMS_KEYS before cutover.
+
+# ---------------------------------------------------------------------------
+replicaCount: 3
+
+# Label pods with track=green for the shared Service selector flip.
+track: green
+
+service:
+  enabled: false
+
+# Disable the per-release Valkey subchart. Both colours MUST share a single
+# external Valkey so that multipart upload state survives the traffic flip.
+valkey:
+  enabled: false
+
+config:
+  # ── Fill in your backend and encryption settings ────────────────────────
+  # These MUST be identical to the blue release values before cutover.
+  backend:
+    endpoint:
+      value: "https://s3.amazonaws.com"
+    region:
+      value: "us-east-1"
+    accessKey:
+      valueFrom:
+        secretKeyRef:
+          name: s3-encryption-gateway-secrets
+          key: backend-access-key
+    secretKey:
+      valueFrom:
+        secretKeyRef:
+          name: s3-encryption-gateway-secrets
+          key: backend-secret-key
+
+  encryption:
+    password:
+      valueFrom:
+        secretKeyRef:
+          name: s3-encryption-gateway-secrets
+          key: encryption-password
+
+  # ── Shared external Valkey — REQUIRED for blue/green ────────────────────
+  multipartState:
+    valkey:
+      addr:
+        value: "valkey-shared.mpu-state.svc.cluster.local:6379"
+
+terminationGracePeriodSeconds: 60
+lifecycle:
+  preStop:
+    exec:
+      command: ["sh", "-c", "sleep 10"]
+
+autoscaling:
+  enabled: false
+
+podDisruptionBudget:
+  enabled: true
+  minAvailable: 2
+
+serviceMonitor:
+  enabled: true
+  labels:
+    track: green
+
+podMonitor:
+  enabled: false
+
+ingress:
+  enabled: false

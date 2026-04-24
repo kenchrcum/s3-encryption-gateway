@@ -63,6 +63,24 @@ jobs:
           cd helm/s3-encryption-gateway
           helm template test-release . --dry-run=server --debug
 
+      - name: Render progressive-delivery examples
+        run: |
+          helm template blue helm/s3-encryption-gateway \
+            --values helm/s3-encryption-gateway/examples/values-blue.yaml
+          helm template green helm/s3-encryption-gateway \
+            --values helm/s3-encryption-gateway/examples/values-green.yaml
+          helm template traefik-single helm/s3-encryption-gateway \
+            --values helm/s3-encryption-gateway/examples/values-traefik-single.yaml
+          helm template canary-stable helm/s3-encryption-gateway \
+            --values helm/s3-encryption-gateway/examples/values-canary-stable.yaml
+          helm template canary-canary helm/s3-encryption-gateway \
+            --values helm/s3-encryption-gateway/examples/values-canary-canary.yaml
+
+      - name: Progressive delivery guard-rail and rendering checks
+        run: |
+          chmod +x helm/s3-encryption-gateway/scripts/test-progressive-delivery.sh
+          helm/s3-encryption-gateway/scripts/test-progressive-delivery.sh
+
       - name: Package chart
         run: |
           cd helm

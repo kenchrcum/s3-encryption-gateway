@@ -1,0 +1,113 @@
+# docs/examples/bluegreen/external-valkey.yaml
+#
+# Minimal shared Valkey StatefulSet for a blue/green (or canary) topology.
+# Deploy this ONCE in a dedicated namespace (e.g. mpu-state) so both
+# colour releases can share it.
+#
+# IMPORTANT: This is a minimal example for development and low-traffic
+# production. For high-availability production use, deploy a Valkey cluster
+# (Valkey Cluster mode or Sentinel) and reference it in both chart releases'
+# config.multipartState.valkey.addr values.
+#
+# USAGE:
+#   kubectl create namespace mpu-state
+#   kubectl apply -f docs/examples/bluegreen/external-valkey.yaml
+#
+# Then in both blue and green values files set:
+#   config.multipartState.valkey.addr.value: "valkey-shared.mpu-state.svc.cluster.local:6379"
+#
+# See docs/OPS_DEPLOYMENT.md §2 — Stateful Invariants for context.
+# ---------------------------------------------------------------------------
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: mpu-state
+  labels:
+    app.kubernetes.io/name: valkey-shared
+    app.kubernetes.io/managed-by: operator
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: valkey-shared
+  namespace: mpu-state
+  labels:
+    app.kubernetes.io/name: valkey-shared
+    app.kubernetes.io/component: mpu-state-store
+spec:
+  serviceName: valkey-shared
+  replicas: 1   # increase to 2+ with Sentinel for HA
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: valkey-shared
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: valkey-shared
+        app.kubernetes.io/component: mpu-state-store
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 999
+        fsGroup: 999
+      containers:
+        - name: valkey
+          image: valkey/valkey:7.2-alpine
+          ports:
+            - containerPort: 6379
+              name: valkey
+          args:
+            - valkey-server
+            - --save ""           # disable RDB persistence for ephemeral MPU state
+            - --appendonly no
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          livenessProbe:
+            tcpSocket:
+              port: valkey
+            initialDelaySeconds: 10
+            periodSeconds: 30
+          readinessProbe:
+            exec:
+              command: ["valkey-cli", "ping"]
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          volumeMounts:
+            - name: data
+              mountPath: /data
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: [ReadWriteOnce]
+        resources:
+          requests:
+            storage: 1Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: valkey-shared
+  namespace: mpu-state
+  labels:
+    app.kubernetes.io/name: valkey-shared
+    app.kubernetes.io/component: mpu-state-store
+spec:
+  type: ClusterIP
+  ports:
+    - port: 6379
+      targetPort: 6379
+      protocol: TCP
+      name: valkey
+  selector:
+    app.kubernetes.io/name: valkey-shared

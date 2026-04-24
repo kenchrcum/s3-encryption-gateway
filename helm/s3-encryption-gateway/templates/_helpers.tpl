@@ -46,6 +46,18 @@ Selector labels
 {{- define "s3-encryption-gateway.selectorLabels" -}}
 app.kubernetes.io/name: {{ include "s3-encryption-gateway.name" . }}
 app.kubernetes.io/instance: {{ .Release.Name }}
+{{- include "s3-encryption-gateway.trackLabel" . }}
+{{- end }}
+
+{{/*
+Track label — emitted only when .Values.track is non-empty so that
+single-release deployments see no change in their selector labels.
+Used for blue/green and canary topologies.
+*/}}
+{{- define "s3-encryption-gateway.trackLabel" -}}
+{{- if .Values.track }}
+track: {{ .Values.track | quote }}
+{{- end }}
 {{- end }}
 
 {{/*

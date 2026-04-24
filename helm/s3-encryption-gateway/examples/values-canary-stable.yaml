@@ -1,0 +1,86 @@
+# helm/s3-encryption-gateway/examples/values-canary-stable.yaml
+#
+# Stable side of a Traefik-fronted canary topology.
+# See docs/OPS_DEPLOYMENT.md §4 for the full step-by-step procedure.
+#
+# TOPOLOGY OVERVIEW:
+#   - This release: the existing "stable" version, receives ≥ 95 % of traffic.
+#   - gw-canary release: the new version under test, receives ≤ 5 % initially.
+#   - Operator-owned TraefikService + IngressRoute handle the traffic split.
+#     They are raw manifests under docs/examples/canary/ and are NOT rendered
+#     by the chart (the chart only renders Deployment + Service + monitors).
+#
+# PRECONDITIONS:
+#   1. Traefik ≥ v3.0 is the cluster ingress controller.
+#   2. Shared external Valkey at the address below — REQUIRED so that
+#      multipart uploads bounce-tolerantly across stable and canary pods.
+#   3. The ENCRYPTION_PASSWORD / active KMS key_version is identical across
+#      both releases. Key rotation happens AFTER a full promote to 100 %.
+#   4. Both releases' Services are reachable from the Traefik controller.
+
+# ---------------------------------------------------------------------------
+replicaCount: 3
+
+# track label makes per-track Prometheus queries possible.
+# Stable traffic is identified as track=stable in dashboards.
+track: stable
+
+# Each canary-topology release owns its own Service — the operator-owned
+# weighted TraefikService references both Services by name.
+service:
+  enabled: true
+
+# Disable the per-release Valkey subchart.
+valkey:
+  enabled: false
+
+config:
+  backend:
+    endpoint:
+      value: "https://s3.amazonaws.com"
+    region:
+      value: "us-east-1"
+    accessKey:
+      valueFrom:
+        secretKeyRef:
+          name: s3-encryption-gateway-secrets
+          key: backend-access-key
+    secretKey:
+      valueFrom:
+        secretKeyRef:
+          name: s3-encryption-gateway-secrets
+          key: backend-secret-key
+
+  encryption:
+    password:
+      valueFrom:
+        secretKeyRef:
+          name: s3-encryption-gateway-secrets
+          key: encryption-password
+
+  multipartState:
+    valkey:
+      addr:
+        value: "valkey-shared.mpu-state.svc.cluster.local:6379"
+
+terminationGracePeriodSeconds: 60
+lifecycle:
+  preStop:
+    exec:
+      command: ["sh", "-c", "sleep 10"]
+
+podDisruptionBudget:
+  enabled: true
+  minAvailable: 2
+
+serviceMonitor:
+  enabled: true
+  labels:
+    track: stable
+
+# Chart-managed Ingress is disabled — the operator owns the IngressRoute.
+# See docs/examples/canary/ingressroute.yaml
+ingress:
+  enabled: false
+  traefik:
+    enabled: false

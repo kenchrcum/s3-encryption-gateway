@@ -1,0 +1,41 @@
+# docs/examples/canary/ingressroute.yaml
+#
+# Operator-owned Traefik IngressRoute for the canary topology.
+# This IngressRoute points at the weighted TraefikService above, which
+# distributes traffic between the stable and canary releases.
+#
+# REQUIRES: Traefik ≥ v3.0 (`traefik.io/v1alpha1` API group).
+#
+# USAGE:
+#   # Apply the TraefikService first:
+#   kubectl apply -f docs/examples/canary/traefikservice.yaml -n s3-gateway
+#   # Then apply this IngressRoute:
+#   kubectl apply -f docs/examples/canary/ingressroute.yaml -n s3-gateway
+#
+# VERIFY:
+#   kubectl get ingressroute,traefikservice -n s3-gateway
+#   curl -s -o /dev/null -w "%{http_code}" https://s3.example.com/
+#
+# See docs/OPS_DEPLOYMENT.md §4 for the complete canary procedure.
+# ---------------------------------------------------------------------------
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
+metadata:
+  name: gateway
+  namespace: s3-gateway   # adjust to your namespace
+  labels:
+    app.kubernetes.io/name: s3-encryption-gateway
+    app.kubernetes.io/managed-by: operator
+spec:
+  entryPoints:
+    - websecure
+  routes:
+    - match: Host(`s3.example.com`)   # adjust to your S3 hostname
+      kind: Rule
+      services:
+        - name: gateway-weighted   # references the TraefikService above
+          kind: TraefikService
+  tls:
+    secretName: s3-example-com-tls   # TLS Secret in the same namespace
+    # Or use a cert-resolver:
+    # certResolver: letsencrypt

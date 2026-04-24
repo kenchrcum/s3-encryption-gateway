@@ -1,0 +1,47 @@
+# docs/examples/bluegreen/service.yaml
+#
+# Operator-owned shared Service for a blue/green topology.
+# Applied ONCE outside the chart; the chart itself sets service.enabled=false
+# on both blue and green releases.
+#
+# USAGE:
+#   kubectl apply -f docs/examples/bluegreen/service.yaml -n <namespace>
+#
+# CUTOVER:
+#   To flip traffic from blue to green, patch the selector:
+#     kubectl patch service gateway -n <namespace> \
+#       -p '{"spec":{"selector":{"app.kubernetes.io/name":"s3-encryption-gateway","track":"green"}}}'
+#   Or run: docs/examples/bluegreen/cutover.sh green
+#
+# ROLLBACK:
+#   docs/examples/bluegreen/cutover.sh blue
+#
+# PRECONDITIONS (before cutover):
+#   - Both blue and green Deployments are Ready.
+#   - Both releases point at the same shared external Valkey cluster.
+#   - scripts/verify-key-parity.sh returns 0 (same active key version).
+#   - Green release has been smoke-tested via kubectl port-forward.
+#
+# See docs/OPS_DEPLOYMENT.md §3 for the complete procedure.
+# ---------------------------------------------------------------------------
+apiVersion: v1
+kind: Service
+metadata:
+  name: gateway
+  namespace: s3-gateway   # adjust to your namespace
+  labels:
+    app.kubernetes.io/name: s3-encryption-gateway
+    app.kubernetes.io/managed-by: operator
+  annotations:
+    # Record the current active track for audit/observability.
+    deployment.s3-gateway/active-track: "blue"
+spec:
+  type: ClusterIP
+  ports:
+    - port: 80
+      targetPort: 8080
+      protocol: TCP
+      name: http
+  selector:
+    app.kubernetes.io/name: s3-encryption-gateway
+    track: blue   # ← flip to "green" for cutover; reverse for rollback

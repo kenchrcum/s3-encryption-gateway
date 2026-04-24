@@ -26,4 +26,10 @@ spec:
     tlsConfig:
       insecureSkipVerify: true
     {{- end }}
+    {{- if .Values.track }}
+    relabelings:
+      - sourceLabels: [__meta_kubernetes_pod_label_track]
+        targetLabel: track
+        action: replace
+    {{- end }}
 {{- end }}

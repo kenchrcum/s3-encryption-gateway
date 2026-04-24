@@ -1,0 +1,66 @@
+# docs/examples/gateway-api/httproute.yaml
+#
+# Gateway API HTTPRoute — portable canary equivalent.
+# This manifest achieves the same weighted traffic split as the Traefik
+# IngressRoute + TraefikService combination in docs/examples/canary/ but
+# uses the Kubernetes-standard Gateway API, which is supported by Traefik,
+# Envoy Gateway, Cilium, Istio, Contour, and others.
+#
+# STATUS (v0.6): Documentation appendix only. The chart does NOT template
+# HTTPRoute in v0.6 because controller coverage for weighted backendRefs
+# was still uneven when this release shipped. A v0.7 follow-up
+# (V0.6-OPS-1-followup-gateway-api) will promote this to a first-class
+# chart template once the cross-controller story stabilises.
+#
+# REQUIRES:
+#   - Gateway API v1 CRDs installed in the cluster.
+#   - A GatewayClass and Gateway resource named `public-gateway` (adjust
+#     the parentRefs below to match your Gateway resource name).
+#   - Both gw-stable and gw-canary Kubernetes Services deployed.
+#
+# USAGE:
+#   kubectl apply -f docs/examples/gateway-api/httproute.yaml -n s3-gateway
+#
+# PROMOTE (manual patch):
+#   # Shift canary to 50 %:
+#   kubectl patch httproute gateway -n s3-gateway --type=merge \
+#     -p '{"spec":{"rules":[{"backendRefs":[
+#       {"name":"gw-stable-s3-encryption-gateway","port":80,"weight":50},
+#       {"name":"gw-canary-s3-encryption-gateway","port":80,"weight":50}
+#     ]}]}}'
+#
+# ROLLBACK:
+#   kubectl patch httproute gateway -n s3-gateway --type=merge \
+#     -p '{"spec":{"rules":[{"backendRefs":[
+#       {"name":"gw-stable-s3-encryption-gateway","port":80,"weight":100},
+#       {"name":"gw-canary-s3-encryption-gateway","port":80,"weight":0}
+#     ]}]}}'
+#
+# STATEFUL INVARIANTS (same as Traefik topology):
+#   - Both releases MUST share a single external Valkey cluster.
+#   - Both releases MUST use the same active KMS key_version.
+#
+# See docs/OPS_DEPLOYMENT.md §10 for the Gateway API appendix.
+# ---------------------------------------------------------------------------
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: gateway
+  namespace: s3-gateway   # adjust to your namespace
+  labels:
+    app.kubernetes.io/name: s3-encryption-gateway
+    app.kubernetes.io/managed-by: operator
+spec:
+  parentRefs:
+    - name: public-gateway    # adjust to match your Gateway resource name
+      # namespace: default    # uncomment if the Gateway is in a different namespace
+  hostnames:
+    - "s3.example.com"        # adjust to your S3 hostname
+  rules:
+    - backendRefs:
+        - name: gw-stable-s3-encryption-gateway   # Service from the stable release
+          port: 80
+          weight: 95
+        - name: gw-canary-s3-encryption-gateway   # Service from the canary release
+          port: 80
+          weight: 5

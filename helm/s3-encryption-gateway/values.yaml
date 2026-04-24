@@ -3,6 +3,17 @@
 
 replicaCount: 1
 
+# Deployment track label for blue/green and canary topologies.
+# Empty string (default) renders no `track` label — backward-compatible.
+# Set to "blue", "green", "stable", or "canary" to mark pods for
+# selector-based traffic routing. See docs/OPS_DEPLOYMENT.md for the
+# blue/green and canary recipes.
+#
+# IMPORTANT: When `track` is set, `valkey.enabled` MUST be false and
+# `config.multipartState.valkey.addr` MUST point to a shared external
+# Valkey cluster. The chart enforces this at render time.
+track: ""
+
 image:
   repository: kenchrcum/s3-encryption-gateway
   pullPolicy: IfNotPresent
@@ -66,6 +77,57 @@ ingress:
   #  - secretName: s3-encryption-gateway-tls
   #    hosts:
   #      - s3-encryption-gateway.local
+
+  # Traefik IngressRoute / TraefikService sub-stanza.
+  #
+  # The chart's existing `ingress.enabled` block continues to render a
+  # standard `networking.k8s.io/v1` Ingress (Traefik, Contour, HAProxy
+  # Ingress, and Emissary all consume this). That path is unchanged.
+  #
+  # When an operator wants first-class Traefik CRDs (recommended for
+  # blue/green and canary), enable this sub-stanza *instead of* the plain
+  # `ingress.enabled`. The two are mutually exclusive — enabling both
+  # renders a lint failure. See docs/OPS_DEPLOYMENT.md §3 / §4.
+  traefik:
+    # Render a Traefik IngressRoute CRD for this release.
+    # Requires Traefik ≥ v3.0 (API group `traefik.io/v1alpha1`).
+    # Mutually exclusive with `ingress.enabled: true`.
+    enabled: false
+    # entryPoints names to attach this IngressRoute to.
+    entryPoints: ["websecure"]
+    # Host() matcher — the S3 hostname clients will use.
+    host: ""
+    # TLS configuration (optional when the entrypoint provides a default cert).
+    tls: {}
+    #  secretName: ""        # referenced TLS Secret
+    #  certResolver: ""      # Traefik cert-resolver name (optional)
+    # Traefik Middleware references to chain in front of the gateway.
+    middlewares: []
+    #  - name: my-middleware
+    #    namespace: default
+
+    # Weighted TraefikService (kind: Weighted) — for CANARY topology.
+    # Usually owned by ONE release (the stable side) and references both
+    # the stable and canary release Services by name.
+    weighted:
+      enabled: false
+      # services is the list of N backends with weights summing to 100.
+      services: []
+      #  - name: gw-stable      # Kubernetes Service name
+      #    port: 80
+      #    weight: 95
+      #  - name: gw-canary
+      #    port: 80
+      #    weight: 5
+      # sticky.cookie pins a given S3 client session to one backend —
+      # recommended for this gateway to reduce Valkey round-trips during
+      # in-flight multipart uploads.
+      sticky: {}
+      #  cookie:
+      #    name: gw-pin
+      #    httpOnly: true
+      #    secure: true
+      #    sameSite: lax
 
 # Configuration - supports both direct values and valueFrom (secrets/configmaps)
 # Each option can be configured as:
@@ -566,6 +628,17 @@ networkPolicy:
     monitoring: false
     # Namespace for monitoring services (default: monitoring)
     monitoringNamespace: "monitoring"
+
+# Pod lifecycle knobs for safe progressive delivery.
+# Defaults preserve current behaviour. For blue/green and canary deployments
+# set `terminationGracePeriodSeconds` ≥ 99th-p request duration + 10 s
+# kube-proxy propagation tail, and add a preStop sleep equal to the
+# propagation tail. See docs/OPS_DEPLOYMENT.md §2 for sizing guidance.
+terminationGracePeriodSeconds: 30
+lifecycle: {}
+#  preStop:
+#    exec:
+#      command: ["sh", "-c", "sleep 10"]
 
 nodeSelector: {}
 

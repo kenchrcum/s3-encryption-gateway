@@ -21,5 +21,11 @@ spec:
     path: /metrics
     interval: {{ .Values.serviceMonitor.interval }}
     scrapeTimeout: {{ .Values.serviceMonitor.scrapeTimeout }}
+    {{- if .Values.track }}
+    relabelings:
+      - sourceLabels: [__meta_kubernetes_pod_label_track]
+        targetLabel: track
+        action: replace
+    {{- end }}
 {{- end }}
 

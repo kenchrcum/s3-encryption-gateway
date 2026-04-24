@@ -1,0 +1,70 @@
+{{/*
+Traefik weighted TraefikService + companion IngressRoute — canary path.
+
+Rendered when `ingress.traefik.weighted.enabled: true` (which also requires
+`ingress.traefik.enabled: true` — enforced in templates/_validate.tpl).
+
+This template renders TWO documents in a single file:
+  1. A `kind: TraefikService` of type `Weighted` that references the
+     operator-supplied list of Kubernetes Services with explicit weights
+     (must sum to 100 — enforced in templates/_validate.tpl).
+  2. A `kind: IngressRoute` that points at the weighted TraefikService
+     above, so that Traefik routes inbound traffic through the split.
+
+The operator-supplied `ingress.traefik.weighted.services` list typically
+references Services rendered by *two separate chart releases* (stable and
+canary). Only ONE release should own this template; by convention, the
+stable release owns it.
+
+Usage: set `ingress.traefik.weighted.enabled: true` on the stable release
+and provide the `services` list, `sticky` (recommended), and `host`. The
+canary release sets `ingress.traefik.enabled: false` and
+`ingress.traefik.weighted.enabled: false` — it only renders a Deployment
+and a Service.
+
+See docs/OPS_DEPLOYMENT.md §4 — Canary Recipe for the full procedure.
+*/}}
+{{- if .Values.ingress.traefik.weighted.enabled -}}
+apiVersion: traefik.io/v1alpha1
+kind: TraefikService
+metadata:
+  name: {{ include "s3-encryption-gateway.fullname" . }}-weighted
+  labels:
+    {{- include "s3-encryption-gateway.labels" . | nindent 4 }}
+spec:
+  weighted:
+    services:
+      {{- range .Values.ingress.traefik.weighted.services }}
+      - name: {{ .name }}
+        port: {{ .port | default 80 }}
+        weight: {{ .weight }}
+      {{- end }}
+    {{- with .Values.ingress.traefik.weighted.sticky }}
+    sticky:
+      {{- toYaml . | nindent 6 }}
+    {{- end }}
+---
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
+metadata:
+  name: {{ include "s3-encryption-gateway.fullname" . }}-weighted
+  labels:
+    {{- include "s3-encryption-gateway.labels" . | nindent 4 }}
+spec:
+  entryPoints:
+    {{- toYaml .Values.ingress.traefik.entryPoints | nindent 4 }}
+  routes:
+    - match: Host(`{{ required "`ingress.traefik.host` is required when `ingress.traefik.weighted.enabled: true`" .Values.ingress.traefik.host }}`)
+      kind: Rule
+      services:
+        - name: {{ include "s3-encryption-gateway.fullname" . }}-weighted
+          kind: TraefikService
+      {{- with .Values.ingress.traefik.middlewares }}
+      middlewares:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+  {{- with .Values.ingress.traefik.tls }}
+  tls:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+{{- end }}
