@@ -156,3 +156,66 @@ func TestNewLoggerFromConfig(t *testing.T) {
 	}
 }
 
+// TestBatchSink_WriteWithRetry_FailingWriter exercises the retry loop in writeWithRetry.
+func TestBatchSink_WriteWithRetry_FailingWriter(t *testing.T) {
+	// Use an errorWriter that always fails.
+	errWriter := &errorWriter{err: fmt.Errorf("write failed")}
+
+	// Create a BatchSink with 1 retry and no delay.
+	bs := NewBatchSink(errWriter, 5, 100*time.Millisecond, 1, time.Nanosecond)
+	defer bs.Close()
+
+	// Call writeWithRetry directly since we're in the same package.
+	events := []*AuditEvent{
+		{Operation: "op1"},
+		{Operation: "op2"},
+	}
+	err := bs.writeWithRetry(events)
+	// Should return the last error after retries.
+	if err == nil {
+		t.Error("expected error from writeWithRetry with failing writer")
+	}
+
+	// Empty events should be a no-op.
+	err = bs.writeWithRetry(nil)
+	if err != nil {
+		t.Errorf("writeWithRetry(nil) should return nil, got %v", err)
+	}
+}
+
+// errorWriter is a SinkWriter that always returns an error.
+type errorWriter struct {
+	err error
+}
+
+func (e *errorWriter) WriteEvent(_ *AuditEvent) error {
+	return e.err
+}
+
+// TestStdoutSink_WriteEvent verifies StdoutSink writes JSON to stdout.
+func TestStdoutSink_WriteEvent(t *testing.T) {
+	// Redirect stdout to avoid cluttering test output.
+	old := os.Stdout
+	r, w, _ := os.Pipe()
+	os.Stdout = w
+
+	defer func() {
+		w.Close()
+		os.Stdout = old
+		// Drain the pipe.
+		buf := make([]byte, 4096)
+		r.Read(buf)
+		r.Close()
+	}()
+
+	sink := &StdoutSink{}
+	event := &AuditEvent{
+		Operation: "TestOp",
+		RequestID: "test-req-id",
+	}
+	err := sink.WriteEvent(event)
+	if err != nil {
+		t.Errorf("StdoutSink.WriteEvent() error: %v", err)
+	}
+}
+

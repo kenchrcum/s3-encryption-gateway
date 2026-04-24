@@ -397,6 +397,53 @@ func TestMetrics_MPUMethods(t *testing.T) {
 	}
 }
 
+// TestMetrics_StartSystemMetricsCollector verifies the collector starts without panic.
+func TestMetrics_StartSystemMetricsCollector(t *testing.T) {
+	reg := prometheus.NewRegistry()
+	m := newMetricsWithRegistry(reg, Config{})
+	// Start the collector briefly — it runs in a goroutine so we just verify
+	// no panic on startup. The goroutine leaks in tests, which is acceptable.
+	m.StartSystemMetricsCollector()
+	// Give it a tiny moment to avoid a data race on the ticker channel.
+	time.Sleep(10 * time.Millisecond)
+}
+
+// TestMetrics_Handler_NonNil verifies Handler() returns non-nil for non-nil metrics.
+func TestMetrics_Handler_NonNil(t *testing.T) {
+	reg := prometheus.NewRegistry()
+	m := newMetricsWithRegistry(reg, Config{})
+	h := m.Handler()
+	if h == nil {
+		t.Error("Handler() should not return nil")
+	}
+}
+
+// TestMetrics_Handler_Nil verifies Handler() on a nil Metrics returns the default handler.
+func TestMetrics_Handler_Nil(t *testing.T) {
+	var m *Metrics
+	h := m.Handler()
+	if h == nil {
+		t.Error("Handler() on nil Metrics should return default handler")
+	}
+}
+
+// TestMetrics_RecordS3Error_AllPaths exercises RecordS3Error with S3-bucket label.
+func TestMetrics_RecordS3Error_AllPaths(t *testing.T) {
+	reg := prometheus.NewRegistry()
+	m := newMetricsWithRegistry(reg, Config{EnableBucketLabel: true})
+	ctx := context.Background()
+
+	m.RecordS3Error(ctx, "GetObject", "my-bucket", "NoSuchKey")
+	m.RecordS3Error(ctx, "PutObject", "other-bucket", "InternalError")
+}
+
+// TestMetrics_SetMPUValkeyInsecure_TruePath verifies the true branch.
+func TestMetrics_SetMPUValkeyInsecure_TruePath(t *testing.T) {
+	reg := prometheus.NewRegistry()
+	m := newMetricsWithRegistry(reg, Config{})
+	m.SetMPUValkeyInsecure(true)
+}
+
 // TestMetrics_Gather_AllFamiliesPresent verifies that Gather() returns all
 // expected metric families after a fresh registry is populated.
 func TestMetrics_Gather_AllFamiliesPresent(t *testing.T) {

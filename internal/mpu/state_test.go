@@ -397,3 +397,40 @@ func TestStateStore_Get_InvalidMetaJSON(t *testing.T) {
 	_, err := s.Get(ctx, "upload-bad-json")
 	require.Error(t, err)
 }
+
+// TestStateStore_List verifies that List returns all stored upload states.
+func TestStateStore_List(t *testing.T) {
+	s, _ := newTestStore(t)
+	ctx := context.Background()
+
+	// Create a couple of uploads.
+	state1 := sampleState("upload-list-1")
+	state1.Bucket = "bucket1"
+	state2 := sampleState("upload-list-2")
+	state2.Bucket = "bucket2"
+
+	require.NoError(t, s.Create(ctx, state1))
+	require.NoError(t, s.Create(ctx, state2))
+
+	states, err := s.List(ctx)
+	require.NoError(t, err)
+	assert.GreaterOrEqual(t, len(states), 2, "expected at least 2 upload states")
+
+	// Verify the results contain both upload IDs.
+	found := make(map[string]bool)
+	for _, st := range states {
+		found[st.UploadID] = true
+	}
+	assert.True(t, found["upload-list-1"], "missing upload-list-1")
+	assert.True(t, found["upload-list-2"], "missing upload-list-2")
+}
+
+// TestStateStore_List_Empty verifies List returns empty slice when no uploads exist.
+func TestStateStore_List_Empty(t *testing.T) {
+	s, _ := newTestStore(t)
+	ctx := context.Background()
+
+	states, err := s.List(ctx)
+	require.NoError(t, err)
+	assert.Empty(t, states)
+}

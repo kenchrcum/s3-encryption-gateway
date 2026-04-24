@@ -224,6 +224,51 @@ func TestCreateLogEntry(t *testing.T) {
 	}
 }
 
+// TestRedactQueryString verifies redactQueryString covers all branches.
+func TestRedactQueryString(t *testing.T) {
+	// Empty query string.
+	if got := redactQueryString(""); got != "" {
+		t.Errorf("empty: got %q, want \"\"", got)
+	}
+
+	// Query with non-sensitive params.
+	got := redactQueryString("prefix=foo&max-keys=10")
+	if !strings.Contains(got, "prefix") || !strings.Contains(got, "max-keys") {
+		t.Errorf("non-sensitive params should be preserved: %q", got)
+	}
+
+	// Query with sensitive param (x-amz-signature).
+	got = redactQueryString("X-Amz-Signature=abc123&prefix=foo")
+	if strings.Contains(got, "abc123") {
+		t.Errorf("signature should be redacted: %q", got)
+	}
+
+	// Unparseable query string (contains '%' without valid hex).
+	got = redactQueryString("a=%ZZ")
+	if got != "[REDACTED]" {
+		t.Errorf("unparseable query: got %q, want [REDACTED]", got)
+	}
+}
+
+// TestLogJSON verifies the logJSON format path.
+func TestLogJSON(t *testing.T) {
+	output := ""
+	logger := logrus.New()
+	logger.SetFormatter(&logrus.JSONFormatter{})
+	logger.SetOutput(&testWriter{output: &output})
+
+	entry := &LogEntry{
+		Method:     "GET",
+		Path:       "/test",
+		Status:     200,
+		DurationMs: 1,
+		RemoteAddr: "127.0.0.1",
+	}
+	logJSON(logger, entry)
+	// Just verify no panic.
+	_ = output
+}
+
 // testWriter captures log output for testing
 type testWriter struct {
 	output *string

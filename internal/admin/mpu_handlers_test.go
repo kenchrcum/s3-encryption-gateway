@@ -264,3 +264,53 @@ func TestMPUAdmin_List_WrongMethod(t *testing.T) {
 		t.Errorf("expected 405, got %d", w.Code)
 	}
 }
+
+// TestMPUAdmin_List_NilStates exercises the nil states branch in the list handler.
+func TestMPUAdmin_List_NilStates(t *testing.T) {
+	// Use a store whose List() returns nil (not an empty slice).
+	nilStore := &nilListStore{}
+	mux := http.NewServeMux()
+	logger := logrus.New()
+	logger.SetLevel(logrus.ErrorLevel)
+	RegisterMPUAdminRoutes(mux, nilStore, nil, logger)
+
+	req := httptest.NewRequest("GET", "/admin/mpu/list", nil)
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("expected 200, got %d", w.Code)
+	}
+}
+
+// nilListStore is a StateStore whose List returns nil.
+type nilListStore struct{}
+
+func (n *nilListStore) Get(_ context.Context, _ string) (*mpu.UploadState, error) {
+	return nil, mpu.ErrUploadNotFound
+}
+func (n *nilListStore) Delete(_ context.Context, _ string) error { return nil }
+func (n *nilListStore) List(_ context.Context) ([]mpu.UploadState, error) {
+	return nil, nil // deliberately return nil
+}
+
+// TestIsNotFound_Nil verifies isNotFound returns false for nil error.
+func TestIsNotFound_Nil(t *testing.T) {
+	if isNotFound(nil) {
+		t.Error("isNotFound(nil) should return false")
+	}
+}
+
+// TestIsNotFound_Other verifies isNotFound returns false for other errors.
+func TestIsNotFound_Other(t *testing.T) {
+	if isNotFound(errors.New("some other error")) {
+		t.Error("isNotFound(other) should return false")
+	}
+}
+
+// TestIsNotFound_ErrUploadNotFound verifies isNotFound returns true for ErrUploadNotFound.
+func TestIsNotFound_ErrUploadNotFound(t *testing.T) {
+	if !isNotFound(mpu.ErrUploadNotFound) {
+		t.Error("isNotFound(ErrUploadNotFound) should return true")
+	}
+}

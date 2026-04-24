@@ -142,3 +142,15 @@ func TestLivenessHandler(t *testing.T) {
 	}
 }
 
+// TestSetVersion verifies SetVersion updates the module-level version variable.
+func TestSetVersion(t *testing.T) {
+	// Save and restore the original version.
+	original := version
+	defer func() { version = original }()
+
+	SetVersion("v1.2.3")
+	if version != "v1.2.3" {
+		t.Errorf("SetVersion: version = %q, want v1.2.3", version)
+	}
+}
+

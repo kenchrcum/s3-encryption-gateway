@@ -182,6 +182,91 @@ func TestRateLimiter_Middleware429(t *testing.T) {
 	}
 }
 
+// TestExtractIP_NoPort exercises the extractIP error branch when RemoteAddr has no port.
+func TestExtractIP_NoPort(t *testing.T) {
+	req := httptest.NewRequest("GET", "/admin/test", nil)
+	req.RemoteAddr = "192.168.1.1" // no port → SplitHostPort fails
+	ip := extractIP(req)
+	if ip != "192.168.1.1" {
+		t.Errorf("extractIP without port = %q, want 192.168.1.1", ip)
+	}
+}
+
+// TestRateLimiter_GlobalLimit exercises the globalCount >= globalRPM branch.
+func TestRateLimiter_GlobalLimit(t *testing.T) {
+	// Create a rate limiter where globalRPM is very small.
+	rl := &RateLimiter{
+		buckets:   make(map[string]*bucket),
+		rpm:       1000,    // high per-IP limit
+		globalRPM: 2,       // very low global cap
+		globalReset: time.Now().Add(time.Minute),
+		logger:    testLogger(),
+	}
+
+	// First two requests should succeed (global cap is 2).
+	if !rl.allow("10.0.0.1") {
+		t.Error("first request should be allowed")
+	}
+	if !rl.allow("10.0.0.2") {
+		t.Error("second request should be allowed")
+	}
+	// Third request should hit global cap.
+	if rl.allow("10.0.0.3") {
+		t.Error("third request should be denied by global cap")
+	}
+}
+
+// TestRateLimiter_TokenRefillCap exercises the token refill cap branch.
+func TestRateLimiter_TokenRefillCap(t *testing.T) {
+	rl := NewRateLimiter(60, testLogger()) // 60 RPM
+
+	// Make one request to create a bucket.
+	rl.allow("192.168.1.1")
+
+	// Manually set lastCheck far in the past to simulate refill.
+	rl.mu.Lock()
+	b := rl.buckets["192.168.1.1"]
+	if b != nil {
+		b.tokens = 0
+		b.lastCheck = time.Now().Add(-2 * time.Minute) // 2 mins ago → huge refill
+	}
+	rl.mu.Unlock()
+
+	// Next allow() should refill tokens but cap at rpm.
+	if !rl.allow("192.168.1.1") {
+		t.Error("expected allow after token refill")
+	}
+}
+
+// TestRateLimiter_CleanupEvery100 exercises the cleanup on every 100th request.
+func TestRateLimiter_CleanupEvery100(t *testing.T) {
+	rl := &RateLimiter{
+		buckets:     make(map[string]*bucket),
+		rpm:         1000,
+		globalRPM:   10000,
+		globalReset: time.Now().Add(time.Minute),
+		globalCount: 99, // next allow() will be the 100th → triggers cleanup
+		logger:      testLogger(),
+	}
+
+	// Add a stale bucket.
+	rl.buckets["stale-ip"] = &bucket{
+		tokens:    0,
+		lastCheck: time.Now().Add(-10 * time.Minute),
+	}
+
+	// The 100th request triggers cleanup.
+	rl.allow("new-ip")
+
+	// stale-ip should have been removed.
+	rl.mu.Lock()
+	_, exists := rl.buckets["stale-ip"]
+	rl.mu.Unlock()
+	if exists {
+		t.Error("cleanup should have removed stale-ip")
+	}
+}
+
 // --- Admin Context Tests ---
 
 func TestIsAdminRequest_OnAdminMux(t *testing.T) {
@@ -612,5 +697,24 @@ func TestBuildTokenSource_TokenFile_Missing(t *testing.T) {
 	got := source()
 	if got != nil {
 		t.Errorf("buildTokenSource() with missing file should return nil, got: %q", string(got))
+	}
+}
+
+// TestServer_Start_ListenError verifies Start returns error when the address is invalid.
+func TestServer_Start_ListenError(t *testing.T) {
+	cfg := config.AdminConfig{
+		Address: "256.0.0.0:9999", // invalid IP → net.Listen will fail
+		Auth: config.AdminAuthConfig{
+			Token: randomToken(t),
+		},
+	}
+	s := NewServer(cfg, testLogger())
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	err := s.Start(ctx)
+	if err == nil {
+		t.Error("expected error for invalid listen address")
 	}
 }

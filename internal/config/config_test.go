@@ -1,10 +1,13 @@
 package config
 
 import (
+	"io"
 	"os"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/sirupsen/logrus"
 )
 
 func TestLoadConfig_Defaults(t *testing.T) {
@@ -693,5 +696,755 @@ func TestAdminProfilingEnvVars(t *testing.T) {
 	}
 	if cfg.Admin.Profiling.MaxProfileSeconds != 120 {
 		t.Errorf("MaxProfileSeconds: want 120, got %d", cfg.Admin.Profiling.MaxProfileSeconds)
+	}
+}
+
+// ---- validateAdminTokenLength tests ----------------------------------------
+
+func TestValidateAdminTokenLength(t *testing.T) {
+	tests := []struct {
+		name    string
+		token   string
+		wantErr bool
+	}{
+		{
+			name:    "empty token",
+			token:   "",
+			wantErr: true,
+		},
+		{
+			name:    "hex too short (15 bytes)",
+			token:   strings.Repeat("ab", 15), // 30 hex chars = 15 bytes
+			wantErr: true,
+		},
+		{
+			name:    "hex exactly 32 bytes",
+			token:   strings.Repeat("ab", 32), // 64 hex chars = 32 bytes
+			wantErr: false,
+		},
+		{
+			name:    "raw string 31 chars with special chars",
+			token:   strings.Repeat("!", 31), // '!' is not valid hex or base64
+			wantErr: true,
+		},
+		{
+			name:    "raw string 32 chars with special chars",
+			token:   strings.Repeat("!", 32), // '!' is not valid hex or base64
+			wantErr: false,
+		},
+		{
+			name:    "raw string longer than 32",
+			token:   strings.Repeat("!", 64), // '!' is not valid hex or base64
+			wantErr: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := validateAdminTokenLength(tt.token)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("validateAdminTokenLength(%q) error = %v, wantErr %v", tt.token, err, tt.wantErr)
+			}
+		})
+	}
+}
+
+// ---- isLoopbackAddress tests -----------------------------------------------
+
+func TestIsLoopbackAddress(t *testing.T) {
+	tests := []struct {
+		addr string
+		want bool
+	}{
+		{"127.0.0.1:8080", true},
+		{"[::1]:8080", true},
+		{"localhost:9090", true},
+		{"localhost", true},
+		{"127.0.0.1", true},
+		{"0.0.0.0:8080", false},
+		{"192.168.1.1:8080", false},
+		{"example.com:8080", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.addr, func(t *testing.T) {
+			got := isLoopbackAddress(tt.addr)
+			if got != tt.want {
+				t.Errorf("isLoopbackAddress(%q) = %v, want %v", tt.addr, got, tt.want)
+			}
+		})
+	}
+}
+
+// ---- Validate: TLS, audit, key-manager, tracing, logging branches ----------
+
+func TestValidate_TLSConfig(t *testing.T) {
+	base := minValidConfig()
+
+	t.Run("TLS enabled no cert", func(t *testing.T) {
+		cfg := *base
+		cfg.TLS = TLSConfig{Enabled: true, KeyFile: "key.pem"}
+		if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "tls.cert_file") {
+			t.Errorf("expected tls.cert_file error, got %v", err)
+		}
+	})
+
+	t.Run("TLS enabled no key", func(t *testing.T) {
+		cfg := *base
+		cfg.TLS = TLSConfig{Enabled: true, CertFile: "cert.pem"}
+		if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "tls.key_file") {
+			t.Errorf("expected tls.key_file error, got %v", err)
+		}
+	})
+
+	t.Run("TLS enabled with both files", func(t *testing.T) {
+		cfg := *base
+		cfg.TLS = TLSConfig{Enabled: true, CertFile: "cert.pem", KeyFile: "key.pem"}
+		if err := cfg.Validate(); err != nil {
+			t.Errorf("expected no error, got %v", err)
+		}
+	})
+}
+
+func TestValidate_InvalidLogLevel(t *testing.T) {
+	cfg := minValidConfig()
+	cfg.LogLevel = "verbose"
+	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "log_level") {
+		t.Errorf("expected log_level error, got %v", err)
+	}
+}
+
+func TestValidate_InvalidAlgorithm(t *testing.T) {
+	cfg := minValidConfig()
+	cfg.Encryption.PreferredAlgorithm = "DES-CBC"
+	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "preferred_algorithm") {
+		t.Errorf("expected preferred_algorithm error, got %v", err)
+	}
+}
+
+func TestValidate_InvalidSupportedAlgorithm(t *testing.T) {
+	cfg := minValidConfig()
+	cfg.Encryption.SupportedAlgorithms = []string{"AES256-GCM", "Blowfish"}
+	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "supported_algorithms") {
+		t.Errorf("expected supported_algorithms error, got %v", err)
+	}
+}
+
+func TestValidate_KeyManagerMissingProvider(t *testing.T) {
+	cfg := minValidConfig()
+	cfg.Encryption.KeyManager.Enabled = true
+	cfg.Encryption.KeyManager.Provider = ""
+	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "provider") {
+		t.Errorf("expected provider error, got %v", err)
+	}
+}
+
+func TestValidate_KeyManagerCosmianMissingEndpoint(t *testing.T) {
+	cfg := minValidConfig()
+	cfg.Encryption.KeyManager.Enabled = true
+	cfg.Encryption.KeyManager.Provider = "cosmian"
+	cfg.Encryption.KeyManager.Cosmian.Keys = []CosmianKeyReference{{ID: "key1"}}
+	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "endpoint") {
+		t.Errorf("expected endpoint error, got %v", err)
+	}
+}
+
+func TestValidate_KeyManagerCosmianMissingKeys(t *testing.T) {
+	cfg := minValidConfig()
+	cfg.Encryption.KeyManager.Enabled = true
+	cfg.Encryption.KeyManager.Provider = "cosmian"
+	cfg.Encryption.KeyManager.Cosmian.Endpoint = "https://kms.example.com"
+	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "keys") {
+		t.Errorf("expected keys error, got %v", err)
+	}
+}
+
+func TestValidate_KeyManagerMemoryValid(t *testing.T) {
+	cfg := minValidConfig()
+	cfg.Encryption.KeyManager.Enabled = true
+	cfg.Encryption.KeyManager.Provider = "memory"
+	if err := cfg.Validate(); err != nil {
+		t.Errorf("memory provider should pass validation, got %v", err)
+	}
+}
+
+func TestValidate_KeyManagerUnsupportedProvider(t *testing.T) {
+	cfg := minValidConfig()
+	cfg.Encryption.KeyManager.Enabled = true
+	cfg.Encryption.KeyManager.Provider = "bogus"
+	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "unsupported") {
+		t.Errorf("expected unsupported provider error, got %v", err)
+	}
+}
+
+func TestValidate_TracingConfig(t *testing.T) {
+	base := minValidConfig()
+
+	t.Run("tracing enabled missing service name", func(t *testing.T) {
+		cfg := *base
+		cfg.Tracing.Enabled = true
+		cfg.Tracing.Exporter = "stdout"
+		if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "service_name") {
+			t.Errorf("expected service_name error, got %v", err)
+		}
+	})
+
+	t.Run("tracing invalid exporter", func(t *testing.T) {
+		cfg := *base
+		cfg.Tracing.Enabled = true
+		cfg.Tracing.ServiceName = "gateway"
+		cfg.Tracing.Exporter = "datadog"
+		if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "exporter") {
+			t.Errorf("expected exporter error, got %v", err)
+		}
+	})
+
+	t.Run("tracing jaeger missing endpoint", func(t *testing.T) {
+		cfg := *base
+		cfg.Tracing.Enabled = true
+		cfg.Tracing.ServiceName = "gateway"
+		cfg.Tracing.Exporter = "jaeger"
+		cfg.Tracing.SamplingRatio = 0.5
+		if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "jaeger_endpoint") {
+			t.Errorf("expected jaeger_endpoint error, got %v", err)
+		}
+	})
+
+	t.Run("tracing otlp missing endpoint", func(t *testing.T) {
+		cfg := *base
+		cfg.Tracing.Enabled = true
+		cfg.Tracing.ServiceName = "gateway"
+		cfg.Tracing.Exporter = "otlp"
+		cfg.Tracing.SamplingRatio = 1.0
+		if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "otlp_endpoint") {
+			t.Errorf("expected otlp_endpoint error, got %v", err)
+		}
+	})
+
+	t.Run("tracing out-of-range sampling ratio", func(t *testing.T) {
+		cfg := *base
+		cfg.Tracing.Enabled = true
+		cfg.Tracing.ServiceName = "gateway"
+		cfg.Tracing.Exporter = "stdout"
+		cfg.Tracing.SamplingRatio = 1.5
+		if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "sampling_ratio") {
+			t.Errorf("expected sampling_ratio error, got %v", err)
+		}
+	})
+
+	t.Run("tracing stdout valid", func(t *testing.T) {
+		cfg := *base
+		cfg.Tracing.Enabled = true
+		cfg.Tracing.ServiceName = "gateway"
+		cfg.Tracing.Exporter = "stdout"
+		cfg.Tracing.SamplingRatio = 0.5
+		if err := cfg.Validate(); err != nil {
+			t.Errorf("expected no error, got %v", err)
+		}
+	})
+}
+
+func TestValidate_AuditConfig(t *testing.T) {
+	base := minValidConfig()
+
+	t.Run("audit file sink missing path", func(t *testing.T) {
+		cfg := *base
+		cfg.Audit.Enabled = true
+		cfg.Audit.Sink.Type = "file"
+		if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "file_path") {
+			t.Errorf("expected file_path error, got %v", err)
+		}
+	})
+
+	t.Run("audit http sink missing endpoint", func(t *testing.T) {
+		cfg := *base
+		cfg.Audit.Enabled = true
+		cfg.Audit.Sink.Type = "http"
+		if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "endpoint") {
+			t.Errorf("expected endpoint error, got %v", err)
+		}
+	})
+
+	t.Run("audit invalid sink type", func(t *testing.T) {
+		cfg := *base
+		cfg.Audit.Enabled = true
+		cfg.Audit.Sink.Type = "kafka"
+		if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "audit.sink.type") {
+			t.Errorf("expected audit.sink.type error, got %v", err)
+		}
+	})
+
+	t.Run("audit stdout sink valid", func(t *testing.T) {
+		cfg := *base
+		cfg.Audit.Enabled = true
+		cfg.Audit.Sink.Type = "stdout"
+		if err := cfg.Validate(); err != nil {
+			t.Errorf("expected no error, got %v", err)
+		}
+	})
+
+	t.Run("audit file sink with path valid", func(t *testing.T) {
+		cfg := *base
+		cfg.Audit.Enabled = true
+		cfg.Audit.Sink.Type = "file"
+		cfg.Audit.Sink.FilePath = "/tmp/audit.log"
+		if err := cfg.Validate(); err != nil {
+			t.Errorf("expected no error, got %v", err)
+		}
+	})
+}
+
+func TestValidate_LoggingFormat(t *testing.T) {
+	base := minValidConfig()
+
+	t.Run("invalid access_log_format", func(t *testing.T) {
+		cfg := *base
+		cfg.Logging.AccessLogFormat = "csv"
+		if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "access_log_format") {
+			t.Errorf("expected access_log_format error, got %v", err)
+		}
+	})
+
+	t.Run("valid json format", func(t *testing.T) {
+		cfg := *base
+		cfg.Logging.AccessLogFormat = "json"
+		if err := cfg.Validate(); err != nil {
+			t.Errorf("expected no error, got %v", err)
+		}
+	})
+}
+
+// ---- validateReloadSafety tests --------------------------------------------
+
+func TestValidateReloadSafety_Coverage(t *testing.T) {
+	logger := logrus.New()
+	logger.SetOutput(io.Discard)
+
+	makeCfg := func() *Config {
+		return &Config{
+			ListenAddr: ":8080",
+			Backend: BackendConfig{
+				AccessKey: "test-key",
+				SecretKey: "test-secret",
+				Provider:  "minio",
+			},
+			Encryption: EncryptionConfig{
+				Password:            "test-password",
+				PreferredAlgorithm:  "AES256-GCM",
+				SupportedAlgorithms: []string{"AES256-GCM"},
+				ChunkedMode:         false,
+				ChunkSize:           65536,
+			},
+		}
+	}
+
+	reloader := &ConfigReloader{
+		currentConfig: makeCfg(),
+		logger:        logger,
+	}
+
+	tests := []struct {
+		name    string
+		mutate  func(*Config)
+		wantErr bool
+		wantMsg string
+	}{
+		{
+			name:    "no changes",
+			mutate:  func(c *Config) {},
+			wantErr: false,
+		},
+		{
+			name:    "password changed",
+			mutate:  func(c *Config) { c.Encryption.Password = "new-password" },
+			wantErr: true,
+			wantMsg: "encryption.password",
+		},
+		{
+			name:    "key_file changed",
+			mutate:  func(c *Config) { c.Encryption.KeyFile = "new-key.pem" },
+			wantErr: true,
+			wantMsg: "encryption.key_file",
+		},
+		{
+			name:    "preferred_algorithm changed",
+			mutate:  func(c *Config) { c.Encryption.PreferredAlgorithm = "ChaCha20-Poly1305" },
+			wantErr: true,
+			wantMsg: "preferred_algorithm",
+		},
+		{
+			name:    "supported_algorithms length changed",
+			mutate:  func(c *Config) { c.Encryption.SupportedAlgorithms = []string{"AES256-GCM", "ChaCha20-Poly1305"} },
+			wantErr: true,
+			wantMsg: "supported_algorithms",
+		},
+		{
+			name:    "supported_algorithms value changed",
+			mutate:  func(c *Config) { c.Encryption.SupportedAlgorithms = []string{"ChaCha20-Poly1305"} },
+			wantErr: true,
+			wantMsg: "supported_algorithms",
+		},
+		{
+			name:    "chunked_mode changed",
+			mutate:  func(c *Config) { c.Encryption.ChunkedMode = true },
+			wantErr: true,
+			wantMsg: "chunked_mode",
+		},
+		{
+			name:    "chunk_size changed",
+			mutate:  func(c *Config) { c.Encryption.ChunkSize = 131072 },
+			wantErr: true,
+			wantMsg: "chunk_size",
+		},
+		{
+			name:    "backend.provider changed",
+			mutate:  func(c *Config) { c.Backend.Provider = "garage" },
+			wantErr: true,
+			wantMsg: "backend.provider",
+		},
+		{
+			name:    "key_manager.enabled changed",
+			mutate:  func(c *Config) { c.Encryption.KeyManager.Enabled = true },
+			wantErr: true,
+			wantMsg: "key_manager.enabled",
+		},
+		{
+			name:    "admin.enabled changed",
+			mutate:  func(c *Config) { c.Admin.Enabled = true },
+			wantErr: true,
+			wantMsg: "admin.enabled",
+		},
+		{
+			name:    "admin.address changed",
+			mutate:  func(c *Config) { c.Admin.Address = "127.0.0.1:9090" },
+			wantErr: true,
+			wantMsg: "admin.address",
+		},
+		{
+			name:    "admin.tls.enabled changed",
+			mutate:  func(c *Config) { c.Admin.TLS.Enabled = true },
+			wantErr: true,
+			wantMsg: "admin.tls.enabled",
+		},
+		{
+			name:    "compression.enabled changed",
+			mutate:  func(c *Config) { c.Compression.Enabled = true },
+			wantErr: true,
+			wantMsg: "compression.enabled",
+		},
+		{
+			name:    "listen_addr change allowed",
+			mutate:  func(c *Config) { c.ListenAddr = ":9090" },
+			wantErr: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			old := makeCfg()
+			newCfg := makeCfg()
+			tt.mutate(newCfg)
+
+			err := reloader.validateReloadSafety(old, newCfg)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("validateReloadSafety() error = %v, wantErr %v", err, tt.wantErr)
+			}
+			if tt.wantErr && err != nil && tt.wantMsg != "" {
+				if !strings.Contains(err.Error(), tt.wantMsg) {
+					t.Errorf("error %q does not contain %q", err.Error(), tt.wantMsg)
+				}
+			}
+		})
+	}
+}
+
+// ---- isEnvSet tests --------------------------------------------------------
+
+func TestIsEnvSet(t *testing.T) {
+	const key = "TEST_IS_ENV_SET_UNIQUE_XYZ_12345"
+	os.Unsetenv(key)
+	if isEnvSet(key) {
+		t.Error("expected isEnvSet to return false for unset variable")
+	}
+	t.Setenv(key, "value")
+	if !isEnvSet(key) {
+		t.Error("expected isEnvSet to return true for set variable")
+	}
+}
+
+// ---- loadFromEnv additional coverage ---------------------------------------
+
+func TestLoadFromEnv_InvalidRetryFields(t *testing.T) {
+	t.Setenv("BACKEND_RETRY_MAX_ATTEMPTS", "not-a-number") // should be ignored
+	t.Setenv("BACKEND_RETRY_INITIAL_BACKOFF", "invalid")   // should be ignored
+	t.Setenv("BACKEND_RETRY_MAX_BACKOFF", "invalid")       // should be ignored
+	t.Setenv("BACKEND_RETRY_SAFE_COPY_OBJECT", "true")
+
+	cfg := &Config{}
+	loadFromEnv(cfg)
+
+	// Invalid numeric/duration values are silently skipped.
+	if cfg.Backend.Retry.MaxAttempts != 0 {
+		t.Errorf("expected MaxAttempts=0 (invalid input skipped), got %d", cfg.Backend.Retry.MaxAttempts)
+	}
+	if cfg.Backend.Retry.SafeCopyObject == nil || !*cfg.Backend.Retry.SafeCopyObject {
+		t.Errorf("expected SafeCopyObject=true, got %v", cfg.Backend.Retry.SafeCopyObject)
+	}
+}
+
+func TestLoadFromEnv_BackendFilterMetadata(t *testing.T) {
+	t.Setenv("BACKEND_FILTER_METADATA_KEYS", "x-amz-meta-foo, x-amz-meta-bar , baz")
+
+	cfg := &Config{}
+	loadFromEnv(cfg)
+
+	expected := []string{"x-amz-meta-foo", "x-amz-meta-bar", "baz"}
+	if len(cfg.Backend.FilterMetadataKeys) != len(expected) {
+		t.Fatalf("expected %d keys, got %d: %v", len(expected), len(cfg.Backend.FilterMetadataKeys), cfg.Backend.FilterMetadataKeys)
+	}
+	for i, k := range expected {
+		if cfg.Backend.FilterMetadataKeys[i] != k {
+			t.Errorf("key[%d]: expected %q, got %q", i, k, cfg.Backend.FilterMetadataKeys[i])
+		}
+	}
+}
+
+func TestLoadFromEnv_EncryptionSupportedAlgorithms(t *testing.T) {
+	t.Setenv("ENCRYPTION_SUPPORTED_ALGORITHMS", "AES256-GCM , ChaCha20-Poly1305")
+
+	cfg := &Config{}
+	loadFromEnv(cfg)
+
+	if len(cfg.Encryption.SupportedAlgorithms) != 2 {
+		t.Fatalf("expected 2 algorithms, got %d: %v", len(cfg.Encryption.SupportedAlgorithms), cfg.Encryption.SupportedAlgorithms)
+	}
+	if cfg.Encryption.SupportedAlgorithms[0] != "AES256-GCM" {
+		t.Errorf("expected AES256-GCM, got %q", cfg.Encryption.SupportedAlgorithms[0])
+	}
+	if cfg.Encryption.SupportedAlgorithms[1] != "ChaCha20-Poly1305" {
+		t.Errorf("expected ChaCha20-Poly1305, got %q", cfg.Encryption.SupportedAlgorithms[1])
+	}
+}
+
+func TestLoadFromEnv_HardwareFlags(t *testing.T) {
+	t.Setenv("HARDWARE_ENABLE_AESNI", "true")
+	t.Setenv("HARDWARE_ENABLE_ARMV8_AES", "false")
+
+	cfg := &Config{}
+	loadFromEnv(cfg)
+
+	if !cfg.Encryption.Hardware.EnableAESNI {
+		t.Error("expected EnableAESNI=true")
+	}
+	if cfg.Encryption.Hardware.EnableARMv8AES {
+		t.Error("expected EnableARMv8AES=false")
+	}
+}
+
+func TestLoadFromEnv_ServerAndCacheAndAudit(t *testing.T) {
+	t.Setenv("SERVER_READ_TIMEOUT", "30s")
+	t.Setenv("SERVER_WRITE_TIMEOUT", "60s")
+	t.Setenv("SERVER_IDLE_TIMEOUT", "120s")
+	t.Setenv("SERVER_READ_HEADER_TIMEOUT", "10s")
+	t.Setenv("SERVER_MAX_HEADER_BYTES", "65536")
+	t.Setenv("RATE_LIMIT_ENABLED", "true")
+	t.Setenv("RATE_LIMIT_REQUESTS", "100")
+	t.Setenv("RATE_LIMIT_WINDOW", "1m")
+	t.Setenv("CACHE_ENABLED", "true")
+	t.Setenv("CACHE_MAX_SIZE", "104857600")
+	t.Setenv("CACHE_MAX_ITEMS", "1000")
+	t.Setenv("CACHE_DEFAULT_TTL", "5m")
+	t.Setenv("AUDIT_ENABLED", "true")
+	t.Setenv("AUDIT_MAX_EVENTS", "500")
+	t.Setenv("AUDIT_SINK_TYPE", "file")
+	t.Setenv("AUDIT_SINK_FILE_PATH", "/tmp/audit.log")
+	t.Setenv("AUDIT_SINK_ENDPOINT", "http://audit.example.com")
+	t.Setenv("AUDIT_SINK_BATCH_SIZE", "10")
+	t.Setenv("AUDIT_SINK_FLUSH_INTERVAL", "5s")
+	t.Setenv("AUDIT_SINK_RETRY_COUNT", "3")
+	t.Setenv("AUDIT_SINK_RETRY_BACKOFF", "2s")
+	t.Setenv("AUDIT_REDACT_METADATA_KEYS", "x-amz-meta-secret, x-amz-meta-key")
+	t.Setenv("PROXIED_BUCKET", "my-proxied-bucket")
+
+	cfg := &Config{}
+	loadFromEnv(cfg)
+
+	if cfg.Server.ReadTimeout != 30*time.Second {
+		t.Errorf("ReadTimeout: want 30s, got %s", cfg.Server.ReadTimeout)
+	}
+	if cfg.Server.WriteTimeout != 60*time.Second {
+		t.Errorf("WriteTimeout: want 60s, got %s", cfg.Server.WriteTimeout)
+	}
+	if cfg.Server.MaxHeaderBytes != 65536 {
+		t.Errorf("MaxHeaderBytes: want 65536, got %d", cfg.Server.MaxHeaderBytes)
+	}
+	if !cfg.RateLimit.Enabled {
+		t.Error("RateLimit.Enabled: want true")
+	}
+	if cfg.RateLimit.Limit != 100 {
+		t.Errorf("RateLimit.Limit: want 100, got %d", cfg.RateLimit.Limit)
+	}
+	if !cfg.Cache.Enabled {
+		t.Error("Cache.Enabled: want true")
+	}
+	if cfg.Cache.MaxSize != 104857600 {
+		t.Errorf("Cache.MaxSize: want 104857600, got %d", cfg.Cache.MaxSize)
+	}
+	if !cfg.Audit.Enabled {
+		t.Error("Audit.Enabled: want true")
+	}
+	if cfg.Audit.Sink.Type != "file" {
+		t.Errorf("Audit.Sink.Type: want file, got %q", cfg.Audit.Sink.Type)
+	}
+	if cfg.Audit.Sink.FilePath != "/tmp/audit.log" {
+		t.Errorf("Audit.Sink.FilePath: want /tmp/audit.log, got %q", cfg.Audit.Sink.FilePath)
+	}
+	if len(cfg.Audit.RedactMetadataKeys) != 2 {
+		t.Errorf("Audit.RedactMetadataKeys: want 2, got %d", len(cfg.Audit.RedactMetadataKeys))
+	}
+	if cfg.ProxiedBucket != "my-proxied-bucket" {
+		t.Errorf("ProxiedBucket: want my-proxied-bucket, got %q", cfg.ProxiedBucket)
+	}
+}
+
+func TestLoadFromEnv_TracingAndMetricsAndLogging(t *testing.T) {
+	t.Setenv("TRACING_ENABLED", "true")
+	t.Setenv("TRACING_SERVICE_NAME", "s3-gateway")
+	t.Setenv("TRACING_SERVICE_VERSION", "v0.6")
+	t.Setenv("TRACING_EXPORTER", "jaeger")
+	t.Setenv("TRACING_JAEGER_ENDPOINT", "http://jaeger:14268/api/traces")
+	t.Setenv("TRACING_OTLP_ENDPOINT", "http://collector:4317")
+	t.Setenv("TRACING_SAMPLING_RATIO", "0.5")
+	t.Setenv("TRACING_REDACT_SENSITIVE", "true")
+	t.Setenv("METRICS_ENABLE_BUCKET_LABEL", "true")
+	t.Setenv("LOGGING_ACCESS_LOG_FORMAT", "json")
+	t.Setenv("LOGGING_REDACT_HEADERS", "Authorization, x-amz-security-token")
+	t.Setenv("POLICIES", "policy1.yaml, policy2.yaml")
+
+	cfg := &Config{}
+	loadFromEnv(cfg)
+
+	if !cfg.Tracing.Enabled {
+		t.Error("Tracing.Enabled: want true")
+	}
+	if cfg.Tracing.ServiceName != "s3-gateway" {
+		t.Errorf("Tracing.ServiceName: want s3-gateway, got %q", cfg.Tracing.ServiceName)
+	}
+	if cfg.Tracing.SamplingRatio != 0.5 {
+		t.Errorf("Tracing.SamplingRatio: want 0.5, got %f", cfg.Tracing.SamplingRatio)
+	}
+	if !cfg.Metrics.EnableBucketLabel {
+		t.Error("Metrics.EnableBucketLabel: want true")
+	}
+	if cfg.Logging.AccessLogFormat != "json" {
+		t.Errorf("Logging.AccessLogFormat: want json, got %q", cfg.Logging.AccessLogFormat)
+	}
+	if len(cfg.Logging.RedactHeaders) != 2 {
+		t.Errorf("Logging.RedactHeaders: want 2, got %d", len(cfg.Logging.RedactHeaders))
+	}
+	if len(cfg.PolicyFiles) != 2 {
+		t.Errorf("PolicyFiles: want 2, got %d", len(cfg.PolicyFiles))
+	}
+}
+
+func TestLoadFromEnv_AdminConfig(t *testing.T) {
+	t.Setenv("ADMIN_ENABLED", "true")
+	t.Setenv("ADMIN_ADDRESS", "127.0.0.1:8090")
+	t.Setenv("ADMIN_TLS_ENABLED", "true")
+	t.Setenv("ADMIN_TLS_CERT_FILE", "/tls/cert.pem")
+	t.Setenv("ADMIN_TLS_KEY_FILE", "/tls/key.pem")
+	t.Setenv("ADMIN_AUTH_TYPE", "bearer")
+	t.Setenv("ADMIN_AUTH_TOKEN_FILE", "/run/secrets/token")
+	t.Setenv("ADMIN_AUTH_TOKEN", "my-inline-token")
+	t.Setenv("ADMIN_RATE_LIMIT_RPM", "60")
+
+	cfg := &Config{}
+	loadFromEnv(cfg)
+
+	if !cfg.Admin.Enabled {
+		t.Error("Admin.Enabled: want true")
+	}
+	if cfg.Admin.Address != "127.0.0.1:8090" {
+		t.Errorf("Admin.Address: want 127.0.0.1:8090, got %q", cfg.Admin.Address)
+	}
+	if !cfg.Admin.TLS.Enabled {
+		t.Error("Admin.TLS.Enabled: want true")
+	}
+	if cfg.Admin.Auth.Type != "bearer" {
+		t.Errorf("Admin.Auth.Type: want bearer, got %q", cfg.Admin.Auth.Type)
+	}
+	if cfg.Admin.Auth.Token != "my-inline-token" {
+		t.Errorf("Admin.Auth.Token: want my-inline-token, got %q", cfg.Admin.Auth.Token)
+	}
+	if cfg.Admin.RateLimit.RequestsPerMinute != 60 {
+		t.Errorf("Admin.RateLimit.RPM: want 60, got %d", cfg.Admin.RateLimit.RequestsPerMinute)
+	}
+}
+
+func TestLoadFromEnv_KeyManagerConfig(t *testing.T) {
+	t.Setenv("KEY_MANAGER_ENABLED", "true")
+	t.Setenv("KEY_MANAGER_PROVIDER", "memory")
+	t.Setenv("KEY_MANAGER_DUAL_READ_WINDOW", "5")
+	t.Setenv("KEY_MANAGER_ROTATION_POLICY_ENABLED", "true")
+	t.Setenv("KEY_MANAGER_ROTATION_GRACE_WINDOW", "24h")
+	t.Setenv("COSMIAN_KMS_ENDPOINT", "https://kms.example.com")
+	t.Setenv("COSMIAN_KMS_TIMEOUT", "30s")
+	t.Setenv("COSMIAN_KMS_CLIENT_CERT", "/tls/client.pem")
+	t.Setenv("COSMIAN_KMS_CLIENT_KEY", "/tls/client.key")
+	t.Setenv("COSMIAN_KMS_CA_CERT", "/tls/ca.pem")
+	t.Setenv("COSMIAN_KMS_INSECURE_SKIP_VERIFY", "true")
+	t.Setenv("COSMIAN_KMS_KEYS", "key-abc:1,key-def:2")
+
+	cfg := &Config{}
+	loadFromEnv(cfg)
+
+	if !cfg.Encryption.KeyManager.Enabled {
+		t.Error("KeyManager.Enabled: want true")
+	}
+	if cfg.Encryption.KeyManager.Provider != "memory" {
+		t.Errorf("KeyManager.Provider: want memory, got %q", cfg.Encryption.KeyManager.Provider)
+	}
+	if cfg.Encryption.KeyManager.DualReadWindow != 5 {
+		t.Errorf("KeyManager.DualReadWindow: want 5, got %d", cfg.Encryption.KeyManager.DualReadWindow)
+	}
+	if !cfg.Encryption.KeyManager.RotationPolicy.Enabled {
+		t.Error("RotationPolicy.Enabled: want true")
+	}
+	if cfg.Encryption.KeyManager.Cosmian.Endpoint != "https://kms.example.com" {
+		t.Errorf("Cosmian.Endpoint: want ..., got %q", cfg.Encryption.KeyManager.Cosmian.Endpoint)
+	}
+	if len(cfg.Encryption.KeyManager.Cosmian.Keys) != 2 {
+		t.Errorf("Cosmian.Keys: want 2, got %d", len(cfg.Encryption.KeyManager.Cosmian.Keys))
+	}
+}
+
+func TestParseCosmianKeyRefs(t *testing.T) {
+	tests := []struct {
+		input   string
+		wantLen int
+		wantID  string
+		wantVer int
+	}{
+		{"key1", 1, "key1", 0},
+		{"key1:3", 1, "key1", 3},
+		{"key1,key2:2", 2, "key1", 0},
+		{"", 0, "", 0},
+		{" key-abc : 7 ", 1, "key-abc", 7},
+	}
+
+	for _, tt := range tests {
+		refs := parseCosmianKeyRefs(tt.input)
+		if len(refs) != tt.wantLen {
+			t.Errorf("parseCosmianKeyRefs(%q): expected %d refs, got %d", tt.input, tt.wantLen, len(refs))
+			continue
+		}
+		if tt.wantLen > 0 {
+			if refs[0].ID != tt.wantID {
+				t.Errorf("parseCosmianKeyRefs(%q)[0].ID = %q, want %q", tt.input, refs[0].ID, tt.wantID)
+			}
+			if refs[0].Version != tt.wantVer {
+				t.Errorf("parseCosmianKeyRefs(%q)[0].Version = %d, want %d", tt.input, refs[0].Version, tt.wantVer)
+			}
+		}
 	}
 }

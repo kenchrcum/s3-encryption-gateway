@@ -155,3 +155,41 @@ func TestGetClientKey(t *testing.T) {
 		t.Errorf("Expected key %s, got %s", "192.168.1.1", key)
 	}
 }
+
+// TestRateLimiter_CleanupRuns verifies the cleanup goroutine runs and removes
+// expired entries without panicking.
+func TestRateLimiter_CleanupRuns(t *testing.T) {
+	// Use a very short cleanup interval so the test finishes quickly.
+	rl := &RateLimiter{
+		requests:        make(map[string]*tokenBucket),
+		limit:           100,
+		window:          1 * time.Second,
+		cleanupInterval: 10 * time.Millisecond,
+		stopCleanup:     make(chan struct{}),
+	}
+
+	// Add a stale entry.
+	rl.mu.Lock()
+	rl.requests["stale-key"] = &tokenBucket{
+		tokens:     1,
+		lastUpdate: time.Now().Add(-1 * time.Minute), // already expired
+	}
+	rl.mu.Unlock()
+
+	// Start cleanup.
+	go rl.cleanup()
+
+	// Wait for at least one cleanup tick.
+	time.Sleep(30 * time.Millisecond)
+
+	// Stop.
+	rl.Stop()
+
+	// The stale entry should have been removed.
+	rl.mu.Lock()
+	_, exists := rl.requests["stale-key"]
+	rl.mu.Unlock()
+	if exists {
+		t.Error("cleanup should have removed the stale entry")
+	}
+}
