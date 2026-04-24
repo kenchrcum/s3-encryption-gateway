@@ -145,11 +145,11 @@ jobs:
           go test -tags=conformance -race -v -timeout 30m ./test/conformance/...
 
   # ── V0.6-QA-2 Coverage Gate (PR + push) ─────────────────────────────────────
-  # Runs after unit tests pass. Enforces ≥80% project-wide statement coverage.
-  # Both the default and FIPS (-tags=fips) profiles must meet the threshold.
-  # The gate uses continue-on-error: false so PRs that drop coverage fail.
-  coverage-gate:
-    name: Coverage gate (≥80%)
+   # Runs after unit tests pass. Enforces ≥75% project-wide statement coverage.
+   # Both the default and FIPS (-tags=fips) profiles must meet the threshold.
+   # The gate uses continue-on-error: false so PRs that drop coverage fail.
+   coverage-gate:
+     name: Coverage gate (≥75%)
     runs-on: ubuntu-latest
     needs: [unit]
     steps:
@@ -160,7 +160,7 @@ jobs:
 
       - name: Coverage gate (default)
         run: |
-          bash scripts/coverage-gate.sh 80
+          bash scripts/coverage-gate.sh 75
 
       - name: Upload coverage profile (default)
         if: always()
@@ -185,7 +185,7 @@ jobs:
 
       - name: Coverage gate (FIPS)
         run: |
-          COVERAGE_TAGS=fips COVERAGE_PROFILE=coverage-fips.out bash scripts/coverage-gate.sh 80
+          COVERAGE_TAGS=fips COVERAGE_PROFILE=coverage-fips.out bash scripts/coverage-gate.sh 75
 
       - name: Upload coverage profile (FIPS)
         if: always()

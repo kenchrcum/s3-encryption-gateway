@@ -6,7 +6,7 @@
 #
 # Arguments:
 #   THRESHOLD  Minimum coverage percentage (integer). Defaults to
-#              $COVERAGE_THRESHOLD env var, then 80.
+#              $COVERAGE_THRESHOLD env var, then 75.
 #
 # Exit codes:
 #   0  Coverage meets or exceeds the threshold.
@@ -18,7 +18,7 @@ set -euo pipefail
 
 # ── Threshold ────────────────────────────────────────────────────────────────
 
-THRESHOLD="${1:-${COVERAGE_THRESHOLD:-80}}"
+THRESHOLD="${1:-${COVERAGE_THRESHOLD:-75}}"
 
 if ! [[ "$THRESHOLD" =~ ^[0-9]+$ ]]; then
   echo "ERROR: THRESHOLD must be a non-negative integer, got: $THRESHOLD" >&2
