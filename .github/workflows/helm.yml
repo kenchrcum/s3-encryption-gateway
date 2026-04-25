@@ -87,3 +87,14 @@ jobs:
           config: .github/cr.yaml
         env:
           CR_TOKEN: "${{ secrets.GITHUB_TOKEN }}"
+
+      - name: Copy chart README to gh-pages
+        run: |
+          git fetch origin gh-pages
+          # Read the chart README from main before switching branches
+          git show origin/main:helm/s3-encryption-gateway/README.md > /tmp/chart-readme.md
+          git checkout gh-pages
+          cp /tmp/chart-readme.md README.md
+          git add README.md
+          git diff --cached --quiet || git commit -m "docs: update chart README from main [skip ci]"
+          git push origin gh-pages
