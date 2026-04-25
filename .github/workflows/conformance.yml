@@ -164,7 +164,7 @@ jobs:
 
       - name: Upload coverage profile (default)
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: coverage-default
           path: coverage.out
@@ -177,7 +177,7 @@ jobs:
 
       - name: Upload HTML report
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: coverage-html
           path: coverage.html
@@ -191,7 +191,7 @@ jobs:
 
       - name: Upload coverage profile (FIPS)
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: coverage-fips
           path: coverage-fips.out
