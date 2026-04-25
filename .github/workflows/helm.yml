@@ -80,7 +80,25 @@ jobs:
       - name: Build chart dependencies
         run: helm dependency build helm/s3-encryption-gateway
 
+      - name: Check if chart version already released
+        id: version_check
+        run: |
+          CHART_VERSION=$(grep '^version:' helm/s3-encryption-gateway/Chart.yaml | awk '{print $2}')
+          RELEASE_TAG="s3-encryption-gateway-${CHART_VERSION}"
+          echo "chart_version=${CHART_VERSION}" >> "$GITHUB_OUTPUT"
+          echo "release_tag=${RELEASE_TAG}" >> "$GITHUB_OUTPUT"
+          if gh release view "${RELEASE_TAG}" --repo "${{ github.repository }}" > /dev/null 2>&1; then
+            echo "already_released=true" >> "$GITHUB_OUTPUT"
+            echo "Chart version ${CHART_VERSION} already released — skipping chart-releaser."
+          else
+            echo "already_released=false" >> "$GITHUB_OUTPUT"
+            echo "Chart version ${CHART_VERSION} is new — will release."
+          fi
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
       - name: Run chart-releaser
+        if: steps.version_check.outputs.already_released == 'false'
         uses: helm/chart-releaser-action@v1.7.0
         with:
           charts_dir: helm
