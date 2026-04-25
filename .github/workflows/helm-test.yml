@@ -132,6 +132,7 @@ jobs:
 
       - name: Render ${{ matrix.name }} overlay
         run: |
+          helm dependency build helm/s3-encryption-gateway
           helm template gw helm/s3-encryption-gateway \
             -f ${{ matrix.overlay }} \
             ${{ matrix.extra_sets }} \
@@ -225,6 +226,9 @@ jobs:
         run: |
           cd helm/s3-encryption-gateway
           helm lint .
+
+      - name: Build chart dependencies
+        run: helm dependency build helm/s3-encryption-gateway
 
       - name: Run helm template
         run: |
