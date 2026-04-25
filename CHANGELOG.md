@@ -4,7 +4,11 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
-## [Unreleased] — v0.6
+## [Unreleased]
+
+---
+
+## [0.6.1] — 2026-04-25
 
 ### Testing & Quality
 
@@ -469,6 +473,43 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   ServiceUnavailable** so the client retries. A duplicate backend part from
   a retry is discarded by `CompleteMultipartUpload`'s ETag-set reconciliation.
   New unit test: `TestUploadPartCopy_MPU_AppendPartFailure_Returns503`.
+
+### CI & Dependencies
+
+- **Disabled Dependabot Go module updates**: Renovate now handles all Go
+  dependency updates; Dependabot configuration removed for Go modules to
+  prevent duplicate PRs.
+
+- **Fixed Helm chart release CI pipeline**: resolved failures in the Helm
+  release GitHub Actions workflow caused by incompatible action versions.
+
+- **Fixed FIPS coverage gate**: corrected the FIPS-tagged build coverage test
+  that was failing due to a test setup issue in the mutation workflow.
+
+- **Fixed mutation testing workflow**: repaired the nightly Gremlins mutation
+  CI job that had broken after the coverage gate refactor.
+
+- Updated `github.com/aws/aws-sdk-go-v2/service/s3` to v1.100.0
+- Updated `github.com/aws/smithy-go` to v1.25.1
+- Updated `github.com/ovh/kmip-go` to v0.8.0
+- Updated `actions/checkout` to v6
+- Updated `actions/setup-go` to v6
+- Updated `actions/setup-python` to v6
+- Updated `actions/github-script` to v9
+- Updated `actions/upload-artifact` to v7
+- Updated `azure/setup-helm` to v5
+- Updated Python dependency to 3.14
+- Updated Go Docker base image to v1.26
+
+### Documentation
+
+- Migrated password-based key management docs to the KMS-centric model
+  (`V0.6-DOC-1`): `docs/` updated throughout to reflect the pluggable
+  `KeyManager` interface as the canonical configuration path; the legacy
+  single-password stanza is documented as a compatibility alias only.
+
+- Finalised v0.6 issue tracker (`docs/issues/v0.6-issues.md`): all
+  planned items marked complete.
 
 ---
 
