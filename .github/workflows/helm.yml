@@ -38,10 +38,13 @@ jobs:
           cd helm/s3-encryption-gateway
           helm lint .
 
+      - name: Build chart dependencies
+        run: helm dependency build helm/s3-encryption-gateway
+
       - name: Run helm template
         run: |
           cd helm/s3-encryption-gateway
-          helm template test-release . --dry-run=server
+          helm template test-release .
 
   release:
     runs-on: ubuntu-latest
