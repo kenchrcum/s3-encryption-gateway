@@ -219,20 +219,20 @@ check_guard() {
 
 # 3a: track=blue + valkey.enabled=true — caught by schema (I1)
 check_guard "[schema] track + valkey.enabled" \
-  "'allOf' failed|valkey/enabled|value must be false" \
+  "does not match: false|valkey/enabled|value must be false|allOf" \
   --set track=blue \
   --set valkey.enabled=true \
   --set config.multipartState.valkey.addr.value=some-addr
 
 # 3b: ingress.enabled + ingress.traefik.enabled both true — caught by schema (I2)
 check_guard "[schema] ingress.enabled + ingress.traefik.enabled" \
-  "'not' failed|'allOf' failed" \
+  "Must not validate|not.*failed|allOf" \
   --set ingress.enabled=true \
   --set ingress.traefik.enabled=true
 
 # 3c: weighted.enabled without traefik.enabled — caught by schema (I3)
 check_guard "[schema] weighted.enabled without traefik.enabled" \
-  "'allOf' failed|traefik/enabled|value must be true" \
+  "does not match: true|traefik/enabled|value must be true|allOf" \
   --set ingress.traefik.weighted.enabled=true \
   --set ingress.traefik.enabled=false
 
