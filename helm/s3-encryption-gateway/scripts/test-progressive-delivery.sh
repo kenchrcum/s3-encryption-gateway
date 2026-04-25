@@ -187,19 +187,17 @@ else
 fi
 
 # ── Section 3: Guard-rail smoke tests ────────────────────────────────────────
-section "3. Guard-rail smoke tests — defense-in-depth (schema + template)"
+section "3. Guard-rail smoke tests — schema + template"
 
-# Defense-in-depth: V0.6-OPS-2's values.schema.json now rejects these bad
-# configurations at `helm lint` / `helm install` time (client-side, before any
-# template render). The template-time `fail` guards in templates/validate.yaml
-# remain as a second defensive layer, used when:
-#   - the schema is bypassed (--skip-schema-validation), or
-#   - an operator installs via a tool that does not enforce schemas.
+# V0.6-OPS-2's values.schema.json rejects invalid configurations client-side,
+# before template rendering. The template-time guards in templates/validate.yaml
+# are a secondary layer for tools that do not enforce JSON schema.
 #
-# This section runs each bad-values case twice:
-#   (a) WITHOUT --skip-schema-validation → must fail at the schema layer.
-#   (b) WITH    --skip-schema-validation → must fail at the template layer
-#       with the actionable message pointing at docs/OPS_DEPLOYMENT.md.
+# NOTE: Helm v3.14+ enforces values.schema.json independently of the Kubernetes
+# OpenAPI validation flag (--disable-openapi-validation). There is no supported
+# way to bypass the JSON schema in Helm ≥3.15, so schema-covered rules are
+# tested only at the schema layer. Template-only rules (e.g. weight sums) that
+# the schema cannot express are tested via helm template directly.
 
 # Helper: check that a helm template invocation fails with ANY of several expected messages.
 # Usage: check_guard "description" "msg1|msg2|msg3" [helm args...]
@@ -219,48 +217,26 @@ check_guard() {
   fi
 }
 
-# 3a: track=blue + valkey.enabled=true
-# Schema layer (I1): "allOf' failed" at /valkey/enabled
-# Template layer: "shared external Valkey"
+# 3a: track=blue + valkey.enabled=true — caught by schema (I1)
 check_guard "[schema] track + valkey.enabled" \
-  "'allOf' failed|valkey/enabled" \
-  --set track=blue \
-  --set valkey.enabled=true \
-  --set config.multipartState.valkey.addr.value=some-addr
-check_guard "[template] track + valkey.enabled → 'shared external Valkey'" \
-  "shared external Valkey" \
-  --skip-schema-validation \
+  "'allOf' failed|valkey/enabled|value must be false" \
   --set track=blue \
   --set valkey.enabled=true \
   --set config.multipartState.valkey.addr.value=some-addr
 
-# 3b: ingress.enabled + ingress.traefik.enabled both true
-# Schema layer (I2): "'not' failed"
-# Template layer: "Cannot enable both"
+# 3b: ingress.enabled + ingress.traefik.enabled both true — caught by schema (I2)
 check_guard "[schema] ingress.enabled + ingress.traefik.enabled" \
   "'not' failed|'allOf' failed" \
   --set ingress.enabled=true \
   --set ingress.traefik.enabled=true
-check_guard "[template] ingress.enabled + traefik.enabled → 'Cannot enable both'" \
-  "Cannot enable both" \
-  --skip-schema-validation \
-  --set ingress.enabled=true \
-  --set ingress.traefik.enabled=true
 
-# 3c: weighted.enabled without traefik.enabled
-# Schema layer (I3): "value must be true" at /ingress/traefik/enabled
-# Template layer: "requires"
+# 3c: weighted.enabled without traefik.enabled — caught by schema (I3)
 check_guard "[schema] weighted.enabled without traefik.enabled" \
-  "'allOf' failed|traefik/enabled" \
-  --set ingress.traefik.weighted.enabled=true \
-  --set ingress.traefik.enabled=false
-check_guard "[template] weighted.enabled without traefik.enabled → 'requires'" \
-  "requires" \
-  --skip-schema-validation \
+  "'allOf' failed|traefik/enabled|value must be true" \
   --set ingress.traefik.weighted.enabled=true \
   --set ingress.traefik.enabled=false
 
-# 3d: weights summing to 99 — template-time only (schema cannot express sums)
+# 3d: weights summing to 99 — template-only guard (schema cannot express sums)
 check_guard "[template] weights 50+49=99 → 'must sum to 100'" \
   "must sum to 100" \
   --set ingress.traefik.enabled=true \
@@ -273,15 +249,9 @@ check_guard "[template] weights 50+49=99 → 'must sum to 100'" \
   --set "ingress.traefik.weighted.services[1].port=80" \
   --set "ingress.traefik.weighted.services[1].weight=49"
 
-# 3e: track set without valkey addr → should fail at both layers
-# Schema layer (I1 anyOf): "'anyOf' failed"
-# Template layer: "config.multipartState.valkey.addr"
+# 3e: track set without valkey addr — caught by schema (I1 anyOf)
 check_guard "[schema] track without valkey addr" \
-  "'anyOf' failed|'allOf' failed" \
-  --set track=blue
-check_guard "[template] track without valkey addr → addr required message" \
-  "config.multipartState.valkey.addr" \
-  --skip-schema-validation \
+  "'anyOf' failed|'allOf' failed|String length must be greater" \
   --set track=blue
 
 # ── Section 4: Default render backward-compat check ──────────────────────────

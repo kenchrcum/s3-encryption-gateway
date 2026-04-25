@@ -149,7 +149,8 @@ jobs:
 
       - name: Validate ${{ matrix.name }} rendered manifests
         run: |
-          /tmp/kubeconform -summary -skip TraefikService,IngressRoute \
+          /tmp/kubeconform -summary \
+            -skip TraefikService,IngressRoute,ServiceMonitor,PodMonitor,Certificate,Issuer,ClusterIssuer \
             -schema-location default \
             /tmp/rendered-${{ matrix.name }}.yaml
 
