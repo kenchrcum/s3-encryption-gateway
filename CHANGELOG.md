@@ -469,3 +469,587 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   ServiceUnavailable** so the client retries. A duplicate backend part from
   a retry is discarded by `CompleteMultipartUpload`'s ETag-set reconciliation.
   New unit test: `TestUploadPartCopy_MPU_AppendPartFailure_Returns503`.
+
+---
+
+## [0.5.10] — 2026-04-17
+
+### Security
+
+- **Hardened authentication error handling to prevent information leakage**:
+  introduced sentinel error types (`ErrSignatureMismatch`, `ErrUnknownAccessKey`,
+  `ErrMissingCredentials`, `ErrSigV4NotSupportedWithPassthrough`) for reliable
+  error classification without relying on string matching. Errors are now
+  classified via `errors.Is()` rather than brittle message parsing, eliminating
+  the risk of leaking computed HMAC signatures into response bodies. Signature
+  validation now uses constant-time comparison (`hmac.Equal`) to prevent timing
+  side channels. All error diagnostics are logged server-side while opaque
+  responses are returned to clients.
+
+- **Fixed possible credential exposure in logs**: sanitised log output paths
+  where credential material could appear in structured log fields.
+
+### Dependencies
+
+- Updated `github.com/aws/aws-sdk-go-v2/config` to v1.32.15
+- Updated `github.com/aws/smithy-go` to v1.25.0
+
+---
+
+## [0.5.9] — 2026-04-15
+
+### Added
+
+- **`HeadBucket` endpoint**: implemented `HEAD /{bucket}` handler with proper
+  404/403 responses, closing a compatibility gap with AWS SDKs and tools that
+  probe bucket existence before operations.
+
+- **Tightened object route matching**: improved HTTP router regex to prevent
+  query-parameter routes from incorrectly shadowing object-key routes.
+
+- **CODEOWNERS file**: added repository ownership configuration.
+
+### Dependencies
+
+- Updated OpenTelemetry Go monorepo to v1.43.0 and v1.42.0
+- Updated `golang.org/x/crypto` to v0.50.0
+- Updated `golang.org/x/sys` to v0.43.0
+- Updated `github.com/aws/smithy-go` to v1.24.3
+- Updated AWS SDK Go v2 monorepo (multiple packages)
+- Updated `actions/setup-python` to v6
+- Updated `actions/github-script` to v9
+- Updated `actions/deploy-pages` to v5
+- Updated `actions/configure-pages` to v6
+- Updated `azure/setup-helm` to v5
+
+---
+
+## [0.5.8] — 2026-03-02
+
+### Dependencies
+
+- Updated `github.com/aws/smithy-go` to v1.24.2, v1.24.1
+- Updated AWS SDK Go v2 monorepo (multiple rounds)
+- Updated `golang.org/x/crypto` to v0.48.0
+- Updated Go Docker base image to v1.26
+
+---
+
+## [0.5.7] — 2026-02-09
+
+### Documentation
+
+- Added AI usage disclaimer document and badge to README.
+
+### Dependencies
+
+- Updated `golang.org/x/sys` to v0.41.0
+- Updated OpenTelemetry Go monorepo to v1.40.0
+- Updated `github.com/aws/aws-sdk-go-v2/service/s3` to v1.96.0
+- Updated `github.com/sirupsen/logrus` to v1.9.4
+- Updated `golang.org/x/crypto` to v0.47.0
+
+---
+
+## [0.5.6] — 2026-01-15
+
+### Added
+
+- **Garage S3 server integration tests**: added robust Garage S3-compatible
+  server tests with automatic process cleanup for reliable CI execution.
+
+- **Improved test output handling**: redirected comprehensive test suite output
+  to log files and clarified load test steps.
+
+- **Garage environment support in load tests**: added environment management
+  helpers for Garage in the load test suite.
+
+### Fixed
+
+- Updated Cosmian KMS Docker run commands to use explicit entrypoint for
+  compatibility with updated container images.
+
+### Dependencies
+
+- Updated Cosmian KMS Docker image to version 5.14.1 across documentation
+  and tests.
+
+---
+
+## [0.5.5] — 2026-01-12
+
+### Added
+
+- **AWS chunked transfer encoding support**: implemented `AwsChunkedReader`
+  (`internal/api/aws_chunked_reader.go`) to correctly decode the
+  `aws-chunked` transfer encoding used by SDKs for streaming uploads with
+  `x-amz-decoded-content-length`. Includes comprehensive unit tests and a
+  regression test suite for chunked multipart uploads.
+
+- **Renovate dependency management**: migrated from Dependabot to Renovate
+  for automated dependency updates (`renovate.json`).
+
+### Dependencies
+
+- Updated `golang.org/x/sys` to v0.40.0
+- Updated AWS SDK Go v2 monorepo (multiple packages)
+- Updated `github.com/prometheus/common` to v0.67.5
+- Updated `actions/checkout` to v6
+- Updated `github.com/ovh/kmip-go` to v0.7.2
+
+---
+
+## [0.5.4] — 2025-12-09
+
+### Dependencies
+
+- Updated `go.opentelemetry.io/otel/exporters/stdout/stdouttrace`
+- Updated `github.com/aws/aws-sdk-go-v2/service/s3`
+- Updated `golang.org/x/sys` from v0.38.0 to v0.39.0
+- Updated `go.opentelemetry.io/otel/sdk` from v1.38.0 to v1.39.0
+
+---
+
+## [0.5.3] — 2025-12-06
+
+### Added
+
+- **Enhanced bucket creation handling**: improved `handleCreateBucket` to
+  differentiate between proxied and non-proxied bucket scenarios, returning
+  correct `BucketAlreadyExists` or `NotImplemented` errors as appropriate.
+  Added comprehensive test coverage for bucket creation paths.
+
+### Dependencies
+
+- Updated `github.com/aws/smithy-go` from v1.23.2 to v1.24.0
+- Updated `github.com/aws/aws-sdk-go-v2/service/s3` and `config` (multiple)
+- Updated Alpine base image from 3.22 to 3.23
+
+---
+
+## [0.5.2] — 2025-11-24
+
+### Added
+
+- **Improved error handling and bucket creation logic**: added `NoSuchBucket`
+  error translation in `TranslateError` for more descriptive S3 error
+  responses. Updated route definitions for proper regex matching. Added
+  integration tests verifying bucket creation behaviour through the gateway.
+
+### Fixed
+
+- Ensured consistent code formatting across multiple source files.
+
+---
+
+## [0.5.1] — 2025-11-22
+
+### Dependencies
+
+- Updated `golang.org/x/crypto` from v0.44.0 to v0.45.0
+- Updated `github.com/aws/aws-sdk-go-v2/service/s3`
+
+---
+
+## [0.5.0] — 2025-11-22
+
+### Added
+
+- **Object tagging support**: implemented `PutObjectTagging`, `GetObjectTagging`,
+  and `DeleteObjectTagging` endpoints with full XML validation and pass-through
+  to the backend.
+
+- **Presigned URL support**: implemented presigned URL generation and validation,
+  allowing time-limited pre-authenticated access to objects through the gateway.
+
+- **Per-bucket policy configuration**: introduced a policy manager enabling
+  per-bucket configuration of encryption settings, key management, and
+  behavioural overrides from YAML policy files.
+
+- **Parallel chunk encryption/decryption**: implemented concurrent AEAD chunk
+  processing to improve throughput on multi-core systems for large object
+  transfers.
+
+- **Key rotation policy and metrics**: added key rotation scheduling with
+  associated Prometheus metrics tracking active key version and rotation events.
+
+- **Hardware acceleration detection**: added detection and metrics reporting
+  for AES-NI and other CPU crypto acceleration features.
+
+- **Enhanced audit logging configuration**: expanded audit log options with
+  configurable fields, output formats, and filtering capabilities.
+
+- **Enhanced metrics with context support**: propagated request context through
+  metrics recording to enable per-request labelling.
+
+- **Chaos testing for backend resilience**: added chaos test scenarios
+  simulating backend failures, network partitions, and latency injection.
+
+- **Fuzz testing for metadata and range calculations**: added Go fuzzing targets
+  covering metadata parsing edge cases and range offset arithmetic.
+
+- **External S3 provider integration testing**: extended the integration test
+  suite with support for testing against real external S3 providers (AWS,
+  Wasabi, Backblaze B2, Hetzner) when credentials are configured.
+
+- **Shared MinIO server for provider tests**: implemented a shared MinIO
+  instance for provider-agnostic conformance test execution without per-test
+  container startup overhead.
+
+### Changed
+
+- **Enhanced security context and network policies**: tightened Kubernetes
+  security contexts and network policy egress/ingress rules in Helm chart.
+
+---
+
+## [0.4.2] — 2025-11-18
+
+### Documentation
+
+- Updated configuration and deployment documentation for improved clarity
+  and completeness.
+
+### Dependencies
+
+- Updated `github.com/prometheus/common` from v0.66.1 to v0.67.2
+
+---
+
+## [0.4.1] — 2025-11-17
+
+### Added
+
+- **Backblaze B2 integration tests**: added a comprehensive integration test
+  suite for Backblaze B2 S3-compatible storage, covering encryption round-trips,
+  multipart uploads, and error handling.
+
+- **Cosmian KMIP integration**: integrated Cosmian KMIP support for enterprise
+  key management. Includes Docker-based Cosmian KMS setup for CI and development,
+  comprehensive KMIP configuration documentation, and health check functionality
+  for KMS connectivity.
+
+- **Debug logging**: added a `debug` log level with structured fields for
+  detailed request/response tracing, controllable at runtime without restart.
+
+- **KMS health check**: implemented a readiness check for the configured KMS
+  endpoint surfaced on the `/readyz` endpoint.
+
+### Changed
+
+- Enhanced Makefile with additional testing commands and targets for
+  comprehensive test execution.
+
+---
+
+## [0.4.0] — 2025-11-16
+
+### Added
+
+- **Range request optimisation for chunked encryption**: implemented efficient
+  range GET handling that translates plaintext byte ranges to ciphertext chunk
+  boundaries, avoiding full object decryption for partial reads.
+
+- **Metadata compaction policy** (V0.4-SEC-2): implemented a metadata fallback
+  storage strategy for backends with strict object metadata size limits (e.g.
+  AWS S3's 2 KB limit). Encryption metadata that exceeds the limit is stored
+  as a sidecar object, with a pointer in the object's user metadata.
+
+- **Multipart upload stability and interop** (V0.4-S3-2): improved multipart
+  upload compatibility across S3-compatible backends. Note: multipart uploads
+  in v0.4 are stored without client-side encryption (encryption gap closed in
+  v0.6-SEC-3); `server.disable_multipart_uploads: true` can be set to prevent
+  unencrypted multipart objects at the cost of large-file support.
+
+- **List operations parity** (V0.4-S3-1): implemented full `ListObjectsV2`
+  and `ListObjects` (v1) parity including `delimiter`, `prefix`, `continuation-token`,
+  `max-keys`, and `fetch-owner` parameters.
+
+- **Hot-reload of non-crypto configuration** (V0.4-CFG-1): the gateway now
+  watches the config file for changes and reloads non-cryptographic settings
+  (log level, rate limits, access log format, etc.) without restart using
+  `fsnotify`.
+
+- **OpenTelemetry distributed tracing** (V0.4-OBS-1): added OTLP trace export
+  for all gateway request handlers with span attributes covering request method,
+  bucket, key, response status, and encryption operation type.
+
+- **Access log presets** (V0.4-OBS-2): structured access logging with
+  configurable JSON and Common Log Format (CLF) presets. Sensitive headers
+  (`Authorization`, `x-amz-security-token`) are redacted automatically.
+
+- **Backpressure and streaming tuning** (V0.4-PERF-2): added configurable
+  read/write buffer sizes, connection timeouts, and goroutine pool limits to
+  prevent memory spikes under high concurrency.
+
+- **Buffer pooling** (V0.4-PERF-1): implemented `sync.Pool`-backed byte buffer
+  pools for AEAD chunk encryption/decryption, reducing GC pressure and
+  allocation overhead on hot paths.
+
+- **Enhanced Helm chart with TLS and monitoring** (V0.4-OPS-1): the Helm chart
+  now supports TLS termination at the gateway pod via cert-manager certificates,
+  Prometheus `ServiceMonitor` and `PodMonitor` resources, and configurable
+  resource requests/limits.
+
+- **Additional Helm chart knobs** (V0.4-OPS-2): exposed extra configuration
+  values including replica count, HPA parameters, PodDisruptionBudget, topology
+  spread constraints, and extra environment variables.
+
+- **Load and regression test suite** (V0.4-QA-2): added a `k6`-based load
+  test suite covering range GET, multipart upload, and concurrent PutObject
+  scenarios with MinIO as the backend. Baseline results committed to repository.
+
+- **Architecture Decision Records and diagrams** (V0.4-DOC-1): added exported
+  architecture diagrams and ADR documents covering chunked encryption design,
+  metadata compaction, multipart limitations, and range request handling.
+
+- **Option to disable multipart uploads**: added `server.disable_multipart_uploads`
+  config knob to completely block multipart uploads at the gateway layer, useful
+  when maximum at-rest security is required and large-file uploads are not needed.
+
+### Fixed
+
+- Fixed `recordLatency` parameter types causing compilation errors.
+- Fixed multipart upload route registration to ensure
+  `?uploads` query parameter routes are matched before the generic PUT handler.
+
+---
+
+## [0.3.10] — 2025-11-14
+
+### Documentation
+
+- Added Docker Compose setup instructions and example configuration to the
+  project documentation for easier local development and evaluation deployments.
+
+### Dependencies
+
+- Updated `github.com/aws/aws-sdk-go-v2/config`
+- Updated `github.com/aws/aws-sdk-go-v2/service/s3`
+- Updated `github.com/aws/aws-sdk-go-v2/credentials`
+- Updated `golang.org/x/crypto` from v0.43.0 to v0.44.0
+
+---
+
+## [0.3.9] — 2025-11-08
+
+### Dependencies
+
+- Updated `github.com/aws/aws-sdk-go-v2/config`
+- Updated `github.com/aws/aws-sdk-go-v2/credentials`
+- Updated `github.com/aws/aws-sdk-go-v2/service/s3`
+
+---
+
+## [0.3.8] — 2025-11-04
+
+### Added
+
+- **Multipart upload content-length optimisation**: improved multipart upload
+  handling to compute and forward correct `Content-Length` values to the backend,
+  reducing compatibility issues with strict S3 implementations.
+
+---
+
+## [0.3.7] — 2025-11-04
+
+### Fixed
+
+- **Multipart upload route registration**: registered the multipart upload
+  initiation route (`PUT /{bucket}/{key}?uploads`) before the generic
+  `PUT /{bucket}/{key}` route to ensure correct handler dispatch when both
+  routes could match.
+
+---
+
+## [0.3.6] — 2025-11-04
+
+### Added
+
+- **TLS support for Helm Service and ServiceMonitor**: the Helm chart now
+  supports configuring TLS for the gateway service endpoint and for
+  Prometheus `ServiceMonitor` scrape connections.
+
+---
+
+## [0.3.5] — 2025-11-04
+
+### Added
+
+- **Helm NetworkPolicy egress for S3 backend**: enhanced the generated
+  `NetworkPolicy` to include egress rules allowing the gateway pods to reach
+  the configured S3 backend endpoint, preventing silent connectivity failures
+  in strict network environments.
+
+---
+
+## [0.3.4] — 2025-11-04
+
+### Added
+
+- **Helm NetworkPolicy namespace isolation**: added namespace-scoped ingress
+  rules to the generated `NetworkPolicy`, allowing operators to restrict which
+  namespaces can reach the gateway.
+
+---
+
+## [0.3.3] — 2025-11-04
+
+### Added
+
+- **Liveness and readiness probe TLS support**: enhanced the Helm chart's
+  probe configuration to support TLS-enabled health check endpoints, ensuring
+  Kubernetes probes work correctly when the gateway is configured with TLS.
+
+---
+
+## [0.3.2] — 2025-11-04
+
+### Added
+
+- **cert-manager integration in Helm chart**: added optional cert-manager
+  `Certificate` resource support for automatic TLS certificate management and
+  rotation. Configurable via `tls.certManager.enabled` in Helm values.
+
+- **Issue tracking and implementation guide**: added `docs/issues/` tracking
+  documents covering planned milestones v0.4 through v1.0 with detailed
+  implementation notes.
+
+### Dependencies
+
+- Updated `github.com/aws/smithy-go` from v1.23.1 to v1.23.2
+
+---
+
+## [0.3.1] — 2025-11-03
+
+### Fixed
+
+- **Signature V4 with client credential passthrough**: fixed a compatibility
+  issue where using `use_client_credentials: true` in the backend configuration
+  would break AWS Signature V4 request signing. The gateway now correctly
+  passes through client-provided credentials for backend requests.
+
+### Documentation
+
+- Enhanced README with improved clarity and completeness.
+- Updated roadmap milestone versions in `ROADMAP.md`.
+
+---
+
+## [0.3.0] — 2025-11-02
+
+### Added
+
+- **Client credentials in backend configuration**: added `use_client_credentials`
+  configuration option allowing the gateway to forward the connecting client's
+  AWS credentials directly to the backend S3 service instead of using a fixed
+  service account. Enables transparent credential pass-through for multi-tenant
+  deployments.
+
+### Dependencies
+
+- Updated Alpine base image from 3.20 to 3.22
+
+---
+
+## [0.2.0] — 2025-11-02
+
+### Added
+
+- **Chunked encryption for streaming and multipart uploads**: implemented
+  AEAD chunked encryption that splits objects into fixed-size chunks (default
+  64 KiB), each independently encrypted with AES-256-GCM or ChaCha20-Poly1305.
+  Enables efficient range requests without full object decryption.
+
+- **Optimised range requests for chunked encryption**: implemented range GET
+  translation that maps plaintext byte ranges to the minimum required set of
+  ciphertext chunks, decrypts only those chunks, and returns the requested
+  plaintext slice. Documented in `docs/CHUNKED_ENCRYPTION.md`.
+
+- **Optional `Content-Length` on `PutObject`**: the gateway now correctly
+  handles `PutObject` requests with or without `Content-Length`, computing
+  the encrypted output size when needed.
+
+- **Initial Helm chart**: added a production-ready Helm chart for deploying
+  the S3 Encryption Gateway on Kubernetes, including `Deployment`,
+  `Service`, `ServiceAccount`, `ConfigMap`, `NetworkPolicy`, and optional
+  `Ingress` resources.
+
+- **GitHub Actions CI/CD workflows**: added workflows for Helm chart linting,
+  testing (`helm/chart-testing-action`), and release (`helm/chart-releaser-action`).
+
+- **Streaming and reduced buffering**: optimised the request proxy pipeline
+  to stream request and response bodies where possible, reducing peak memory
+  usage for large objects.
+
+- **AAD binding and key rotation support**: bound Additional Authenticated
+  Data (AAD) in AEAD operations to the object path, preventing ciphertext
+  transplantation attacks. Added a key resolver interface enabling transparent
+  read-side decryption with old keys while encrypting new objects with the
+  current key.
+
+- **Service account and network policy in Helm**: added Kubernetes
+  `ServiceAccount` with optional IRSA/Workload Identity annotations and a
+  `NetworkPolicy` restricting ingress to labeled sources.
+
+### Fixed
+
+- Stripped `x-amz-meta-` prefix before passing user metadata to the AWS
+  SDK `PutObject` call to prevent `InvalidArgument` errors from backends
+  that do not accept the prefix in the SDK input struct.
+
+- Removed `MetaChunkCount` from the initial metadata write to prevent
+  S3 rejection on `CreateMultipartUpload`; chunk count is now written only
+  on `CompleteMultipartUpload`.
+
+- Corrected `Range` header handling in `GetObject`, fixed header ordering,
+  and returned the real ETag on `CopyObject` responses.
+
+- Resolved a nil pointer panic in integration tests when Docker is
+  unavailable.
+
+---
+
+## [0.1.0] — 2025-11-02
+
+### Added
+
+- **Initial release** of S3 Encryption Gateway.
+
+- **Transparent AES-256-GCM encryption proxy**: a Go HTTP reverse proxy that
+  encrypts objects on upload and decrypts on download, storing ciphertext on
+  any S3-compatible backend without requiring client-side changes beyond
+  pointing the S3 endpoint at the gateway.
+
+- **ChaCha20-Poly1305 cipher support**: alternative AEAD cipher selectable
+  via configuration for environments where AES-NI hardware acceleration is
+  unavailable.
+
+- **Password-based key derivation**: PBKDF2-derived encryption keys from a
+  master password, with per-object random IVs stored in object user metadata.
+
+- **Phase 3 S3 API compatibility**: implemented `PutObject`, `GetObject`,
+  `HeadObject`, `DeleteObject`, `DeleteObjects`, `CopyObject`,
+  `ListObjectsV2`, `CreateMultipartUpload`, `UploadPart`,
+  `CompleteMultipartUpload`, `AbortMultipartUpload`, and `ListParts`
+  handlers.
+
+- **TLS support and security hardening**: configurable TLS for the gateway
+  listener with mutual TLS option; hardened HTTP server timeouts.
+
+- **Configurable S3 provider support**: generic endpoint-based backend
+  configuration compatible with AWS S3, MinIO, Garage, and any
+  S3-compatible service.
+
+- **Proxied bucket configuration**: per-bucket proxy configuration mapping
+  gateway bucket names to backend bucket names with optional path-style
+  addressing.
+
+- **Request body size logging**: middleware capturing and logging request
+  body sizes for observability.
+
+- **MinIO integration test infrastructure**: test harness for running
+  integration tests against a local MinIO instance.
+
+- **MIT License**.
