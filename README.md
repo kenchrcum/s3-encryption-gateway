@@ -95,26 +95,30 @@ config:
 
 | Parameter | Description | Default |
 |-----------|-------------|---------|
+| `replicaCount` | Number of replicas | `1` |
+| `track` | Blue/green or canary track label (`""`, `"blue"`, `"green"`, `"stable"`, `"canary"`). Empty = no label (backward-compatible). When set, a shared external Valkey address is required and `valkey.enabled` must be `false`. | `""` |
 | `config.listenAddr` | Listen address | `":8080"` |
-| `config.logLevel` | Log level (debug, info, warn, error) | `"info"` |
-| `config.proxiedBucket` | Single bucket proxy mode (optional) | `""` |
+| `config.logLevel` | Log level (`debug`, `info`, `warn`, `error`) | `"info"` |
+| `config.proxiedBucket` | Single bucket proxy mode — restricts gateway to one backend bucket (optional) | `""` |
+| `config.policies` | Glob path to per-bucket policy YAML files mounted in the container (optional) | `""` |
 
 #### Backend Configuration
 
 | Parameter | Description | Default |
 |-----------|-------------|---------|
-| `config.backend.endpoint` | S3 backend endpoint | `"https://s3.amazonaws.com"` |
+| `config.backend.endpoint` | S3 backend endpoint URL | `"https://s3.amazonaws.com"` |
 | `config.backend.region` | S3 backend region | `"us-east-1"` |
 | `config.backend.accessKey` | Backend access key (use valueFrom) | `""` |
 | `config.backend.secretKey` | Backend secret key (use valueFrom) | `""` |
-| `config.backend.provider` | Provider name (optional) | `""` |
-| `config.backend.useSSL` | Use SSL for backend | `"true"` |
+| `config.backend.provider` | Provider hint string (optional) | `""` |
+| `config.backend.useSSL` | Use SSL for backend connection | `"true"` |
 | `config.backend.usePathStyle` | Use path-style bucket addressing | `"false"` |
-| `config.backend.useClientCredentials` | Use credentials from client requests | `"false"` |
+| `config.backend.useClientCredentials` | Forward client-supplied credentials to the backend | `"false"` |
 
-**Note on `useClientCredentials`**: When set to `"true"`, the gateway extracts credentials from client requests (query parameters or Authorization header) instead of using configured backend credentials. In this mode:
+**Note on `useClientCredentials`**: When set to `"true"`, the gateway extracts credentials from client requests instead of using configured backend credentials. In this mode:
 - `config.backend.accessKey` and `config.backend.secretKey` are **NOT required** and will be excluded from the deployment
-- Clients must provide credentials in every request
+- Clients must provide credentials via **query parameters only** (`?AWSAccessKeyId=...&AWSSecretAccessKey=...`)
+- **AWS Signature V4 (Authorization header) is NOT supported** — the signature includes the Host header, which prevents forwarding requests to the backend
 - Requests without valid credentials will fail with `AccessDenied`
 - Useful for providers like Hetzner that don't support per-bucket access keys
 
@@ -122,29 +126,29 @@ config:
 
 | Parameter | Description | Default |
 |-----------|-------------|---------|
-| `config.encryption.password` | Encryption password (use valueFrom) | `""` |
-| `config.encryption.keyFile` | Path to encryption key file (optional) | `""` |
-| `config.encryption.preferredAlgorithm` | Preferred algorithm (AES256-GCM, ChaCha20-Poly1305) | `"AES256-GCM"` |
-| `config.encryption.supportedAlgorithms` | Comma-separated list of supported algorithms | `"AES256-GCM,ChaCha20-Poly1305"` |
-| `config.encryption.keyManager.enabled` | Enable key manager/KMS mode | `"false"` |
-| `config.encryption.keyManager.provider` | KMS provider: "cosmian" (supported), "aws", "vault" (planned) | `"cosmian"` |
-| `config.encryption.keyManager.dualReadWindow` | Number of previous key versions to try during rotation | `"1"` |
-| `config.encryption.keyManager.cosmian.endpoint` | Cosmian KMIP endpoint (JSON/HTTP recommended: `http://host:port/kmip/2_1` or binary: `host:port`) | `""` |
+| `config.encryption.password` | Master encryption password (use valueFrom for production) | `""` |
+| `config.encryption.keyFile` | Path to an encryption key file (optional) | `""` |
+| `config.encryption.preferredAlgorithm` | Preferred AEAD algorithm (`AES256-GCM`, `ChaCha20-Poly1305`) | `"AES256-GCM"` |
+| `config.encryption.supportedAlgorithms` | Comma-separated list of algorithms accepted for decryption | `"AES256-GCM,ChaCha20-Poly1305"` |
+| `config.encryption.keyManager.enabled` | Enable external KMS / key-manager mode | `"false"` |
+| `config.encryption.keyManager.provider` | KMS provider: `cosmian` (supported), `aws`, `vault` (planned) | `"cosmian"` |
+| `config.encryption.keyManager.dualReadWindow` | Number of previous key versions tried during rotation | `"1"` |
+| `config.encryption.keyManager.cosmian.endpoint` | Cosmian KMIP endpoint (JSON/HTTP: `http://host:9998/kmip/2_1`; binary: `host:5696`) | `""` |
 | `config.encryption.keyManager.cosmian.timeout` | KMS operation timeout | `"10s"` |
-| `config.encryption.keyManager.cosmian.keys` | Comma-separated keys (format: "key1:1,key2:2") | `""` |
-| `config.encryption.keyManager.cosmian.caCert` | CA certificate path for TLS (use valueFrom) | `""` |
-| `config.encryption.keyManager.cosmian.clientCert` | Client certificate path for TLS (use valueFrom) | `""` |
-| `config.encryption.keyManager.cosmian.clientKey` | Client key path for TLS (use valueFrom) | `""` |
+| `config.encryption.keyManager.cosmian.keys` | Comma-separated wrapping keys (`"key1:v1,key2:v2"`) | `""` |
+| `config.encryption.keyManager.cosmian.caCert` | CA certificate for TLS (use valueFrom) | `""` |
+| `config.encryption.keyManager.cosmian.clientCert` | Client certificate for mTLS (use valueFrom) | `""` |
+| `config.encryption.keyManager.cosmian.clientKey` | Client private key for mTLS (use valueFrom) | `""` |
 | `config.encryption.keyManager.cosmian.insecureSkipVerify` | Skip TLS verification (testing only) | `"false"` |
 
 **Key Manager (KMS) Configuration**: When `config.encryption.keyManager.enabled` is set to `"true"`, the gateway uses external KMS for envelope encryption. Currently, only **Cosmian KMIP** is fully supported.
 
 **Protocol Selection**:
-- **JSON/HTTP (Recommended)**: 
-  - Full URL format (recommended): `http://host:9998/kmip/2_1`
-  - Base URL format (also works): `http://host:9998` (path `/kmip/2_1` is automatically appended)
-  - Fully tested and verified in CI
-- **Binary KMIP (Advanced)**: Use `host:5696` format - requires proper TLS certificates (not fully tested in CI)
+- **JSON/HTTP (Recommended)**:
+  - Full URL: `http://host:9998/kmip/2_1` (recommended for clarity)
+  - Base URL: `http://host:9998` (path `/kmip/2_1` is automatically appended)
+  - No client certificates required for HTTP; `caCert` recommended for HTTPS
+- **Binary KMIP (Advanced)**: `host:5696` — requires `caCert`, `clientCert`, `clientKey` (mutual TLS); not fully tested in CI
 
 See the [KMS Compatibility Guide](../../docs/KMS_COMPATIBILITY.md) for details.
 
@@ -167,23 +171,11 @@ config:
         value: "1"
       cosmian:
         endpoint:
-          # RECOMMENDED: JSON/HTTP endpoint (tested and verified)
-          # Full URL format (recommended for clarity):
           value: "http://cosmian-kms:9998/kmip/2_1"
-          # Base URL format (also works - path /kmip/2_1 is auto-appended):
-          # value: "http://cosmian-kms:9998"
-          # ADVANCED: Binary KMIP (requires TLS certificates: caCert, clientCert, clientKey)
-          # value: "cosmian-kms:5696"
         timeout:
           value: "10s"
         keys:
-          # Format: "key1:version1,key2:version2" (comma-separated)
-          # Example: "wrapping-key-1:1" or "wrapping-key-1:1,wrapping-key-2:2" for rotation
           value: "wrapping-key-1:1"
-        # TLS configuration
-        # - For HTTP (testing): Not required
-        # - For HTTPS (production): caCert recommended for server verification
-        # - For binary KMIP: caCert, clientCert, clientKey all required (mutual TLS)
         caCert:
           valueFrom:
             secretKeyRef:
@@ -203,158 +195,248 @@ config:
           value: "false"
 ```
 
+#### Encrypted Multipart Upload State (Valkey)
+
+Encrypted multipart uploads (enabled per-bucket via policy files) require a Valkey instance for in-flight state storage. Use the built-in Valkey subchart for development or point at an external cluster for production.
+
+**Valkey subchart (development / single-release deployments)**:
+
+| Parameter | Description | Default |
+|-----------|-------------|---------|
+| `valkey.enabled` | Deploy the Valkey subchart in-cluster. Set to `false` when using an external Valkey or in blue/green topologies. | `false` |
+| `valkey.architecture` | Valkey architecture (`standalone`, `replication`) | `standalone` |
+| `valkey.auth.enabled` | Enable Valkey authentication | `false` |
+
+> **Blue/green and canary deployments**: `valkey.enabled` **must** be `false`. Both tracks must share a single external Valkey cluster. Set the address via `config.multipartState.valkey.addr`.
+
+**External Valkey connection (`config.multipartState.valkey.*`)**:
+
+| Parameter | Description | Default |
+|-----------|-------------|---------|
+| `config.multipartState.valkey.addr` | External Valkey address (`host:port`). Auto-wired when `valkey.enabled: true`. | `""` |
+| `config.multipartState.valkey.tls.enabled` | Enable TLS for Valkey connection | `""` |
+| `config.multipartState.valkey.tls.caFile` | CA certificate file for Valkey TLS | `""` |
+| `config.multipartState.valkey.tls.certFile` | Client certificate file for Valkey mTLS | `""` |
+| `config.multipartState.valkey.tls.keyFile` | Client key file for Valkey mTLS | `""` |
+| `config.multipartState.valkey.insecureAllowPlaintext` | Allow plaintext Valkey (development only) | `""` |
+| `config.multipartState.valkey.ttlSeconds` | TTL for in-flight MPU state records in Valkey (default: `604800` = 7 days) | `""` |
+
 #### Compression Configuration
 
 | Parameter | Description | Default |
 |-----------|-------------|---------|
-| `config.compression.enabled` | Enable compression | `"false"` |
-| `config.compression.minSize` | Minimum size to compress (bytes) | `"1024"` |
+| `config.compression.enabled` | Enable transparent compression before encryption | `"false"` |
+| `config.compression.minSize` | Minimum object size to compress (bytes) | `"1024"` |
 | `config.compression.contentTypes` | Comma-separated content types to compress | `"text/plain,application/json,application/xml"` |
 | `config.compression.algorithm` | Compression algorithm | `"gzip"` |
-| `config.compression.level` | Compression level (1-9) | `"6"` |
+| `config.compression.level` | Compression level (1–9) | `"6"` |
 
 #### Server Configuration
 
 | Parameter | Description | Default |
 |-----------|-------------|---------|
-| `config.server.readTimeout` | Read timeout | `"15s"` |
-| `config.server.writeTimeout` | Write timeout | `"15s"` |
-| `config.server.idleTimeout` | Idle timeout | `"60s"` |
-| `config.server.readHeaderTimeout` | Read header timeout | `"10s"` |
-| `config.server.maxHeaderBytes` | Maximum header bytes | `"1048576"` |
+| `config.server.readTimeout` | HTTP read timeout | `"15s"` |
+| `config.server.writeTimeout` | HTTP write timeout | `"15s"` |
+| `config.server.idleTimeout` | HTTP idle connection timeout | `"60s"` |
+| `config.server.readHeaderTimeout` | HTTP read header timeout | `"10s"` |
+| `config.server.maxHeaderBytes` | Maximum request header size (bytes) | `"1048576"` |
 
 #### TLS Configuration
 
 | Parameter | Description | Default |
 |-----------|-------------|---------|
-| `config.tls.enabled` | Enable TLS | `"false"` |
-| `config.tls.useCertManager` | Use cert-manager for automatic certificates | `"false"` |
+| `config.tls.enabled` | Enable TLS on the gateway listener | `"false"` |
+| `config.tls.useCertManager` | Provision certificates automatically via cert-manager | `"false"` |
 | `config.tls.certFile` | TLS certificate file path (when not using cert-manager) | `""` |
-| `config.tls.keyFile` | TLS key file path (when not using cert-manager) | `""` |
+| `config.tls.keyFile` | TLS private key file path (when not using cert-manager) | `""` |
+
+**Note**: When `config.tls.enabled` is `"true"` and `config.tls.useCertManager` is `"false"`, you must provide `certFile` and `keyFile` (validated by the values schema). When TLS is enabled the Service automatically uses port `443` with port name `https`.
 
 #### cert-manager Configuration
 
 | Parameter | Description | Default |
 |-----------|-------------|---------|
-| `certManager.issuer.name` | Name for the issuer | `""` |
-| `certManager.issuer.namespace` | Namespace for the issuer | `""` |
-| `certManager.issuer.selfSigned` | Self-signed issuer configuration | `{}` |
-| `certManager.issuer.clusterIssuer` | Use ClusterIssuer (alternative to selfSigned) | `""` |
-| `certManager.certificate.extraDNSNames` | Additional DNS names for certificate | `[]` |
-| `certManager.certificate.duration` | Certificate validity duration | `"2160h"` |
-| `certManager.certificate.renewBefore` | Renew before expiry | `"720h"` |
+| `certManager.issuer.name` | Issuer resource name (defaults to chart fullname) | `""` |
+| `certManager.issuer.namespace` | Issuer namespace (defaults to release namespace) | `""` |
+| `certManager.issuer.selfSigned` | Self-signed issuer spec (set to `{}` to use self-signed) | `{}` |
+| `certManager.issuer.clusterIssuer` | Name of a pre-existing ClusterIssuer (alternative to selfSigned) | `""` |
+| `certManager.certificate.extraDNSNames` | Additional DNS SANs for the certificate | `[]` |
+| `certManager.certificate.duration` | Certificate validity period | `"2160h"` |
+| `certManager.certificate.renewBefore` | Renew this long before expiry | `"720h"` |
 
-**cert-manager Integration**: When `config.tls.useCertManager` is enabled, the chart automatically creates Issuer and Certificate resources. A self-signed certificate is created by default, but you can configure Let's Encrypt or other issuers. The TLS certificate and key files are automatically mounted into the pod.
+**cert-manager Integration**: When `config.tls.useCertManager` is enabled, the chart automatically creates `Issuer` and `Certificate` resources. The TLS certificate and key are automatically mounted into the pod.
 
 #### Rate Limiting
 
 | Parameter | Description | Default |
 |-----------|-------------|---------|
-| `config.rateLimit.enabled` | Enable rate limiting | `"false"` |
-| `config.rateLimit.limit` | Requests per window | `"100"` |
-| `config.rateLimit.window` | Time window | `"60s"` |
+| `config.rateLimit.enabled` | Enable per-connection rate limiting | `"false"` |
+| `config.rateLimit.limit` | Maximum requests per window | `"100"` |
+| `config.rateLimit.window` | Rate limit time window | `"60s"` |
 
 #### Cache Configuration
 
 | Parameter | Description | Default |
 |-----------|-------------|---------|
-| `config.cache.enabled` | Enable cache | `"false"` |
+| `config.cache.enabled` | Enable response caching | `"false"` |
 | `config.cache.maxSize` | Maximum cache size (bytes) | `"104857600"` |
-| `config.cache.maxItems` | Maximum cache items | `"1000"` |
-| `config.cache.defaultTTL` | Default TTL | `"5m"` |
+| `config.cache.maxItems` | Maximum number of cached items | `"1000"` |
+| `config.cache.defaultTTL` | Default cache entry TTL | `"5m"` |
 
 #### Audit Configuration
 
 | Parameter | Description | Default |
 |-----------|-------------|---------|
 | `config.audit.enabled` | Enable audit logging | `"false"` |
-| `config.audit.maxEvents` | Maximum audit events | `"10000"` |
+| `config.audit.maxEvents` | Maximum in-memory audit events | `"10000"` |
+| `config.audit.redactMetadataKeys` | Comma-separated metadata key names to redact from audit log | `""` |
+| `config.audit.sink.type` | Sink type (`stdout`, `file`, `http`) | `"stdout"` |
+| `config.audit.sink.endpoint` | HTTP sink endpoint URL (for `type=http`) | `""` |
+| `config.audit.sink.filePath` | Log file path (for `type=file`) | `""` |
+| `config.audit.sink.batchSize` | Maximum events per write batch | `"100"` |
+| `config.audit.sink.flushInterval` | Maximum time between flushes | `"5s"` |
+| `config.audit.sink.retryCount` | Retries on failed writes | `"3"` |
+| `config.audit.sink.retryBackoff` | Initial retry backoff duration | `"1s"` |
 
 #### Ingress Configuration
 
 | Parameter | Description | Default |
 |-----------|-------------|---------|
-| `ingress.enabled` | Enable Ingress creation | `false` |
+| `ingress.enabled` | Create a standard `networking.k8s.io/v1` Ingress | `false` |
 | `ingress.className` | Ingress class name | `""` |
 | `ingress.annotations` | Additional ingress annotations | `{}` |
 | `ingress.hosts` | List of ingress hosts and paths | `[]` |
-| `ingress.tls` | TLS configuration for ingress | `[]` |
+| `ingress.tls` | TLS configuration for the Ingress | `[]` |
 
-**Common Ingress Annotations**: The chart supports common ingress controller annotations. Some examples:
+**Traefik CRD Ingress** (mutually exclusive with `ingress.enabled`):
+
+| Parameter | Description | Default |
+|-----------|-------------|---------|
+| `ingress.traefik.enabled` | Render a Traefik `IngressRoute` CRD (requires Traefik ≥ v3.0) | `false` |
+| `ingress.traefik.entryPoints` | Traefik entrypoint names | `["websecure"]` |
+| `ingress.traefik.host` | `Host()` matcher — the S3 hostname clients will use | `""` |
+| `ingress.traefik.tls` | TLS stanza (`secretName`, `certResolver`) | `{}` |
+| `ingress.traefik.middlewares` | List of Traefik Middleware references (`name`, `namespace`) | `[]` |
+| `ingress.traefik.weighted.enabled` | Render a `kind: Weighted` TraefikService for canary traffic splitting | `false` |
+| `ingress.traefik.weighted.services` | List of backend services with weights summing to 100 (`name`, `port`, `weight`) | `[]` |
+| `ingress.traefik.weighted.sticky` | Sticky session cookie config (`cookie.name`, `httpOnly`, `secure`, `sameSite`) | `{}` |
+
+**Common Ingress Annotations**:
 - `kubernetes.io/ingress.class: nginx`
 - `cert-manager.io/cluster-issuer: letsencrypt-prod`
 - `nginx.ingress.kubernetes.io/ssl-redirect: "true"`
 - `nginx.ingress.kubernetes.io/proxy-body-size: "0"`
 - `nginx.ingress.kubernetes.io/proxy-read-timeout: "600"`
 
-**Note**: When `config.tls.enabled.value` is `true`, SSL redirect annotations are automatically added to force HTTPS traffic.
-
 #### Deployment Configuration
 
 | Parameter | Description | Default |
 |-----------|-------------|---------|
-| `replicaCount` | Number of replicas | `1` |
-| `image.repository` | Image repository | `kenchrcum/s3-encryption-gateway` |
-| `image.tag` | Image tag | `"0.4.0"` |
+| `image.repository` | Container image repository | `kenchrcum/s3-encryption-gateway` |
+| `image.tag` | Container image tag | `"0.6.1"` |
 | `image.pullPolicy` | Image pull policy | `IfNotPresent` |
 | `imagePullSecrets` | Image pull secrets | `[]` |
-| `podAnnotations` | Additional pod annotations | `{}` |
-| `podSecurityContext` | Pod security context | See values.yaml |
-| `securityContext` | Container security context | See values.yaml |
-| `service.enabled` | Enable Service creation | `true` |
-| `service.type` | Service type | `ClusterIP` |
-| `service.port` | Service port (only used when TLS is disabled) | `80` |
-| `service.targetPort` | Service target port | `8080` |
-
-**Note**: When `config.tls.enabled.value` is `true`, the Service automatically uses port `443` with port name `https` instead of the configured `service.port`. This ensures proper HTTPS service discovery (e.g., `https://service-name.namespace.svc.cluster.local:443`).
-| `resources` | Resource requests/limits | See values.yaml |
-| `autoscaling.enabled` | Enable HPA | `false` |
-| `podDisruptionBudget.enabled` | Enable PodDisruptionBudget | `false` |
-| `podDisruptionBudget.minAvailable` | Minimum available pods during disruption | `""` |
-| `podDisruptionBudget.maxUnavailable` | Maximum unavailable pods during disruption | `""` |
-| `topologySpreadConstraints` | Pod topology spread constraints | `[]` |
+| `nameOverride` | Override the chart name portion of resource names | `""` |
+| `fullnameOverride` | Override the full resource name | `""` |
+| `podAnnotations` | Extra annotations added to every pod | `{}` |
+| `podSecurityContext` | Pod-level security context (`runAsNonRoot`, `runAsUser`, `fsGroup`) | See values.yaml |
+| `securityContext` | Container-level security context (`readOnlyRootFilesystem`, `allowPrivilegeEscalation`, `seccompProfile`, etc.) | See values.yaml |
+| `terminationGracePeriodSeconds` | Pod termination grace period. Increase for blue/green drain (≥ p99 request duration + 10 s). | `30` |
+| `lifecycle` | Container lifecycle hooks. Use a `preStop` sleep equal to the kube-proxy propagation tail for zero-downtime traffic flips. | `{}` |
+| `resources` | CPU/memory resource requests and limits | See values.yaml |
 | `nodeSelector` | Node selector labels | `{}` |
 | `tolerations` | Pod tolerations | `[]` |
 | `affinity` | Pod affinity/anti-affinity rules | `{}` |
+| `topologySpreadConstraints` | Pod topology spread constraints | `[]` |
+
+#### Health Probes
+
+| Parameter | Description | Default |
+|-----------|-------------|---------|
+| `livenessProbe.httpGet.path` | Liveness probe path | `/live` |
+| `livenessProbe.initialDelaySeconds` | Seconds before first liveness check | `10` |
+| `livenessProbe.periodSeconds` | Liveness probe period | `30` |
+| `livenessProbe.timeoutSeconds` | Liveness probe timeout | `3` |
+| `livenessProbe.failureThreshold` | Failures before pod is restarted | `3` |
+| `readinessProbe.httpGet.path` | Readiness probe path | `/ready` |
+| `readinessProbe.initialDelaySeconds` | Seconds before first readiness check | `5` |
+| `readinessProbe.periodSeconds` | Readiness probe period | `10` |
+| `readinessProbe.timeoutSeconds` | Readiness probe timeout | `3` |
+| `readinessProbe.failureThreshold` | Failures before pod is removed from endpoints | `3` |
+
+The `/ready` endpoint performs dependency health checks (KMS, Valkey) and returns `503` with a JSON `checks` map if any configured dependency is unhealthy. The aliases `/readyz`, `/healthz`, and `/livez` follow Kubernetes conventions.
 
 #### Service Account
 
 | Parameter | Description | Default |
 |-----------|-------------|---------|
-| `serviceAccount.create` | Create a ServiceAccount | `true` |
-| `serviceAccount.name` | Use existing ServiceAccount name (when create=false uses this; when create=true overrides generated name) | `""` |
+| `serviceAccount.create` | Create a `ServiceAccount` for the gateway | `true` |
+| `serviceAccount.annotations` | Annotations to add to the ServiceAccount (e.g. IRSA / Workload Identity) | `{}` |
+| `serviceAccount.name` | Override the generated ServiceAccount name | `""` |
+
+#### Service
+
+| Parameter | Description | Default |
+|-----------|-------------|---------|
+| `service.enabled` | Create a Kubernetes `Service` | `true` |
+| `service.type` | Service type | `ClusterIP` |
+| `service.port` | Service port (overridden to `443` when TLS is enabled) | `80` |
+| `service.targetPort` | Container target port | `8080` |
+
+**Note**: When `service.enabled` is `false`, `ServiceMonitor` is also disabled automatically. Keep the Service enabled for stable DNS-based service discovery.
+
+#### Autoscaling (HPA)
+
+| Parameter | Description | Default |
+|-----------|-------------|---------|
+| `autoscaling.enabled` | Enable Horizontal Pod Autoscaler | `false` |
+| `autoscaling.minReplicas` | Minimum number of replicas | `2` |
+| `autoscaling.maxReplicas` | Maximum number of replicas | `10` |
+| `autoscaling.targetCPUUtilizationPercentage` | CPU utilization target (%) | `70` |
+| `autoscaling.targetMemoryUtilizationPercentage` | Memory utilization target (%) | `80` |
+| `autoscaling.behavior.scaleDown.stabilizationWindowSeconds` | Scale-down stabilisation window | `300` |
+| `autoscaling.behavior.scaleUp.stabilizationWindowSeconds` | Scale-up stabilisation window | `0` |
+
+#### Pod Disruption Budget
+
+| Parameter | Description | Default |
+|-----------|-------------|---------|
+| `podDisruptionBudget.enabled` | Create a `PodDisruptionBudget` | `false` |
+| `podDisruptionBudget.minAvailable` | Minimum available pods during disruption (integer or percentage) | `""` |
+| `podDisruptionBudget.maxUnavailable` | Maximum unavailable pods during disruption (integer or percentage) | `""` |
 
 #### Monitoring
 
 | Parameter | Description | Default |
 |-----------|-------------|---------|
-| `serviceMonitor.enabled` | Enable ServiceMonitor (Prometheus Operator) | `false` |
+| `serviceMonitor.enabled` | Create a Prometheus Operator `ServiceMonitor` | `false` |
 | `serviceMonitor.interval` | Scrape interval | `30s` |
 | `serviceMonitor.scrapeTimeout` | Scrape timeout | `10s` |
-| `serviceMonitor.labels` | Additional ServiceMonitor labels | `{}` |
-| `podMonitor.enabled` | Enable PodMonitor (Prometheus Operator) | `false` |
+| `serviceMonitor.labels` | Extra labels for ServiceMonitor (e.g. `prometheus: kube-prometheus`) | `{}` |
+| `podMonitor.enabled` | Create a Prometheus Operator `PodMonitor` (alternative to ServiceMonitor) | `false` |
 | `podMonitor.interval` | Scrape interval | `30s` |
 | `podMonitor.scrapeTimeout` | Scrape timeout | `10s` |
-| `podMonitor.labels` | Additional PodMonitor labels | `{}` |
+| `podMonitor.labels` | Extra labels for PodMonitor | `{}` |
 
-**ServiceMonitor vs PodMonitor**: Both ServiceMonitor and PodMonitor provide Prometheus metrics collection but target different Kubernetes resources:
-- **ServiceMonitor**: Targets the Service (recommended for most deployments)
-- **PodMonitor**: Targets pods directly (useful when Service is disabled or for advanced pod-level metrics)
+**ServiceMonitor vs PodMonitor**: `ServiceMonitor` targets the Service (recommended). `PodMonitor` targets pods directly — useful when the Service is disabled or for fine-grained pod-level metrics. Both emit a `track` relabel rule when `track` is set, enabling per-track PromQL queries in blue/green topologies.
 
 #### Network Policy
 
 | Parameter | Description | Default |
 |-----------|-------------|---------|
-| `networkPolicy.enabled` | Create a NetworkPolicy | `false` |
-| `networkPolicy.policyTypes` | List of policy types | `[Ingress, Egress]` |
-| `networkPolicy.namespaceIsolation` | Restrict ingress to same namespace only | `true` |
-| `networkPolicy.namespaceLabel.key` | Namespace label key for isolation | `"kubernetes.io/metadata.name"` |
+| `networkPolicy.enabled` | Create a `NetworkPolicy` | `false` |
+| `networkPolicy.policyTypes` | Policy types to enforce | `[Ingress, Egress]` |
+| `networkPolicy.namespaceIsolation` | Restrict ingress to pods in the same namespace only | `true` |
+| `networkPolicy.namespaceLabel.key` | Namespace label key used for isolation matching | `"kubernetes.io/metadata.name"` |
+| `networkPolicy.egress.awsS3` | Allow egress to AWS S3 (adjust CIDRs per region) | `false` |
+| `networkPolicy.egress.minioInternal` | Allow egress to an in-cluster MinIO service | `false` |
+| `networkPolicy.egress.monitoring` | Allow egress to monitoring/logging services | `false` |
+| `networkPolicy.ingress.ingressControllers` | Allow ingress from ingress controller pods | `false` |
+| `networkPolicy.ingress.ingressNamespace` | Namespace of the ingress controller | `"ingress-nginx"` |
+| `networkPolicy.ingress.monitoring` | Allow ingress from Prometheus scrape pods | `false` |
+| `networkPolicy.ingress.monitoringNamespace` | Namespace of the Prometheus stack | `"monitoring"` |
 
-**Namespace Isolation**: When `namespaceIsolation` is enabled (default), the NetworkPolicy restricts ingress traffic to only allow pods in the same namespace to access the gateway. This is useful for namespace-scoped deployments where you want to prevent cross-namespace access.
-
-**Note**: Namespace isolation requires the namespace to have a label matching the configured `namespaceLabel.key`. Most modern Kubernetes distributions automatically label namespaces with `kubernetes.io/metadata.name`. If your namespace doesn't have this label, you can either:
-1. Label your namespace: `kubectl label namespace <name> kubernetes.io/metadata.name=<name>`
-2. Or configure a custom label key in `networkPolicy.namespaceLabel.key`
+**Namespace Isolation**: When `namespaceIsolation` is enabled (default), only pods in the same namespace can access the gateway. Most Kubernetes distributions auto-label namespaces with `kubernetes.io/metadata.name`. If yours does not, either label it or set a custom `namespaceLabel.key`.
 
 ## Extending the Chart
 
@@ -409,9 +491,6 @@ initContainers:
     volumeMounts:
       - name: shared-data
         mountPath: /data
-    env:
-      - name: INIT_VAR
-        value: "initialized"
 ```
 
 ### Sidecar Containers
@@ -428,62 +507,6 @@ sidecars:
       - name: varlogcontainers
         mountPath: /var/log/containers
         readOnly: true
-    env:
-      - name: FLUENT_ELASTICSEARCH_HOST
-        value: "elasticsearch.default.svc.cluster.local"
-      - name: FLUENT_ELASTICSEARCH_PORT
-        value: "9200"
-```
-
-### Complete Example with Extensions
-
-```yaml
-# Extra environment variables
-extraEnv:
-  - name: LOG_LEVEL
-    value: "debug"
-  - name: CUSTOM_CONFIG
-    valueFrom:
-      configMapKeyRef:
-        name: my-gateway-config
-        key: custom-setting
-
-# Extra volumes and mounts
-extraVolumes:
-  - name: custom-config
-    configMap:
-      name: my-gateway-config
-  - name: ssl-certs
-    secret:
-      secretName: my-ssl-certs
-
-extraVolumeMounts:
-  - name: custom-config
-    mountPath: /etc/gateway-config
-    readOnly: true
-  - name: ssl-certs
-    mountPath: /etc/ssl/certs
-    readOnly: true
-
-# Init container for setup
-initContainers:
-  - name: setup-gateway
-    image: busybox:1.35
-    command: ['sh', '-c', 'mkdir -p /tmp/setup && echo "Gateway setup complete" > /tmp/setup/done']
-    volumeMounts:
-      - name: setup-volume
-        mountPath: /tmp/setup
-
-# Sidecar for monitoring
-sidecars:
-  - name: prometheus-exporter
-    image: nginx/nginx-prometheus-exporter:0.11.0
-    ports:
-      - containerPort: 9113
-        name: http
-    env:
-      - name: SCRAPE_URI
-        value: "http://localhost:8080/metrics"
 ```
 
 ## Examples
@@ -507,13 +530,10 @@ helm install my-gateway s3-encryption-gateway/s3-encryption-gateway \
 Deploy the gateway with external KMS (Cosmian KMIP) for envelope encryption and key rotation:
 
 ```bash
-# Create secrets for backend and encryption password
 kubectl create secret generic s3-encryption-gateway-secrets \
   --from-literal=backend-access-key='YOUR_ACCESS_KEY' \
   --from-literal=backend-secret-key='YOUR_SECRET_KEY' \
-  --from-literal=encryption-password='fallback-password-123456' \
-  --from-literal=cosmian-kms-endpoint='cosmian-kms:5696' \
-  --from-literal=cosmian-kms-keys='wrapping-key-1:1'
+  --from-literal=encryption-password='fallback-password-123456'
 
 # If using TLS, also create certificate secrets
 kubectl create secret generic cosmian-kms-certs \
@@ -521,8 +541,6 @@ kubectl create secret generic cosmian-kms-certs \
   --from-file=client-cert=/path/to/client.crt \
   --from-file=client-key=/path/to/client.key
 ```
-
-Deploy with KMS enabled:
 
 ```yaml
 config:
@@ -556,18 +574,12 @@ config:
         value: "1"
       cosmian:
         endpoint:
-          valueFrom:
-            secretKeyRef:
-              name: s3-encryption-gateway-secrets
-              key: cosmian-kms-endpoint
+          # JSON/HTTP (recommended): full URL or base URL with auto-appended /kmip/2_1
+          value: "http://cosmian-kms:9998/kmip/2_1"
         timeout:
           value: "10s"
         keys:
-          valueFrom:
-            secretKeyRef:
-              name: s3-encryption-gateway-secrets
-              key: cosmian-kms-keys
-        # TLS configuration (optional, for production)
+          value: "wrapping-key-1:1"
         caCert:
           valueFrom:
             secretKeyRef:
@@ -588,22 +600,46 @@ config:
 ```
 
 **Notes:**
-- The `encryption.password` is still required as a fallback for objects encrypted before KMS was enabled
-- The `cosmian-kms-keys` format is: `"key1:version1,key2:version2"` (comma-separated)
-- **JSON/HTTP endpoint (recommended)**: 
-  - Full URL format (recommended): `http://cosmian-kms:9998/kmip/2_1`
-  - Base URL format (also works): `http://cosmian-kms:9998` (path `/kmip/2_1` is automatically appended)
-  - Fully tested and verified in CI
-  - No TLS client certificates required for HTTP
-  - TLS `caCert` recommended for HTTPS in production
-- **Binary KMIP endpoint (advanced)**: Use `host:port` format (e.g., `cosmian-kms:5696`)
-  - Requires proper TLS configuration: `caCert`, `clientCert`, `clientKey` (mutual TLS)
-  - Not fully tested in CI - use with caution
-- Health checks automatically verify KMS connectivity via the `/ready` endpoint
+- `encryption.password` is still required as a fallback for objects encrypted before KMS was enabled
+- `keys` format: `"key1:version1,key2:version2"` (comma-separated for rotation)
+- Health checks automatically verify KMS connectivity via `/ready`
+
+### Encrypted Multipart Uploads with Valkey
+
+Enable per-bucket encrypted MPU with the built-in Valkey subchart:
+
+```yaml
+valkey:
+  enabled: true
+
+config:
+  policies:
+    value: "/etc/s3-gateway/policies/*.yaml"
+```
+
+Mount a policy file via `extraVolumes`/`extraVolumeMounts` that sets `encrypt_multipart_uploads: true` for the target bucket. See `docs/plans/V0.6-SEC-3-plan.md` for the full policy schema.
+
+For production or blue/green topologies, disable the subchart and point at an external cluster:
+
+```yaml
+valkey:
+  enabled: false
+
+config:
+  multipartState:
+    valkey:
+      addr:
+        value: "valkey-shared.mpu-state.svc.cluster.local:6379"
+      tls:
+        enabled:
+          value: "true"
+        caFile:
+          value: "/etc/valkey-tls/ca.crt"
+```
 
 ### Single Bucket Proxy Mode
 
-Enable single bucket proxy to minimize IAM policy requirements:
+Restrict the gateway to a single backend bucket, minimising IAM policy requirements:
 
 ```yaml
 config:
@@ -634,12 +670,12 @@ config:
 
 ### Client Credentials Mode
 
-Enable credential passthrough to use client-provided credentials (e.g., for Hetzner):
+Forward client-provided credentials to the backend (e.g. for Hetzner):
 
 ```yaml
 config:
   proxiedBucket:
-    value: "my-bucket"  # Still useful to restrict to single bucket
+    value: "my-bucket"
   backend:
     endpoint:
       value: "https://your-bucket.your-region.your-objectstorage.com"
@@ -656,28 +692,24 @@ config:
           key: encryption-password
 ```
 
-In this mode, clients must include credentials in requests:
-- Query parameters: `?AWSAccessKeyId=...&AWSSecretAccessKey=...`
-- Or via Authorization header (Signature V4)
+Clients must include credentials via **query parameters only**: `?AWSAccessKeyId=...&AWSSecretAccessKey=...`.
+AWS Signature V4 (`Authorization` header) is **not supported** in this mode.
 
-Requests without valid credentials will be rejected with `AccessDenied`.
+### With Pod Lifecycle Hooks (Progressive Delivery)
+
+For blue/green and canary deployments, configure a preStop hook to drain in-flight connections before the pod receives a SIGTERM:
+
+```yaml
+terminationGracePeriodSeconds: 60
+lifecycle:
+  preStop:
+    exec:
+      command: ["sh", "-c", "sleep 10"]
+```
 
 ### Custom Configuration with ConfigMap
 
 ```yaml
-# Create ConfigMap for non-sensitive config
-apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: s3-gateway-config
-data:
-  backend-endpoint: "https://s3.wasabisys.com"
-  backend-region: "us-east-1"
-  rate-limit-enabled: "true"
-  rate-limit-requests: "200"
-  rate-limit-window: "60s"
----
-# values.yaml
 config:
   backend:
     endpoint:
@@ -692,20 +724,11 @@ config:
           key: backend-region
   rateLimit:
     enabled:
-      valueFrom:
-        configMapKeyRef:
-          name: s3-gateway-config
-          key: rate-limit-enabled
+      value: "true"
     limit:
-      valueFrom:
-        configMapKeyRef:
-          name: s3-gateway-config
-          key: rate-limit-requests
+      value: "200"
     window:
-      valueFrom:
-        configMapKeyRef:
-          name: s3-gateway-config
-          key: rate-limit-window
+      value: "60s"
 ```
 
 ### With Autoscaling
@@ -717,6 +740,9 @@ autoscaling:
   maxReplicas: 10
   targetCPUUtilizationPercentage: 70
   targetMemoryUtilizationPercentage: 80
+  behavior:
+    scaleDown:
+      stabilizationWindowSeconds: 300
 ```
 
 ### With Prometheus Monitoring
@@ -750,13 +776,28 @@ ingress:
         - s3-gateway.example.com
 ```
 
+### With Traefik IngressRoute
+
+```yaml
+ingress:
+  traefik:
+    enabled: true
+    entryPoints: ["websecure"]
+    host: "s3-gateway.example.com"
+    tls:
+      certResolver: "letsencrypt"
+    middlewares:
+      - name: my-auth-middleware
+        namespace: default
+```
+
 ### With Pod Disruption Budget
 
 ```yaml
 podDisruptionBudget:
   enabled: true
   minAvailable: 1
-  # Alternative: maxUnavailable: 50%
+  # Alternative: maxUnavailable: "50%"
 ```
 
 ### With Topology Spread Constraints
@@ -777,24 +818,15 @@ topologySpreadConstraints:
         app.kubernetes.io/name: s3-encryption-gateway
 ```
 
-### With PodMonitor (Alternative to ServiceMonitor)
-
-```yaml
-podMonitor:
-  enabled: true
-  interval: 30s
-  scrapeTimeout: 10s
-  labels:
-    prometheus: kube-prometheus
-```
-
 ### With cert-manager TLS
 
 ```yaml
 config:
   tls:
-    enabled: "true"
-    useCertManager: "true"
+    enabled:
+      value: "true"
+    useCertManager:
+      value: "true"
 
 certManager:
   issuer:
@@ -809,39 +841,119 @@ certManager:
     renewBefore: "720h"
 ```
 
-### Without Service
-
-When using alternative ingress methods (like Ingress controllers) that handle service discovery, you can disable the Service:
-
-```yaml
-service:
-  enabled: false
-```
-
-**Note**: When `service.enabled` is `false`, the ServiceMonitor will also be disabled automatically, as it requires a Service to function.
-
-**Important**: For namespace-scoped deployments where pods need to communicate with the gateway, you should **keep the Service enabled** to provide stable DNS resolution**, as pod IPs can change over time. The NetworkPolicy with namespace isolation will still restrict access to the same namespace while allowing DNS-based service discovery.
-
 ### With Namespace Isolation
 
-For namespace-scoped deployments with strict network isolation:
-
 ```yaml
 service:
-  enabled: true  # Keep Service enabled for DNS resolution (required for pod IP changes)
+  enabled: true  # Keep enabled for stable DNS resolution
 
 networkPolicy:
   enabled: true
-  namespaceIsolation: true  # Restrict ingress to same namespace only
+  namespaceIsolation: true
   namespaceLabel:
-    key: "kubernetes.io/metadata.name"  # Standard Kubernetes namespace label
+    key: "kubernetes.io/metadata.name"
+  egress:
+    awsS3: false      # set true if backend is AWS S3
+    minioInternal: true
+  ingress:
+    ingressControllers: true
+    ingressNamespace: "ingress-nginx"
+    monitoring: true
+    monitoringNamespace: "monitoring"
 ```
 
-This configuration:
-- **Keeps the Service enabled** - DNS resolution is essential because pod IPs can change during the gateway's lifetime (restarts, rescheduling, scaling). The Service provides a stable DNS name that resolves to the current pod IPs.
-- Enables NetworkPolicy with namespace isolation
-- Only allows pods in the same namespace to access the gateway via the Service
-- Blocks cross-namespace communication while maintaining DNS-based service discovery
+### With IRSA / Workload Identity
+
+Annotate the ServiceAccount for AWS IRSA or GKE Workload Identity:
+
+```yaml
+serviceAccount:
+  create: true
+  annotations:
+    eks.amazonaws.com/role-arn: "arn:aws:iam::123456789012:role/s3-gateway-role"
+```
+
+## Progressive Delivery
+
+The chart ships production-safe blue/green and canary deployment recipes for
+zero-downtime upgrades. See **[docs/OPS_DEPLOYMENT.md](../../docs/OPS_DEPLOYMENT.md)**
+for the complete runbook.
+
+### Key points
+
+- **Zero breaking changes.** The `track` value defaults to `""` (no label).
+  Existing single-release deployments are byte-for-byte unchanged.
+- **Fail-closed guard-rails.** Setting `track` without a shared external Valkey
+  address, or enabling both `ingress.enabled` and `ingress.traefik.enabled`,
+  causes `helm template` to fail with a clear, actionable message.
+- **Traefik v3 first-class support.** `ingress.traefik.enabled` and
+  `ingress.traefik.weighted.enabled` render Traefik `IngressRoute` and
+  `TraefikService` CRDs (requires Traefik ≥ v3.0).
+- **Shared Valkey is mandatory for blue/green and canary.** Both tracks must
+  point at the same external Valkey cluster. Set `valkey.enabled: false` and
+  configure `config.multipartState.valkey.addr` on all releases.
+
+### Quick start
+
+```bash
+# Blue side:
+helm install gw-blue . \
+  --values examples/values-blue.yaml \
+  --set config.multipartState.valkey.addr.value=valkey-shared.mpu-state.svc.cluster.local:6379
+
+# Green side (new version):
+helm install gw-green . \
+  --set image.tag=v0.6.1 \
+  --values examples/values-green.yaml \
+  --set config.multipartState.valkey.addr.value=valkey-shared.mpu-state.svc.cluster.local:6379
+
+# Cutover:
+docs/examples/bluegreen/cutover.sh green
+# Rollback:
+docs/examples/bluegreen/cutover.sh blue
+```
+
+## Values Validation
+
+This chart ships a `values.schema.json` ([JSON Schema draft-07](http://json-schema.org/draft-07/schema)) that validates all values **client-side** before the chart reaches the cluster.
+
+Helm enforces the schema during `helm lint`, `helm install`, `helm upgrade`, and `helm template`. Errors appear with JSON-path-prefixed messages like:
+
+```
+at '/replicaCount': got string, want integer
+at '/config/logLevel/value': Must be one of: debug, info, warn, error
+at '': 'not' failed  (both ingress.enabled and ingress.traefik.enabled are true)
+```
+
+**What the schema catches early (before template rendering):**
+
+| Rule | Description |
+|------|-------------|
+| Type mismatches | `replicaCount: "2"` (string) is rejected; must be an integer |
+| Enum violations | `logLevel: verbose` rejected; must be one of `debug/info/warn/error` |
+| I1 — track + Valkey | Setting `track: blue` with `valkey.enabled: true` is rejected |
+| I2 — ingress mutex | `ingress.enabled: true` + `ingress.traefik.enabled: true` is rejected |
+| I3 — weighted requires Traefik | `weighted.enabled: true` without `traefik.enabled: true` is rejected |
+| I5 — KeyManager provider | `keyManager.enabled=true` with an unknown provider is rejected |
+| I7 — TLS cert required | `tls.enabled=true` + `useCertManager=false` without `certFile`/`keyFile` is rejected |
+
+> The schema is intentionally permissive at the root (`additionalProperties: true`) so that overlays like `values.fips.yaml` can add arbitrary pod annotations and extraEnv entries without triggering false positives. Strict `additionalProperties: false` is applied only at well-structured sub-trees (`config.backend.*`, `config.encryption.*`, `ingress.traefik.weighted.*`).
+
+If `helm lint` fails with a JSON-path error, consult the description in
+`values.schema.json` at that path — the description contains the fix.
+To bypass schema validation in an emergency (template guards still fire):
+```bash
+helm install ... --disable-openapi-validation
+```
+
+### Schema source
+
+- `helm/s3-encryption-gateway/values.schema.json` — hand-written, ~1 400 lines with `$defs` reuse
+- `helm/s3-encryption-gateway/tests/schema/` — positive and negative test cases
+- `helm/s3-encryption-gateway/tests/schema/run-negative.sh` — local harness
+- `.github/workflows/helm-test.yml` jobs: `lint-overlays`, `schema-negative`, `schema-drift`, `render-overlays`
+
+See `docs/plans/V0.6-OPS-2-plan.md` for the full design document.
 
 ## Upgrading
 
@@ -861,20 +973,23 @@ helm uninstall my-gateway
 1. **Use Secrets for Sensitive Data**: Always use `valueFrom.secretKeyRef` for:
    - Backend access keys and secret keys
    - Encryption passwords
-   - TLS certificates and keys
+   - KMS credentials and TLS certificates
 
-2. **RBAC**: The chart creates a ServiceAccount. Configure RBAC as needed.
+2. **RBAC**: The chart creates a ServiceAccount. Annotate it for IRSA / Workload Identity where applicable.
 
 3. **Network Policies**: Enable network policies for additional security:
    ```yaml
    networkPolicy:
      enabled: true
-     namespaceIsolation: true  # Restrict to same namespace (default)
+     namespaceIsolation: true
    ```
-   
-   When `namespaceIsolation` is enabled, only pods in the same namespace can access the gateway, preventing cross-namespace communication. This is particularly useful for namespace-scoped deployments.
+   When `namespaceIsolation` is enabled, only pods in the same namespace can access the gateway.
 
-4. **Single Bucket Proxy**: Use `proxiedBucket` to restrict access to a single bucket, minimizing IAM policy requirements.
+4. **Single Bucket Proxy**: Use `proxiedBucket` to restrict access to a single bucket, minimising IAM policy requirements.
+
+5. **TLS**: Enable TLS on the gateway listener (`config.tls.enabled`) and use cert-manager for automatic certificate rotation.
+
+6. **FIPS**: Use `image.tag: 0.6.1-fips` and the `values.fips.yaml` overlay for FIPS-140-compliant deployments (AES-256-GCM only; ChaCha20-Poly1305 excluded).
 
 ## Troubleshooting
 
@@ -890,27 +1005,26 @@ kubectl logs -l app.kubernetes.io/name=s3-encryption-gateway
 kubectl get pods -l app.kubernetes.io/name=s3-encryption-gateway
 ```
 
-### Test Health Endpoint
+### Test Health Endpoints
 
-If the Service is enabled:
 ```bash
+# Via Service:
 kubectl port-forward svc/s3-encryption-gateway 8080:80
-curl http://localhost:8080/health
+curl http://localhost:8080/readyz
+
+# Directly to pod (when Service is disabled):
+kubectl port-forward <pod-name> 8080:8080
+curl http://localhost:8080/readyz
 ```
 
-If the Service is disabled, port-forward directly to a pod:
-```bash
-kubectl port-forward <pod-name> 8080:8080
-curl http://localhost:8080/health
-```
+The `/readyz` endpoint returns `200 OK` when all dependencies (KMS, Valkey) are healthy, or `503` with a JSON `checks` map identifying the failing dependency. Aliases: `/healthz`, `/livez`, `/ready`, `/live`.
 
 ## Support
 
 For issues, feature requests, or questions:
-- GitHub: https://github.com/kenneth/s3-encryption-gateway
+- GitHub: https://github.com/kenchrcum/s3-encryption-gateway
 - Chart Repository: https://kenchrcum.github.io/s3-encryption-gateway
 
 ## License
 
-MIT License - see the main project repository [LICENSE](https://github.com/kenneth/s3-encryption-gateway/blob/main/LICENSE) file for details.
-
+MIT License — see [LICENSE](https://github.com/kenchrcum/s3-encryption-gateway/blob/main/LICENSE) for details.
