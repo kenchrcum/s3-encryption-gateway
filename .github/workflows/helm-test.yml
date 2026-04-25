@@ -130,6 +130,9 @@ jobs:
         with:
           version: v3.14.0
 
+      - name: Add Helm repos
+        run: helm repo add valkey https://valkey.io/valkey-helm/
+
       - name: Render ${{ matrix.name }} overlay
         run: |
           helm dependency build helm/s3-encryption-gateway
@@ -226,6 +229,9 @@ jobs:
         run: |
           cd helm/s3-encryption-gateway
           helm lint .
+
+      - name: Add Helm repos
+        run: helm repo add valkey https://valkey.io/valkey-helm/
 
       - name: Build chart dependencies
         run: helm dependency build helm/s3-encryption-gateway
