@@ -441,6 +441,13 @@
           "additionalProperties": true
         }
       }
+    },
+
+    "policies": {
+      "type": "array",
+      "description": "Inline bucket policy definitions. The chart renders a ConfigMap (<release>-policies) from these entries, mounts it at /etc/s3-gateway/policies/, and sets POLICIES automatically. Mutually exclusive with config.policies.value / config.policies.valueFrom (Guard 6).",
+      "items": { "$ref": "#/$defs/policyEntry" },
+      "default": []
     }
 
   },
@@ -1123,6 +1130,53 @@
               }
             }
           }
+        }
+      }
+    },
+
+    "policyEntry": {
+      "type": "object",
+      "description": "A single bucket policy definition. Maps 1:1 to PolicyConfig (internal/config/policy.go). Each entry is serialised to a YAML file inside the chart-managed ConfigMap.",
+      "required": ["id", "buckets"],
+      "additionalProperties": true,
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Unique policy identifier. Used as the filename stem inside the ConfigMap (slashes and spaces are replaced with hyphens)."
+        },
+        "buckets": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "type": "string", "minLength": 1 },
+          "description": "Bucket name glob patterns this policy applies to (e.g. [\"my-bucket\", \"logs-*\"])."
+        },
+        "encrypt_multipart_uploads": {
+          "type": "boolean",
+          "description": "Opt-in encrypted multipart uploads for matching buckets (ADR-0009). Requires Valkey to be configured. Default false."
+        },
+        "require_encryption": {
+          "type": "boolean",
+          "description": "Reject unencrypted PutObject / UploadPartCopy requests into matching buckets. Default false."
+        },
+        "disallow_lock_bypass": {
+          "type": "boolean",
+          "description": "Reject requests that attempt to bypass object lock for matching buckets. Default false."
+        },
+        "encryption": {
+          "type": "object",
+          "description": "Per-bucket encryption overrides (password, algorithm, key manager). Optional.",
+          "additionalProperties": true
+        },
+        "compression": {
+          "type": "object",
+          "description": "Per-bucket compression overrides. Optional.",
+          "additionalProperties": true
+        },
+        "rate_limit": {
+          "type": "object",
+          "description": "Per-bucket rate limit overrides. Optional.",
+          "additionalProperties": true
         }
       }
     },

@@ -61,6 +61,19 @@ The chart renders both together; `ingress.traefik.enabled` must be true.
 {{- end -}}
 
 {{/*
+Guard 6 — policies[] and config.policies are mutually exclusive.
+The top-level `policies` list is the first-class way to define bucket
+policies. If it is non-empty the chart auto-wires the ConfigMap mount and
+the POLICIES env var. Setting `config.policies.value` or
+`config.policies.valueFrom` at the same time is almost certainly a
+copy-paste mistake — fail loudly rather than silently ignoring one or the
+other.
+*/}}
+{{- if and .Values.policies (or .Values.config.policies.value .Values.config.policies.valueFrom) -}}
+{{- fail "Cannot set both `policies` (top-level list) and `config.policies.value` / `config.policies.valueFrom` at the same time. Use `policies` to define bucket policies inline (recommended), or set `config.policies` to point at externally mounted files — not both." -}}
+{{- end -}}
+
+{{/*
 Guard 5 — weighted services must sum to 100.
 Traefik normalises weights that do not sum to 100 silently. This chart
 surface the misconfiguration at render time so the operator sees it

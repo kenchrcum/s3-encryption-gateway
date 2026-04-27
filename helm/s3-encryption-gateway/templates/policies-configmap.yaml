@@ -1,0 +1,33 @@
+{{/*
+policies-configmap.yaml
+
+Renders a ConfigMap containing one YAML file per entry in .Values.policies[].
+The ConfigMap is only created when the policies list is non-empty.
+
+Each entry is serialised with `toYaml` so every field supported by
+PolicyConfig (internal/config/policy.go) is forwarded verbatim — including
+nested encryption / compression / rate_limit overrides.
+
+The Deployment template mounts this ConfigMap at /etc/s3-gateway/policies/
+and sets POLICIES=/etc/s3-gateway/policies/*.yaml automatically when this
+ConfigMap is rendered.
+*/}}
+{{- if .Values.policies }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "s3-encryption-gateway.fullname" . }}-policies
+  labels:
+    {{- include "s3-encryption-gateway.labels" . | nindent 4 }}
+data:
+  {{- range .Values.policies }}
+  {{- if not .id }}
+  {{- fail "Each entry in `policies` must have an `id` field." }}
+  {{- end }}
+  {{- if not .buckets }}
+  {{- fail (printf "Policy %q must have a `buckets` list." .id) }}
+  {{- end }}
+  {{ .id | replace "/" "-" | replace " " "-" }}.yaml: |
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+{{- end }}

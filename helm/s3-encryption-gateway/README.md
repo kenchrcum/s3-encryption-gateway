@@ -606,20 +606,41 @@ config:
 
 ### Encrypted Multipart Uploads with Valkey
 
-Enable per-bucket encrypted MPU with the built-in Valkey subchart:
+Define bucket policies inline in `values.yaml` using the top-level `policies`
+list. The chart renders a ConfigMap, mounts it, and sets `POLICIES`
+automatically — no manual `extraVolumes` / `extraVolumeMounts` required.
+
+#### Development / staging (in-cluster Valkey subchart)
 
 ```yaml
 valkey:
-  enabled: true
+  enabled: true                  # auto-wires VALKEY_ADDR → <release>-valkey:6379
+  architecture: standalone
+  auth:
+    enabled: false               # enable + use existingSecret in production
 
-config:
-  policies:
-    value: "/etc/s3-gateway/policies/*.yaml"
+policies:
+  - id: encrypted-uploads
+    buckets:
+      - "my-important-bucket"
+      - "logs-*"
+    encrypt_multipart_uploads: true
+    require_encryption: true
+  - id: public-assets
+    buckets:
+      - "public-*"
+    require_encryption: false
 ```
 
-Mount a policy file via `extraVolumes`/`extraVolumeMounts` that sets `encrypt_multipart_uploads: true` for the target bucket. See `docs/plans/V0.6-SEC-3-plan.md` for the full policy schema.
+Each entry maps 1:1 to `PolicyConfig` (`internal/config/policy.go`). All
+fields are supported: `encrypt_multipart_uploads`, `require_encryption`,
+`disallow_lock_bypass`, and per-bucket `encryption` / `compression` /
+`rate_limit` overrides.
 
-For production or blue/green topologies, disable the subchart and point at an external cluster:
+#### Production (external Valkey, TLS)
+
+Disable the subchart and point at your shared Valkey cluster. The `policies`
+list works identically:
 
 ```yaml
 valkey:
@@ -635,7 +656,22 @@ config:
           value: "true"
         caFile:
           value: "/etc/valkey-tls/ca.crt"
+      insecureAllowPlaintext:
+        value: "false"
+
+policies:
+  - id: encrypted-uploads
+    buckets:
+      - "my-important-bucket"
+    encrypt_multipart_uploads: true
+    require_encryption: true
 ```
+
+> **Note:** `policies` (top-level list) and `config.policies.value` /
+> `config.policies.valueFrom` are mutually exclusive. Using both causes a
+> render-time error (Guard 6). Use `config.policies` only when you need to
+> reference policy files that are mounted from an external source outside the
+> chart (e.g. from a corporate Secret store).
 
 ### Single Bucket Proxy Mode
 

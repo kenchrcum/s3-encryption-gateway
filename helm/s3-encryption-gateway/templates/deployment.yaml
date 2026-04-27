@@ -144,7 +144,10 @@ spec:
         {{- end }}
         {{- end }}
         {{- end }}
-        {{- if or .Values.config.policies.value .Values.config.policies.valueFrom }}
+        {{- if .Values.policies }}
+        - name: POLICIES
+          value: "/etc/s3-gateway/policies/*.yaml"
+        {{- else if or .Values.config.policies.value .Values.config.policies.valueFrom }}
         {{- include "s3-encryption-gateway.envVar" (dict "name" "POLICIES" "value" .Values.config.policies.value "valueFrom" .Values.config.policies.valueFrom) | nindent 8 }}
         {{- end }}
         {{- include "s3-encryption-gateway.envVar" (dict "name" "RATE_LIMIT_ENABLED" "value" .Values.config.rateLimit.enabled.value "valueFrom" .Values.config.rateLimit.enabled.valueFrom) | nindent 8 }}
@@ -284,11 +287,17 @@ spec:
         lifecycle:
           {{- toYaml . | nindent 10 }}
         {{- end }}
-        {{- if or (and (or (eq .Values.config.tls.enabled.value "true") (eq .Values.config.tls.enabled.value "1")) (and .Values.config.tls.useCertManager.value (or (eq .Values.config.tls.useCertManager.value "true") (eq .Values.config.tls.useCertManager.value "1")))) .Values.extraVolumeMounts }}
+        {{- $tlsCertMount := and (or (eq .Values.config.tls.enabled.value "true") (eq .Values.config.tls.enabled.value "1")) (and .Values.config.tls.useCertManager.value (or (eq .Values.config.tls.useCertManager.value "true") (eq .Values.config.tls.useCertManager.value "1"))) }}
+        {{- if or $tlsCertMount .Values.policies .Values.extraVolumeMounts }}
         volumeMounts:
-          {{- if and (or (eq .Values.config.tls.enabled.value "true") (eq .Values.config.tls.enabled.value "1")) (and .Values.config.tls.useCertManager.value (or (eq .Values.config.tls.useCertManager.value "true") (eq .Values.config.tls.useCertManager.value "1"))) }}
+          {{- if $tlsCertMount }}
           - name: tls-cert
             mountPath: /etc/tls
+            readOnly: true
+          {{- end }}
+          {{- if .Values.policies }}
+          - name: gateway-policies
+            mountPath: /etc/s3-gateway/policies
             readOnly: true
           {{- end }}
           {{- with .Values.extraVolumeMounts }}
@@ -298,12 +307,18 @@ spec:
       {{- with .Values.sidecars }}
       {{- toYaml . | nindent 6 }}
       {{- end }}
-      {{- if or (and (or (eq .Values.config.tls.enabled.value "true") (eq .Values.config.tls.enabled.value "1")) (and .Values.config.tls.useCertManager.value (or (eq .Values.config.tls.useCertManager.value "true") (eq .Values.config.tls.useCertManager.value "1")))) .Values.extraVolumes }}
+      {{- $tlsCertVol := and (or (eq .Values.config.tls.enabled.value "true") (eq .Values.config.tls.enabled.value "1")) (and .Values.config.tls.useCertManager.value (or (eq .Values.config.tls.useCertManager.value "true") (eq .Values.config.tls.useCertManager.value "1"))) }}
+      {{- if or $tlsCertVol .Values.policies .Values.extraVolumes }}
       volumes:
-        {{- if and (or (eq .Values.config.tls.enabled.value "true") (eq .Values.config.tls.enabled.value "1")) (and .Values.config.tls.useCertManager.value (or (eq .Values.config.tls.useCertManager.value "true") (eq .Values.config.tls.useCertManager.value "1"))) }}
+        {{- if $tlsCertVol }}
         - name: tls-cert
           secret:
             secretName: {{ include "s3-encryption-gateway.fullname" . }}-tls
+        {{- end }}
+        {{- if .Values.policies }}
+        - name: gateway-policies
+          configMap:
+            name: {{ include "s3-encryption-gateway.fullname" . }}-policies
         {{- end }}
         {{- with .Values.extraVolumes }}
         {{- toYaml . | nindent 8 }}
