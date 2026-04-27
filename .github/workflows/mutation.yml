@@ -22,6 +22,10 @@ on:
         required: false
         default: ''
 
+permissions:
+  contents: read
+  issues: write
+
 jobs:
   # ── Smoke test: verify Gremlins is correctly installed ──────────────────────
   mutation-smoke:
@@ -76,21 +80,21 @@ jobs:
         id: mutation
         run: |
           set +e
+          # gremlins v0.6: --only-covered is now the default (flag removed),
+          # --json-output replaced by -o, --output=json flag removed.
           gremlins unleash \
             --threshold-efficacy=70 \
-            --only-covered \
-            --output=json \
-            --json-output="docs/mutation/${{ matrix.short_name }}.json" \
+            -o "docs/mutation/${{ matrix.short_name }}.json" \
             ${{ matrix.package }} 2>&1
           GREMLINS_EXIT=$?
           set -e
 
           echo "gremlins_exit=${GREMLINS_EXIT}" >> "$GITHUB_OUTPUT"
 
-          # Parse kill-rate from JSON if jq available
+          # Parse kill-rate from JSON (gremlins v0.6 schema: flat top-level fields)
           if command -v jq >/dev/null 2>&1 && [[ -f "docs/mutation/${{ matrix.short_name }}.json" ]]; then
-            TOTAL=$(jq '[.mutants // [] | length] | add // 0' docs/mutation/${{ matrix.short_name }}.json 2>/dev/null || echo 0)
-            KILLED=$(jq '[.mutants // [] | .[] | select(.status == "KILLED")] | length' docs/mutation/${{ matrix.short_name }}.json 2>/dev/null || echo 0)
+            TOTAL=$(jq '.mutants_total // 0' "docs/mutation/${{ matrix.short_name }}.json" 2>/dev/null || echo 0)
+            KILLED=$(jq '.mutants_killed // 0' "docs/mutation/${{ matrix.short_name }}.json" 2>/dev/null || echo 0)
             if [[ "$TOTAL" -gt 0 ]]; then
               RATE=$(echo "scale=1; $KILLED * 100 / $TOTAL" | bc)
             else

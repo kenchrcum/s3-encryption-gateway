@@ -66,12 +66,12 @@ for pkg in "${PACKAGES[@]}"; do
   echo "--- Package: ${pkg} ---"
 
   # Run gremlins; capture exit code without set -e killing us
+  # gremlins v0.6: --only-covered is now the default (flag removed),
+  # --json-output replaced by -o, --output=json flag removed.
   set +e
   gremlins unleash \
     --threshold-efficacy="${MUTATION_THRESHOLD}" \
-    --only-covered \
-    --output=json \
-    --json-output="${report_file}" \
+    -o "${report_file}" \
     "${pkg}" 2>&1
   exit_code=$?
   set -e
@@ -86,18 +86,10 @@ for pkg in "${PACKAGES[@]}"; do
   # Print summary table if report exists
   if [[ -f "${report_file}" ]]; then
     echo "  Report: ${report_file}"
-    # Parse JSON for basic stats if jq is available
+    # Parse JSON for basic stats if jq is available (gremlins v0.6 flat schema)
     if command -v jq >/dev/null 2>&1; then
       jq -r '
-        .mutants // [] |
-        {
-          total: length,
-          killed: [.[] | select(.status == "KILLED")] | length,
-          lived: [.[] | select(.status == "LIVED")] | length,
-          timeout: [.[] | select(.status == "TIMEOUT")] | length,
-          not_covered: [.[] | select(.status == "NOT_COVERED")] | length
-        } |
-        "  Killed: \(.killed)/\(.total) | Lived: \(.lived) | Timeout: \(.timeout) | Not covered: \(.not_covered)"
+        "  Killed: \(.mutants_killed // 0)/\(.mutants_total // 0) | Lived: \(.mutants_lived // 0) | Not covered: \(.mutants_not_covered // 0) | Efficacy: \(.test_efficacy // 0)%"
       ' "${report_file}" 2>/dev/null || true
     fi
   fi
@@ -116,11 +108,10 @@ if [[ -n "${GITHUB_STEP_SUMMARY:-}" ]]; then
       report_file="${REPORT_DIR}/${short_name}.json"
       status="unknown"
       if [[ -f "${report_file}" ]] && command -v jq >/dev/null 2>&1; then
+        # gremlins v0.6 schema: flat top-level fields
         rate=$(jq -r '
-          .mutants // [] |
-          if length == 0 then "N/A"
-          else
-            (([.[] | select(.status == "KILLED")] | length) / length * 100) | round | tostring + "%"
+          if (.mutants_total // 0) == 0 then "N/A"
+          else ((.mutants_killed // 0) / .mutants_total * 100 | round | tostring) + "%"
           end
         ' "${report_file}" 2>/dev/null || echo "N/A")
         status="${rate}"
