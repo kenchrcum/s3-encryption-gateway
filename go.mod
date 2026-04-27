@@ -12,7 +12,7 @@ require (
 	github.com/fsnotify/fsnotify v1.9.0
 	github.com/go-gremlins/gremlins v0.6.0
 	github.com/gorilla/mux v1.8.1
-	github.com/ovh/kmip-go v0.8.0
+	github.com/ovh/kmip-go v0.8.1
 	github.com/prometheus/client_golang v1.23.2
 	github.com/prometheus/client_model v0.6.2
 	github.com/redis/go-redis/v9 v9.18.0
