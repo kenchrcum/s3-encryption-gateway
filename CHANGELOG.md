@@ -8,6 +8,75 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [0.6.2] — 2026-04-27
+
+### Changed
+
+- **First-class inline bucket policies** (`helm/`): The Helm chart now accepts
+  bucket policy definitions directly in `values.yaml` via a top-level
+  `policies` list, eliminating the need for manual `extraVolumes` /
+  `extraVolumeMounts` to mount policy files. Each entry maps 1:1 to
+  `PolicyConfig` (`internal/config/policy.go`) and supports all fields:
+  `encrypt_multipart_uploads`, `require_encryption`, `disallow_lock_bypass`,
+  and per-bucket `encryption` / `compression` / `rate_limit` overrides.
+
+  The chart renders a `<release>-policies` ConfigMap from the list, mounts it
+  at `/etc/s3-gateway/policies/`, and sets `POLICIES=/etc/s3-gateway/policies/*.yaml`
+  automatically. The previous `config.policies.value` path-glob approach is
+  preserved for operators who mount policy files from an external source; a new
+  render-time guard (Guard 6) enforces that both paths cannot be set
+  simultaneously. Schema validation (`values.schema.json`) enforces the
+  required `id` and `buckets` fields at `helm install --dry-run` time.
+
+  Example:
+
+  ```yaml
+  valkey:
+    enabled: true
+
+  policies:
+    - id: encrypted-uploads
+      buckets:
+        - "my-important-bucket"
+        - "logs-*"
+      encrypt_multipart_uploads: true
+      require_encryption: true
+  ```
+
+### Fixed
+
+- **Gremlins v0.6 API compatibility** (`.github/workflows/mutation.yml`,
+  `scripts/mutation-report.sh`): Gremlins v0.6 removed the `--only-covered`
+  flag (now the default), renamed `--json-output` to `-o`, and changed the
+  JSON output schema from a `.mutants[]` array to flat top-level fields
+  (`mutants_total`, `mutants_killed`, etc.). The mutation workflow and report
+  script were updated accordingly. Added `permissions.issues: write` so the
+  regression-issue step can create and comment on issues via `GITHUB_TOKEN`.
+
+### CI & Infrastructure
+
+- **Helm README synced to `gh-pages`** (`.github/workflows/helm.yml`): The
+  release workflow now copies `helm/s3-encryption-gateway/README.md` to the
+  `gh-pages` branch automatically so the Artifact Hub listing stays current
+  without a manual step.
+
+- **chart-releaser skipped when version is unchanged**
+  (`.github/workflows/helm.yml`): The release job now checks whether the chart
+  version in `Chart.yaml` has already been published before invoking
+  `chart-releaser`, preventing duplicate-release errors on documentation-only
+  pushes to `main`.
+
+- **Helm test suite stabilised** (`.github/workflows/helm-test.yml`,
+  `helm/s3-encryption-gateway/scripts/test-progressive-delivery.sh`): Fixed
+  two categories of failures — flaky assertions in the progressive-delivery
+  script and a Helm 3 / Helm 4 API incompatibility in flag handling. Both
+  Helm 3 and Helm 4 are now exercised in CI.
+
+- **Removed stale `coverage-fips.out` artefact**: The accidentally-committed
+  FIPS coverage profile (72 k lines) has been removed from the repository.
+
+---
+
 ## [0.6.1] — 2026-04-25
 
 ### Testing & Quality
