@@ -12,8 +12,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Testing & Quality
 
-- **Coverage gate ≥ 80% and mutation testing** (V0.6-QA-2): The project now
-  enforces a hard ≥ 80% statement coverage gate on every PR and push to `main`
+- **Coverage gate ≥ 75% and mutation testing** (V0.6-QA-2): The project now
+  enforces a hard ≥ 75% statement coverage gate on every PR and push to `main`
   via `scripts/coverage-gate.sh`, wired into the `coverage-gate` CI job in
   `.github/workflows/conformance.yml`. The FIPS build profile (`-tags=fips`)
   is gated separately. Nightly mutation testing via
