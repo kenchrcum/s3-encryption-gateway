@@ -1,6 +1,7 @@
 package debug
 
 import (
+	"log/slog"
 	"os"
 	"sync"
 )
@@ -33,13 +34,18 @@ func SetEnabled(value bool) {
 // InitFromEnv initializes debug logging from environment variable or log level.
 // If DEBUG=true is set, it enables debug logging.
 // Otherwise, it checks if LOG_LEVEL=debug.
+//
+// When debug mode is enabled a prominent warning is emitted so that operators
+// are alerted before sensitive diagnostic information appears in log output.
 func InitFromEnv() {
 	if os.Getenv("DEBUG") == "true" {
 		SetEnabled(true)
+		slog.Warn("debug mode active — do not use in production; diagnostic output may include sensitive metadata lengths")
 		return
 	}
 	if os.Getenv("LOG_LEVEL") == "debug" {
 		SetEnabled(true)
+		slog.Warn("debug mode active — do not use in production; diagnostic output may include sensitive metadata lengths")
 		return
 	}
 	SetEnabled(false)

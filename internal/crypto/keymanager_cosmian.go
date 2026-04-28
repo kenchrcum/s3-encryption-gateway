@@ -274,15 +274,13 @@ func (m *cosmianKMIPManager) Close(_ context.Context) error {
 }
 
 func (m *cosmianKMIPManager) defaultCryptoParams() kmip.CryptographicParameters {
-	// Cosmian KMS may not support NISTKeyWrap mode explicitly.
-	// Try without BlockCipherMode first, or use a standard mode.
-	// For key wrapping, we can omit the mode and let the server choose,
-	// or use ECB mode which is common for key wrapping.
+	// BlockCipherMode is intentionally omitted: Cosmian KMS selects AES-KW (RFC 3394)
+	// or AES-GCM internally — both are suitable for key wrapping.
+	// ECB is NOT used by this gateway and is unsuitable for key wrapping
+	// (deterministic, no diffusion across blocks).
 	return kmip.CryptographicParameters{
 		CryptographicAlgorithm: kmip.CryptographicAlgorithmAES,
-		// Don't specify BlockCipherMode - let Cosmian KMS choose the appropriate mode
-		// BlockCipherMode is optional for Encrypt/Decrypt operations
-		PaddingMethod: kmip.PaddingMethodNone,
+		PaddingMethod:          kmip.PaddingMethodNone,
 	}
 }
 

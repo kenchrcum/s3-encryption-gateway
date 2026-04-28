@@ -5,14 +5,13 @@ import (
 	"context"
 	"crypto/aes"
 	"crypto/cipher"
-	"crypto/md5"
 	"crypto/pbkdf2"
 	"crypto/rand"
 	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"strconv"
 
 	"github.com/kenneth/s3-encryption-gateway/internal/debug"
@@ -73,7 +72,7 @@ type EncryptionEngine interface {
 
 // engine implements the EncryptionEngine interface.
 type engine struct {
-	password            string
+	password            []byte
 	compressionEngine   CompressionEngine
 	preferredAlgorithm  string
 	supportedAlgorithms []string
@@ -168,8 +167,13 @@ func NewEngineWithChunkingAndProvider(password string, compressionEngine Compres
 		// We could log this for monitoring purposes
 	}
 
+	// Copy password into a []byte slice so we can zeroize it on Close().
+	// The caller's string is not modified.
+	passwordBytes := make([]byte, len(password))
+	copy(passwordBytes, password)
+
 	return &engine{
-		password:            password,
+		password:            passwordBytes,
 		compressionEngine:   compressionEngine,
 		preferredAlgorithm:  preferredAlgorithm,
 		supportedAlgorithms: supportedAlgorithms,
@@ -247,7 +251,7 @@ func (e *engine) deriveKey(salt []byte) ([]byte, error) {
 		return nil, fmt.Errorf("invalid salt size: expected %d bytes, got %d", saltSize, len(salt))
 	}
 
-	key, err := pbkdf2.Key(sha256.New, e.password, salt, pbkdf2Iterations, aesKeySize)
+	key, err := pbkdf2.Key(sha256.New, string(e.password), salt, pbkdf2Iterations, aesKeySize)
 	if err != nil {
 		// This error path should be statically unreachable with compile-time constant parameters,
 		// but we handle it to prevent silent failures in future refactors.
@@ -457,34 +461,28 @@ func (e *engine) Encrypt(reader io.Reader, metadata map[string]string) (io.Reade
 		MetaOriginalSize: fmt.Sprintf("%d", originalSize),
 	}
 	aad := buildAAD(algorithm, salt, nonce, aadMeta)
-	// Debug: log AAD for troubleshooting
+	// Debug: log AAD for troubleshooting (no raw crypto values logged).
 	if debug.Enabled() {
-		fmt.Printf("DEBUG Encrypt AAD: algorithm=%s, salt=%x, iv=%x, contentType=%s, keyVersion=%s, originalSize=%s, aad=%x\n",
-			algorithm, salt, nonce, contentType, aadMeta[MetaKeyVersion], aadMeta[MetaOriginalSize], aad)
+		slog.Debug("encrypt AAD built",
+			"algorithm", algorithm,
+			"salt_len", len(salt),
+			"iv_len", len(nonce),
+			"aad_len", len(aad),
+			"content_type", contentType,
+			"key_version", aadMeta[MetaKeyVersion],
+			"original_size", aadMeta[MetaOriginalSize],
+		)
 	}
 	// Encrypt the data using AEAD with AAD
 	ciphertext := gcm.Seal(nil, nonce, dataToEncrypt, aad)
 
-	// Debug: log encryption info for troubleshooting
+	// Debug: log encryption info for troubleshooting (no raw crypto material logged).
 	if debug.Enabled() && len(ciphertext) > 0 {
-		preview := ""
-		if len(ciphertext) <= 32 {
-			preview = fmt.Sprintf("%x", ciphertext)
-		} else {
-			preview = fmt.Sprintf("%x...", ciphertext[:32])
-		}
-		saltB64 := encodeBase64(salt)
-		ivB64 := encodeBase64(nonce)
-		saltPreview := saltB64
-		if len(saltPreview) > 20 {
-			saltPreview = saltPreview[:20]
-		}
-		ivPreview := ivB64
-		if len(ivPreview) > 20 {
-			ivPreview = ivPreview[:20]
-		}
-		fmt.Printf("DEBUG Encrypt: ciphertext len=%d, preview=%s, salt=%s..., iv=%s...\n",
-			len(ciphertext), preview, saltPreview, ivPreview)
+		slog.Debug("encrypt complete",
+			"ciphertext_len", len(ciphertext),
+			"salt_len", len(salt),
+			"iv_len", len(nonce),
+		)
 	}
 
 	// Create encrypted reader from ciphertext
@@ -614,7 +612,7 @@ func (e *engine) Decrypt(reader io.Reader, metadata map[string]string) (io.Reade
 		wrappedKeyB64 := expandedMetadata[MetaWrappedKeyCiphertext]
 		ciphertext, err := decodeBase64(wrappedKeyB64)
 		if err != nil {
-			return nil, nil, fmt.Errorf("failed to decode wrapped data key (base64=%q, length=%d): %w", wrappedKeyB64, len(wrappedKeyB64), err)
+			return nil, nil, fmt.Errorf("failed to decode wrapped data key (length=%d): %w", len(wrappedKeyB64), err)
 		}
 		env := &KeyEnvelope{
 			KeyID:      expandedMetadata[MetaKMSKeyID],
@@ -627,7 +625,7 @@ func (e *engine) Decrypt(reader io.Reader, metadata map[string]string) (io.Reade
 			return nil, nil, fmt.Errorf("failed to unwrap data key: KMS key ID is missing from metadata")
 		}
 		if len(env.Ciphertext) == 0 {
-			return nil, nil, fmt.Errorf("failed to unwrap data key: wrapped key ciphertext is empty (base64 was: %q)", wrappedKeyB64)
+			return nil, nil, fmt.Errorf("failed to unwrap data key: wrapped key ciphertext is empty")
 		}
 		// Validate wrapped key size (NIST Key Wrap produces ciphertext that is 8 bytes longer than plaintext)
 		// For a 32-byte AES-256 key, the wrapped key should be 40 bytes
@@ -671,22 +669,14 @@ func (e *engine) Decrypt(reader io.Reader, metadata map[string]string) (io.Reade
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to read encrypted data: %w", err)
 	}
-	// Debug: log decryption parameters
+	// Debug: log decryption parameters (no raw crypto values logged).
 	if debug.Enabled() {
-		saltB64 := expandedMetadata[MetaKeySalt]
-		ivB64 := expandedMetadata[MetaIV]
-		if saltB64 != "" && ivB64 != "" {
-			saltPreview := saltB64
-			if len(saltPreview) > 20 {
-				saltPreview = saltPreview[:20]
-			}
-			ivPreview := ivB64
-			if len(ivPreview) > 20 {
-				ivPreview = ivPreview[:20]
-			}
-			fmt.Printf("DEBUG Decrypt: ciphertext len=%d, salt=%s..., iv=%s..., algorithm=%s\n",
-				len(ciphertext), saltPreview, ivPreview, algorithm)
-		}
+		slog.Debug("decrypt starting",
+			"ciphertext_len", len(ciphertext),
+			"algorithm", algorithm,
+			"has_salt", expandedMetadata[MetaKeySalt] != "",
+			"has_iv", expandedMetadata[MetaIV] != "",
+		)
 	}
 
 	// Build AAD from expanded metadata
@@ -702,10 +692,17 @@ func (e *engine) Decrypt(reader io.Reader, metadata map[string]string) (io.Reade
 		"Content-Type":   contentType,
 	}
 	aad := buildAAD(algorithm, salt, iv, aadMeta)
-	// Debug: log AAD for troubleshooting
+	// Debug: log AAD for troubleshooting (no raw crypto values logged).
 	if debug.Enabled() {
-		fmt.Printf("DEBUG Decrypt AAD: algorithm=%s, salt=%x, iv=%x, contentType=%s, keyVersion=%s, originalSize=%s, aad=%x\n",
-			algorithm, salt, iv, aadMeta["Content-Type"], aadMeta[MetaKeyVersion], aadMeta[MetaOriginalSize], aad)
+		slog.Debug("decrypt AAD built",
+			"algorithm", algorithm,
+			"salt_len", len(salt),
+			"iv_len", len(iv),
+			"aad_len", len(aad),
+			"content_type", aadMeta["Content-Type"],
+			"key_version", aadMeta[MetaKeyVersion],
+			"original_size", aadMeta[MetaOriginalSize],
+		)
 	}
 
 	// Attempt decrypt with current key and AAD
@@ -1705,12 +1702,9 @@ func (e *engine) IsEncrypted(metadata map[string]string) bool {
 	return false
 }
 
-// computeETag computes the ETag (MD5 hash) for the given data.
-// S3 typically uses MD5 hash as ETag for objects.
-func computeETag(data []byte) string {
-	hash := md5.Sum(data)
-	return hex.EncodeToString(hash[:])
-}
+// computeETag is implemented in etag_default.go (non-FIPS) and etag_fips.go (FIPS build).
+// S3 treats ETags as opaque identifiers; both MD5 and SHA-256 are functionally equivalent
+// for this gateway's purposes.
 
 // isEncryptionMetadata checks if a metadata key is related to encryption.
 func isEncryptionMetadata(key string) bool {
@@ -1796,4 +1790,16 @@ func decodeMetadataFromJSON(data []byte) (map[string]string, error) {
 	var metadata map[string]string
 	err := json.Unmarshal(data, &metadata)
 	return metadata, err
+}
+
+// Close zeroizes sensitive key material held by the engine (the master password
+// bytes) so they do not linger on the heap after the engine is no longer needed.
+// It is safe to call Close multiple times; subsequent calls are no-ops.
+//
+// Usage: obtain the engine as io.Closer via type assertion:
+//
+//	if c, ok := eng.(io.Closer); ok { defer c.Close() }
+func (e *engine) Close() error {
+	zeroBytes(e.password)
+	return nil
 }

@@ -282,10 +282,15 @@ func NewMPUDecryptReader(
 	if err != nil {
 		return nil, fmt.Errorf("mpu_encrypter: create GCM: %w", err)
 	}
+	// Copy the DEK so that the reader has sole ownership and can safely
+	// zeroize it in returnEncBuf() without affecting the caller's slice.
+	dekCopy := make([]byte, len(dek))
+	copy(dekCopy, dek)
+
 	return &mpuDecryptReader{
 		src:          src,
 		manifest:     manifest,
-		dek:          dek,
+		dek:          dekCopy,
 		uploadIDHash: uploadIDHash,
 		ivPrefix:     ivPrefix,
 		gcm:          gcm,
@@ -378,6 +383,10 @@ func (r *mpuDecryptReader) returnEncBuf() {
 	if r.encBuf != nil {
 		encBufPool.Put(r.encBuf)
 		r.encBuf = nil
+	}
+	// Zero DEK to prevent key material lingering in heap after the reader is done.
+	for i := range r.dek {
+		r.dek[i] = 0
 	}
 }
 
