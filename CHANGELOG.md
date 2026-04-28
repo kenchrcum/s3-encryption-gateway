@@ -8,6 +8,65 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [0.6.3] — 2026-04-28
+
+### Security
+
+This patch release addresses six medium/minor findings from the v0.6 security
+analysis. All findings are non-breaking; no configuration changes are required
+unless noted.
+
+- **Integer overflow in encrypted range calculation** (V1.0-SEC-5):
+  `calculateEncryptedByteRange` in `internal/crypto/range_optimization.go`
+  now validates inputs before `int64` promotion and returns an `error` on
+  overflow, preventing incorrect byte-range offsets on 32-bit platforms or
+  adversarially crafted metadata.
+
+- **X-Forwarded-For header spoofing** (V1.0-SEC-6):
+  `getClientIP` and `getClientKey` no longer blindly trust the leftmost IP in
+  `X-Forwarded-For`. A new `TrustedProxies []string` configuration field
+  (`server.trusted_proxies`) accepts CIDRs; when the immediate remote peer is
+  a trusted proxy, the gateway walks the XFF chain right-to-left to find the
+  first non-trusted IP. Default is empty (fail-safe: `RemoteAddr` always used).
+  See `docs/POLICY_CONFIGURATION.md` for configuration examples.
+
+- **Replaced `math/rand` with `crypto/rand` in retry jitter** (V1.0-SEC-7):
+  All four backend retry jitter strategies (`full`, `decorrelated`, `equal`,
+  `none`) in `internal/s3/retry.go` now use `crypto/rand.Reader` via the new
+  `cryptoRandInt63n` helper. This removes the only `math/rand` usage in the
+  codebase and eliminates the suppressed `gosec` G404 finding. Behaviour is
+  unchanged; jitter values remain in the expected statistical bounds.
+
+- **Hardened HTTP transport for audit sink** (V1.0-SEC-8):
+  `internal/audit/sink.go` now constructs `*http.Client` with a fully
+  configured `http.Transport` (TLS handshake timeout, response header timeout,
+  idle/max connection limits, per-host concurrency cap). All limits are
+  exposed as `HTTPTransportConfig` fields under `audit.http.*` in
+  `config.yaml` for operator tuning. Slow or unresponsive audit endpoints
+  no longer risk connection exhaustion. A `dropped_audit_events_total`
+  Prometheus counter tracks events lost under backpressure.
+
+- **Startup warning for `InsecureSkipVerify`** (V1.0-SEC-9):
+  When `InsecureSkipVerify` is enabled for Cosmian KMS or Valkey TLS
+  connections, an `ERROR`-level log is emitted at startup with the exact
+  environment variable name and a clear MITM warning, ensuring operators
+  cannot accidentally run with disabled certificate verification in
+  production without an alert-pipeline-visible indication.
+
+- **Rate limiter timing side-channel mitigation** (V1.0-SEC-10):
+  `RateLimiter.Allow` in `internal/middleware/security.go` now enforces a
+  constant minimum execution time (`minAllowTime = 50µs`) via a deferred
+  spin-wait, preventing timing measurements from revealing token-bucket state.
+  Benchmark confirms P99 latency stays within `minAllowTime + 20µs`.
+
+### Dependencies
+
+- Updated `github.com/redis/go-redis/v9` to v9.19.0
+- Updated `github.com/ovh/kmip-go` to v0.8.1
+- Updated `peter-evans/create-or-update-comment` to v5
+
+---
+
 ## [0.6.2] — 2026-04-27
 
 ### Changed
