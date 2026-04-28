@@ -1,4 +1,4 @@
-.PHONY: build build-fips test test-fips test-conformance test-conformance-local test-conformance-minio test-conformance-external test-conformance-kms test-load test-load-range test-load-multipart test-load-soak test-load-minio test-load-garage test-load-rustfs test-load-seaweedfs test-load-prometheus test-load-baseline test-rotation test-fuzz test-comprehensive test-isolation-check bench-lint bench-micro-baseline bench-macro-minio bench-macro-garage bench-macro-rustfs bench-macro-seaweedfs bench-baseline lint clean run docker-build docker-push profile-image coverage-gate coverage-html coverage-fips mutation-report mutation-report-pkg help
+.PHONY: build build-fips test test-fips test-conformance test-conformance-local test-conformance-minio test-conformance-external test-conformance-kms test-load test-load-range test-load-multipart test-load-soak test-load-minio test-load-garage test-load-rustfs test-load-seaweedfs test-load-prometheus test-load-baseline test-rotation test-fuzz test-comprehensive test-isolation-check bench-lint bench-micro-baseline bench-macro-minio bench-macro-garage bench-macro-rustfs bench-macro-seaweedfs bench-baseline lint clean run docker-build docker-push docker-build-fips docker-push-fips profile-image coverage-gate coverage-html coverage-fips mutation-report mutation-report-pkg help
 
 # Variables
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo "dev")
@@ -286,8 +286,21 @@ profile-image:
 	@echo "Profile image built: $(IMAGE_NAME):$(IMAGE_TAG)-profile"
 	@echo "Run with admin.profiling.enabled=true and enable pprof via config."
 
+# Build FIPS Docker image
+docker-build-fips:
+	@echo "Building FIPS Docker image..."
+	@docker build -f Dockerfile.fips \
+		--build-arg VERSION=$(VERSION) \
+		--build-arg COMMIT=$(COMMIT) \
+		-t $(IMAGE_NAME):$(IMAGE_TAG)-fips .
+
+# Push FIPS Docker image
+docker-push-fips:
+	@echo "Pushing FIPS Docker image..."
+	@docker push $(IMAGE_NAME):$(IMAGE_TAG)-fips
+
 # Run all tests including integration
-docker-all: docker-build docker-push
+docker-all: docker-build docker-push docker-build-fips docker-push-fips
 
 # Run security scan
 security-scan:
@@ -381,6 +394,8 @@ help:
 	@echo "  run                - Build and run the server"
 	@echo "  docker-build       - Build Docker image"
 	@echo "  docker-push        - Push Docker image"
+	@echo "  docker-build-fips  - Build FIPS Docker image"
+	@echo "  docker-push-fips   - Push FIPS Docker image"
 	@echo "  profile-image      - Build non-stripped image for pprof (V0.6-OBS-1)"
 	@echo "  security-scan      - Run security vulnerability scan"
 	@echo "  install-tools      - Install development tools"
