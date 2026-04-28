@@ -2,6 +2,33 @@ apiVersion: v1
 entries:
   s3-encryption-gateway:
   - apiVersion: v2
+    appVersion: 0.6.3
+    created: "2026-04-28T20:43:49.806957619Z"
+    dependencies:
+    - condition: valkey.enabled
+      name: valkey
+      repository: https://valkey.io/valkey-helm/
+      version: ~0.9.0
+    description: A Helm chart for S3 Encryption Gateway - a transparent proxy providing
+      client-side encryption for S3-compatible storage services
+    digest: 357aab954d7a34df2c0050c19652c9fd145a016dcd201df303da64d3e8be99f3
+    home: https://github.com/kenchrcum/s3-encryption-gateway
+    keywords:
+    - s3
+    - encryption
+    - gateway
+    - storage
+    maintainers:
+    - name: kenchrcum
+      url: https://github.com/kenchrcum
+    name: s3-encryption-gateway
+    sources:
+    - https://github.com/kenchrcum/s3-encryption-gateway
+    type: application
+    urls:
+    - https://github.com/kenchrcum/s3-encryption-gateway/releases/download/s3-encryption-gateway-0.6.3/s3-encryption-gateway-0.6.3.tgz
+    version: 0.6.3
+  - apiVersion: v2
     appVersion: 0.6.2
     created: "2026-04-27T07:54:52.963634628Z"
     dependencies:
@@ -649,4 +676,4 @@ entries:
     urls:
     - https://github.com/kenchrcum/s3-encryption-gateway/releases/download/s3-encryption-gateway-0.1.0/s3-encryption-gateway-0.1.0.tgz
     version: 0.1.0
-generated: "2026-04-27T07:54:52.963879515Z"
+generated: "2026-04-28T20:43:49.807138246Z"
