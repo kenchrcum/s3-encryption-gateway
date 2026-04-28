@@ -231,6 +231,8 @@ func BenchmarkRateLimiter_Allow(b *testing.B) {
 	limiter := NewRateLimiter(1000, 1*time.Second, logger)
 	defer limiter.Stop()
 
+	b.ReportAllocs()
+	b.SetBytes(0)
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		limiter.Allow("bench-client")
