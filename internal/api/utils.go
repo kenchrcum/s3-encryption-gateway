@@ -4,26 +4,27 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"sync/atomic"
 
 	"github.com/kenneth/s3-encryption-gateway/internal/util"
 )
 
 // ipExtractor is the shared IP extractor instance configured with trusted proxies.
 // It is set during server initialization via SetIPExtractor.
-var ipExtractor *util.IPExtractor
+var ipExtractor atomic.Pointer[util.IPExtractor]
 
 // SetIPExtractor sets the global IP extractor instance.
 // This should be called once during server initialization.
 func SetIPExtractor(extractor *util.IPExtractor) {
-	ipExtractor = extractor
+	ipExtractor.Store(extractor)
 }
 
 // getClientIP extracts the client IP address from the request.
 // If an IP extractor is configured, it uses trusted proxy-aware extraction.
 // Otherwise, falls back to the legacy behavior.
 func getClientIP(r *http.Request) string {
-	if ipExtractor != nil {
-		return ipExtractor.GetClientIP(r)
+	if ext := ipExtractor.Load(); ext != nil {
+		return ext.GetClientIP(r)
 	}
 
 	// Fallback: use RemoteAddr directly (fail-safe)
