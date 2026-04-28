@@ -140,20 +140,18 @@ func TestRateLimitMiddleware(t *testing.T) {
 }
 
 func TestGetClientKey(t *testing.T) {
+	// Test without IP extractor (legacy behavior - uses RemoteAddr)
 	req := httptest.NewRequest("GET", "/test", nil)
 	req.RemoteAddr = "127.0.0.1:12345"
 
 	key := getClientKey(req)
-	if key != "127.0.0.1:12345" {
-		t.Errorf("Expected key %s, got %s", "127.0.0.1:12345", key)
+	// Without an extractor, it extracts IP from RemoteAddr (port removed)
+	if key != "127.0.0.1" {
+		t.Errorf("Expected key %s, got %s", "127.0.0.1", key)
 	}
 
-	// Test X-Forwarded-For header
-	req.Header.Set("X-Forwarded-For", "192.168.1.1")
-	key = getClientKey(req)
-	if key != "192.168.1.1" {
-		t.Errorf("Expected key %s, got %s", "192.168.1.1", key)
-	}
+	// Note: Full trusted proxy testing is done in internal/util/ip_test.go
+	// This test just verifies the fallback behavior when no extractor is set.
 }
 
 // TestRateLimiter_CleanupRuns verifies the cleanup goroutine runs and removes

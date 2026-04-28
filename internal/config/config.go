@@ -318,6 +318,10 @@ type ServerConfig struct {
 	IdleTimeout       time.Duration `yaml:"idle_timeout" env:"SERVER_IDLE_TIMEOUT"`
 	ReadHeaderTimeout time.Duration `yaml:"read_header_timeout" env:"SERVER_READ_HEADER_TIMEOUT"`
 	MaxHeaderBytes    int           `yaml:"max_header_bytes" env:"SERVER_MAX_HEADER_BYTES"`
+	// TrustedProxies is a list of CIDR ranges that are trusted to provide X-Forwarded-For headers.
+	// If empty (default), X-Forwarded-For headers are ignored and RemoteAddr is used (fail-safe).
+	// Example: ["10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"]
+	TrustedProxies []string `yaml:"trusted_proxies" env:"SERVER_TRUSTED_PROXIES"`
 	// DisableMultipartUploads disables multipart upload operations to ensure all data is encrypted
 	DisableMultipartUploads bool `yaml:"disable_multipart_uploads" env:"SERVER_DISABLE_MULTIPART_UPLOADS"`
 	// MaxLegacyCopySourceBytes caps the object size the legacy (non-chunked)

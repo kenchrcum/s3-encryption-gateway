@@ -19,6 +19,7 @@ import (
 	"github.com/kenneth/s3-encryption-gateway/internal/middleware"
 	"github.com/kenneth/s3-encryption-gateway/internal/mpu"
 	"github.com/kenneth/s3-encryption-gateway/internal/s3"
+	"github.com/kenneth/s3-encryption-gateway/internal/util"
 	"github.com/kenneth/s3-encryption-gateway/test/provider"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/sirupsen/logrus"
@@ -126,6 +127,17 @@ func StartGateway(t *testing.T, inst provider.Instance, opts ...Option) *Gateway
 	} else {
 		logger.SetLevel(logrus.ErrorLevel)
 	}
+
+	// Initialize IP extractor with trusted proxies (V1.0-SEC-6).
+	// This ensures client IP extraction honors trusted proxy configuration
+	// and prevents X-Forwarded-For header spoofing.
+	ipExtractor, err := util.NewIPExtractor(cfg.Server.TrustedProxies)
+	if err != nil {
+		listener.Close()
+		t.Fatalf("harness.StartGateway: invalid trusted proxies configuration: %v", err)
+	}
+	api.SetIPExtractor(ipExtractor)
+	middleware.SetIPExtractor(ipExtractor)
 
 	// Prometheus registry (isolated per test to avoid cross-test pollution).
 	reg := prometheus.NewRegistry()

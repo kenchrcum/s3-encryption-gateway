@@ -4,35 +4,30 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
-	"strings"
+
+	"github.com/kenneth/s3-encryption-gateway/internal/util"
 )
 
+// ipExtractor is the shared IP extractor instance configured with trusted proxies.
+// It is set during server initialization via SetIPExtractor.
+var ipExtractor *util.IPExtractor
+
+// SetIPExtractor sets the global IP extractor instance.
+// This should be called once during server initialization.
+func SetIPExtractor(extractor *util.IPExtractor) {
+	ipExtractor = extractor
+}
+
 // getClientIP extracts the client IP address from the request.
+// If an IP extractor is configured, it uses trusted proxy-aware extraction.
+// Otherwise, falls back to the legacy behavior.
 func getClientIP(r *http.Request) string {
-	// Check X-Forwarded-For header first (for proxies)
-	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
-		// X-Forwarded-For can contain multiple IPs, take the first one
-		ips := strings.Split(xff, ",")
-		if len(ips) > 0 {
-			return strings.TrimSpace(ips[0])
-		}
+	if ipExtractor != nil {
+		return ipExtractor.GetClientIP(r)
 	}
 
-	// Check X-Real-IP header
-	if xri := r.Header.Get("X-Real-IP"); xri != "" {
-		return strings.TrimSpace(xri)
-	}
-
-	// Fall back to RemoteAddr
-	if r.RemoteAddr != "" {
-		// RemoteAddr is in format "IP:port", extract just IP
-		if colonIdx := strings.LastIndex(r.RemoteAddr, ":"); colonIdx != -1 {
-			return r.RemoteAddr[:colonIdx]
-		}
-		return r.RemoteAddr
-	}
-
-	return "unknown"
+	// Fallback: use RemoteAddr directly (fail-safe)
+	return util.ExtractIP(r.RemoteAddr)
 }
 
 // getRequestID extracts or generates a request ID from the request.

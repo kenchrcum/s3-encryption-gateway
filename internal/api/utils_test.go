@@ -3,34 +3,75 @@ package api
 import (
 	"net/http/httptest"
 	"testing"
+
+	"github.com/kenneth/s3-encryption-gateway/internal/util"
 )
 
-// TestGetClientIP_XForwardedFor verifies extraction from X-Forwarded-For header.
-func TestGetClientIP_XForwardedFor(t *testing.T) {
+// TestGetClientIP_FailSafe_NoTrustedProxies verifies fail-safe behavior:
+// when no trusted proxies configured, X-Forwarded-For is ignored.
+func TestGetClientIP_FailSafe_NoTrustedProxies(t *testing.T) {
+	// Ensure no IP extractor is set
+	SetIPExtractor(nil)
+
 	req := httptest.NewRequest("GET", "/", nil)
+	req.RemoteAddr = "192.168.1.100:45678"
 	req.Header.Set("X-Forwarded-For", "203.0.113.1, 10.0.0.1, 192.168.1.1")
 
+	// Without trusted proxies, should use RemoteAddr (fail-safe)
 	got := getClientIP(req)
-	if got != "203.0.113.1" {
-		t.Errorf("getClientIP() X-Forwarded-For = %q, want %q", got, "203.0.113.1")
+	if got != "192.168.1.100" {
+		t.Errorf("getClientIP() without trusted proxies = %q, want %q (RemoteAddr)", got, "192.168.1.100")
 	}
 }
 
-// TestGetClientIP_XRealIP verifies fallback to X-Real-IP header.
-func TestGetClientIP_XRealIP(t *testing.T) {
+// TestGetClientIP_WithTrustedProxies verifies extraction when trusted proxies are configured.
+func TestGetClientIP_WithTrustedProxies(t *testing.T) {
+	// Set up IP extractor with trusted proxy
+	extractor, err := util.NewIPExtractor([]string{"10.0.0.0/8"})
+	if err != nil {
+		t.Fatalf("failed to create extractor: %v", err)
+	}
+	SetIPExtractor(extractor)
+	defer SetIPExtractor(nil) // Clean up
+
+	// From trusted proxy - should use X-Forwarded-For
 	req := httptest.NewRequest("GET", "/", nil)
-	req.Header.Set("X-Real-IP", "  10.0.0.5  ")
+	req.RemoteAddr = "10.0.0.1:45678"
+	req.Header.Set("X-Forwarded-For", "203.0.113.1")
 
 	got := getClientIP(req)
-	if got != "10.0.0.5" {
-		t.Errorf("getClientIP() X-Real-IP = %q, want %q", got, "10.0.0.5")
+	if got != "203.0.113.1" {
+		t.Errorf("getClientIP() with trusted proxy = %q, want %q", got, "203.0.113.1")
+	}
+}
+
+// TestGetClientIP_NonTrustedProxy verifies that requests from non-trusted IPs
+// ignore X-Forwarded-For headers (V1.0-SEC-6 security fix).
+func TestGetClientIP_NonTrustedProxy(t *testing.T) {
+	// Set up IP extractor with trusted proxy
+	extractor, err := util.NewIPExtractor([]string{"10.0.0.0/8"})
+	if err != nil {
+		t.Fatalf("failed to create extractor: %v", err)
+	}
+	SetIPExtractor(extractor)
+	defer SetIPExtractor(nil) // Clean up
+
+	// From non-trusted IP - should ignore X-Forwarded-For
+	req := httptest.NewRequest("GET", "/", nil)
+	req.RemoteAddr = "203.0.113.50:45678"
+	req.Header.Set("X-Forwarded-For", "1.2.3.4")
+
+	got := getClientIP(req)
+	if got != "203.0.113.50" {
+		t.Errorf("getClientIP() from non-trusted = %q, want %q (RemoteAddr, spoofing prevented)", got, "203.0.113.50")
 	}
 }
 
 // TestGetClientIP_RemoteAddr verifies fallback to RemoteAddr.
 func TestGetClientIP_RemoteAddr(t *testing.T) {
+	SetIPExtractor(nil)
+
 	req := httptest.NewRequest("GET", "/", nil)
-	// No X-Forwarded-For or X-Real-IP; RemoteAddr is set by httptest
 	req.RemoteAddr = "192.168.1.100:45678"
 
 	got := getClientIP(req)
@@ -39,14 +80,16 @@ func TestGetClientIP_RemoteAddr(t *testing.T) {
 	}
 }
 
-// TestGetClientIP_NoInfo verifies "unknown" when no IP info is available.
+// TestGetClientIP_NoInfo verifies empty string when no IP info is available.
 func TestGetClientIP_NoInfo(t *testing.T) {
+	SetIPExtractor(nil)
+
 	req := httptest.NewRequest("GET", "/", nil)
 	req.RemoteAddr = ""
 
 	got := getClientIP(req)
-	if got != "unknown" {
-		t.Errorf("getClientIP() no info = %q, want %q", got, "unknown")
+	if got != "" {
+		t.Errorf("getClientIP() no info = %q, want empty string", got)
 	}
 }
 

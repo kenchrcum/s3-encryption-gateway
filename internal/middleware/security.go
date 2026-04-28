@@ -5,8 +5,19 @@ import (
 	"sync"
 	"time"
 
+	"github.com/kenneth/s3-encryption-gateway/internal/util"
 	"github.com/sirupsen/logrus"
 )
+
+// ipExtractor is the shared IP extractor instance configured with trusted proxies.
+// It is set during server initialization via SetIPExtractor.
+var ipExtractor *util.IPExtractor
+
+// SetIPExtractor sets the global IP extractor instance for the middleware package.
+// This should be called once during server initialization.
+func SetIPExtractor(extractor *util.IPExtractor) {
+	ipExtractor = extractor
+}
 
 // SecurityHeadersMiddleware adds security headers to all responses.
 func SecurityHeadersMiddleware() func(http.Handler) http.Handler {
@@ -133,13 +144,14 @@ func (rl *RateLimiter) Allow(key string) bool {
 }
 
 // getClientKey extracts a key to identify the client (IP address).
+// It uses the same trusted proxy-aware logic as getClientIP to ensure
+// rate limiting cannot be bypassed via X-Forwarded-For spoofing.
 func getClientKey(r *http.Request) string {
-	// Try X-Forwarded-For header first (for proxies)
-	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
-		return xff
+	if ipExtractor != nil {
+		return ipExtractor.GetClientIP(r)
 	}
-	// Fall back to RemoteAddr
-	return r.RemoteAddr
+	// Fallback: use RemoteAddr directly (fail-safe)
+	return util.ExtractIP(r.RemoteAddr)
 }
 
 // RateLimitMiddleware creates a middleware that enforces rate limiting.
