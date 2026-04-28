@@ -8,7 +8,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"math/rand"
 	"net"
 	"net/http"
 	"strings"
@@ -76,8 +75,7 @@ func (f *fakeClock) totalSlept() time.Duration {
 
 func newTestRetryer(t testing.TB, cfg config.BackendRetryConfig, clk clock, onAttempt OnAttemptFn, onGiveUp OnGiveUpFn) *retryer {
 	t.Helper()
-	rng := rand.New(rand.NewSource(42)) //nolint:gosec
-	return newRetryer(cfg, rng, clk, onAttempt, onGiveUp)
+	return newRetryer(cfg, clk, onAttempt, onGiveUp)
 }
 
 // makeHTTPRespErr builds a smithyhttp.ResponseError with the given status code
@@ -266,7 +264,7 @@ func TestRetryer_RetryAfterHeaderHonoured(t *testing.T) {
 }
 
 // TestRetryer_JitterAlgorithms verifies that all four jitter algorithms
-// produce non-negative delays bounded by MaxBackoff, given a fixed RNG seed.
+// produce non-negative delays bounded by MaxBackoff.
 func TestRetryer_JitterAlgorithms(t *testing.T) {
 	algos := []string{"full", "decorrelated", "equal", "none"}
 	maxBackoff := 20 * time.Second
@@ -274,8 +272,7 @@ func TestRetryer_JitterAlgorithms(t *testing.T) {
 
 	for _, algo := range algos {
 		t.Run(algo, func(t *testing.T) {
-			rng := rand.New(rand.NewSource(12345)) //nolint:gosec
-			bo := newBackoffCalculator(algo, initial, maxBackoff, rng)
+			bo := newBackoffCalculator(algo, initial, maxBackoff)
 			var prev time.Duration
 			for attempt := 0; attempt <= 5; attempt++ {
 				d := bo.Next(attempt, prev)
@@ -402,7 +399,7 @@ func TestRetryerFactory_Build(t *testing.T) {
 	cfg.PerOperation = map[string]int{"CompleteMultipartUpload": 1, "PutObject": 5}
 
 	clk := &fakeClock{}
-	f := newRetryerFactory(cfg, 42, clk, nil, nil)
+	f := newRetryerFactory(cfg, clk, nil, nil)
 
 	putRetryer := f.Build("PutObject")
 	if putRetryer.MaxAttempts() != 5 {
@@ -704,5 +701,37 @@ func TestValidationWarnings(t *testing.T) {
 	safe := defaultTestCfg()
 	if len(ValidationWarnings(safe)) > 0 {
 		t.Errorf("unexpected warnings for safe config: %v", ValidationWarnings(safe))
+	}
+}
+
+// TestCryptoRandInt63n verifies that cryptoRandInt63n produces values within
+// the expected range and handles edge cases correctly.
+func TestCryptoRandInt63n(t *testing.T) {
+	// Test: cryptoRandInt63n(0) returns 0 without panic
+	if got := cryptoRandInt63n(0); got != 0 {
+		t.Errorf("cryptoRandInt63n(0) = %d, want 0", got)
+	}
+
+	// Test: cryptoRandInt63n(1) returns 0 without panic
+	if got := cryptoRandInt63n(1); got != 0 {
+		t.Errorf("cryptoRandInt63n(1) = %d, want 0", got)
+	}
+
+	// Test: cryptoRandInt63n(n) returns values in [0, n) for n > 1
+	const n = 1000
+	for i := 0; i < 1000; i++ {
+		got := cryptoRandInt63n(n)
+		if got < 0 || got >= n {
+			t.Errorf("cryptoRandInt63n(%d) = %d, want value in [0, %d)", n, got, n)
+		}
+	}
+
+	// Test: cryptoRandInt63n works with large values
+	const largeN = int64(1<<62 - 1)
+	for i := 0; i < 100; i++ {
+		got := cryptoRandInt63n(largeN)
+		if got < 0 || got >= largeN {
+			t.Errorf("cryptoRandInt63n(%d) = %d, want value in [0, %d)", largeN, got, largeN)
+		}
 	}
 }

@@ -234,7 +234,7 @@ func NewClientFactory(cfg *config.BackendConfig, opts ...ClientFactoryOption) *C
 				m.RecordBackendRetryGiveUp(op, reason)
 			}
 		}
-		f.retryerFactory = newRetryerFactory(rc, 0, nil, onAttempt, onGiveUp)
+		f.retryerFactory = newRetryerFactory(rc, nil, onAttempt, onGiveUp)
 	}
 
 	return f

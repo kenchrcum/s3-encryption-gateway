@@ -7,9 +7,10 @@ package s3
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/binary"
 	"errors"
 	"fmt"
-	"math/rand"
 	"net"
 	"net/http"
 	"strconv"
@@ -26,6 +27,24 @@ import (
 	"github.com/kenneth/s3-encryption-gateway/internal/config"
 	"github.com/kenneth/s3-encryption-gateway/internal/crypto"
 )
+
+// cryptoRandInt63n returns a cryptographically random int64 in [0, n).
+// This replaces math/rand for jitter calculations to avoid gosec G404
+// findings and maintain consistency with the rest of the codebase.
+// The fallback to time.Now().UnixNano() is only acceptable for jitter
+// (not security-sensitive); jitter timing does not require cryptographic
+// randomness, but using crypto/rand eliminates predictable sequences.
+func cryptoRandInt63n(n int64) int64 {
+	if n <= 0 {
+		return 0
+	}
+	var buf [8]byte
+	if _, err := rand.Read(buf[:]); err != nil {
+		// Fallback: XOR with nanoseconds; acceptable for jitter, not for keys.
+		binary.BigEndian.PutUint64(buf[:], uint64(time.Now().UnixNano()))
+	}
+	return int64(binary.BigEndian.Uint64(buf[:]) % uint64(n))
+}
 
 // retryReasonLabel is a closed set of classifier reason labels used as the
 // "reason" Prometheus label on s3_backend_retries_total.  Any change to this
@@ -96,15 +115,11 @@ type backoffCalculator interface {
 type fullJitter struct {
 	initial time.Duration
 	max     time.Duration
-	mu      sync.Mutex
-	rng     *rand.Rand //nolint:gosec
 }
 
 func (j *fullJitter) Next(attempt int, _ time.Duration) time.Duration {
 	cap := j.cap(attempt)
-	j.mu.Lock()
-	delay := time.Duration(j.rng.Int63n(int64(cap) + 1))
-	j.mu.Unlock()
+	delay := time.Duration(cryptoRandInt63n(int64(cap) + 1))
 	return delay
 }
 
@@ -131,21 +146,17 @@ func (j *fullJitter) cap(attempt int) time.Duration {
 type decorrelatedJitter struct {
 	initial time.Duration
 	max     time.Duration
-	mu      sync.Mutex
-	rng     *rand.Rand //nolint:gosec
 }
 
 func (j *decorrelatedJitter) Next(_ int, prev time.Duration) time.Duration {
 	if prev <= 0 {
 		prev = j.initial
 	}
-	j.mu.Lock()
 	window := int64(3 * prev)
 	if window < 0 {
 		window = int64(j.max)
 	}
-	delay := time.Duration(j.rng.Int63n(window+1)) + j.initial
-	j.mu.Unlock()
+	delay := time.Duration(cryptoRandInt63n(window+1)) + j.initial
 	if delay > j.max {
 		return j.max
 	}
@@ -158,8 +169,6 @@ func (j *decorrelatedJitter) Next(_ int, prev time.Duration) time.Duration {
 type equalJitter struct {
 	initial time.Duration
 	max     time.Duration
-	mu      sync.Mutex
-	rng     *rand.Rand //nolint:gosec
 }
 
 func (j *equalJitter) Next(attempt int, _ time.Duration) time.Duration {
@@ -175,12 +184,10 @@ func (j *equalJitter) Next(attempt int, _ time.Duration) time.Duration {
 		cap = j.max
 	}
 	half := cap / 2
-	j.mu.Lock()
 	delay := half
 	if half > 0 {
-		delay += time.Duration(j.rng.Int63n(int64(half) + 1))
+		delay += time.Duration(cryptoRandInt63n(int64(half) + 1))
 	}
-	j.mu.Unlock()
 	return delay
 }
 
@@ -206,16 +213,16 @@ func (j *noJitter) Next(attempt int, _ time.Duration) time.Duration {
 }
 
 // newBackoffCalculator constructs a backoffCalculator from the jitter string.
-func newBackoffCalculator(jitter string, initial, max time.Duration, rng *rand.Rand) backoffCalculator {
+func newBackoffCalculator(jitter string, initial, max time.Duration) backoffCalculator {
 	switch jitter {
 	case "decorrelated":
-		return &decorrelatedJitter{initial: initial, max: max, rng: rng}
+		return &decorrelatedJitter{initial: initial, max: max}
 	case "equal":
-		return &equalJitter{initial: initial, max: max, rng: rng}
+		return &equalJitter{initial: initial, max: max}
 	case "none":
 		return &noJitter{initial: initial, max: max}
 	default: // "full" and anything else normalised away
-		return &fullJitter{initial: initial, max: max, rng: rng}
+		return &fullJitter{initial: initial, max: max}
 	}
 }
 
@@ -349,9 +356,7 @@ type retryer struct {
 }
 
 // newRetryer builds a retryer from the supplied config.
-// rng must be non-nil and is shared among all retryer instances from the same
-// factory (they each clone on per-operation use via the per-factory wrapper).
-func newRetryer(cfg config.BackendRetryConfig, rng *rand.Rand, clk clock, onAttempt OnAttemptFn, onGiveUp OnGiveUpFn) *retryer {
+func newRetryer(cfg config.BackendRetryConfig, clk clock, onAttempt OnAttemptFn, onGiveUp OnGiveUpFn) *retryer {
 	var inner aws.Retryer
 	switch cfg.Mode {
 	case "adaptive":
@@ -366,7 +371,7 @@ func newRetryer(cfg config.BackendRetryConfig, rng *rand.Rand, clk clock, onAtte
 		clk = realClock{}
 	}
 
-	bo := newBackoffCalculator(cfg.Jitter, cfg.InitialBackoff, cfg.MaxBackoff, rng)
+	bo := newBackoffCalculator(cfg.Jitter, cfg.InitialBackoff, cfg.MaxBackoff)
 
 	return &retryer{
 		inner:     inner,
@@ -566,20 +571,17 @@ func retryAfterSeconds(err error) int64 {
 // `prevDelay` state (decorrelated jitter) is per-operation, not per-client.
 type retryerFactory struct {
 	cfg       config.BackendRetryConfig
-	mu        sync.Mutex
-	rng       *rand.Rand //nolint:gosec
 	clk       clock
 	onAttempt OnAttemptFn
 	onGiveUp  OnGiveUpFn
 }
 
-func newRetryerFactory(cfg config.BackendRetryConfig, seed int64, clk clock, onAttempt OnAttemptFn, onGiveUp OnGiveUpFn) *retryerFactory {
+func newRetryerFactory(cfg config.BackendRetryConfig, clk clock, onAttempt OnAttemptFn, onGiveUp OnGiveUpFn) *retryerFactory {
 	if clk == nil {
 		clk = realClock{}
 	}
 	return &retryerFactory{
 		cfg:       cfg,
-		rng:       rand.New(rand.NewSource(seed)), //nolint:gosec
 		clk:       clk,
 		onAttempt: onAttempt,
 		onGiveUp:  onGiveUp,
@@ -589,14 +591,7 @@ func newRetryerFactory(cfg config.BackendRetryConfig, seed int64, clk clock, onA
 // Build returns a new retryer suitable for a single logical S3 operation.
 // The op argument is the SDK operation name (e.g. "PutObject").
 func (f *retryerFactory) Build(op string) aws.RetryerV2 {
-	f.mu.Lock()
-	// Each retryer gets its own rand.Rand seeded from the factory's RNG so
-	// that jitter is independent per operation while remaining deterministic
-	// (same factory seed → same overall sequence).
-	seed := f.rng.Int63()
-	f.mu.Unlock()
-
-	r := newRetryer(f.cfg, rand.New(rand.NewSource(seed)), f.clk, f.onAttempt, f.onGiveUp) //nolint:gosec
+	r := newRetryer(f.cfg, f.clk, f.onAttempt, f.onGiveUp)
 	return r.clone(op)
 }
 
