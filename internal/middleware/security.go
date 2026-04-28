@@ -45,6 +45,10 @@ func SecurityHeadersMiddleware() func(http.Handler) http.Handler {
 	}
 }
 
+// minAllowTime is the minimum execution time for RateLimiter.Allow to mitigate
+// timing side-channels that could reveal token-bucket state.
+const minAllowTime = 50 * time.Microsecond
+
 // RateLimiter implements a simple token bucket rate limiter.
 type RateLimiter struct {
 	mu              sync.Mutex
@@ -108,6 +112,19 @@ func (rl *RateLimiter) Stop() {
 
 // Allow checks if a request from the given key should be allowed.
 func (rl *RateLimiter) Allow(key string) bool {
+	start := time.Now()
+	defer func() {
+		if elapsed := time.Since(start); elapsed < minAllowTime {
+			// Use a precise spin-wait instead of time.Sleep because
+			// time.Sleep has coarse granularity (~1 ms on standard Linux
+			// tickless kernels) which would defeat the purpose of a
+			// microsecond-level constant-time guarantee.
+			deadline := start.Add(minAllowTime)
+			for time.Now().Before(deadline) {
+			}
+		}
+	}()
+
 	rl.mu.Lock()
 	defer rl.mu.Unlock()
 

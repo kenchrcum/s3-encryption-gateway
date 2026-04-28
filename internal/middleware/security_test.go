@@ -4,6 +4,7 @@ import (
 	"crypto/tls"
 	"net/http"
 	"net/http/httptest"
+	"sort"
 	"testing"
 	"time"
 
@@ -189,5 +190,49 @@ func TestRateLimiter_CleanupRuns(t *testing.T) {
 	rl.mu.Unlock()
 	if exists {
 		t.Error("cleanup should have removed the stale entry")
+	}
+}
+
+// TestRateLimiter_AllowTiming verifies that the timing side-channel mitigation
+// in Allow keeps P99 latency within the allowed bound (minAllowTime + 20µs).
+func TestRateLimiter_AllowTiming(t *testing.T) {
+	logger := logrus.New()
+	logger.SetLevel(logrus.ErrorLevel)
+
+	limiter := NewRateLimiter(1000, 1*time.Second, logger)
+	defer limiter.Stop()
+
+	const iterations = 10000
+	latencies := make([]time.Duration, iterations)
+
+	for i := 0; i < iterations; i++ {
+		start := time.Now()
+		limiter.Allow("timing-client")
+		latencies[i] = time.Since(start)
+	}
+
+	sort.Slice(latencies, func(i, j int) bool {
+		return latencies[i] < latencies[j]
+	})
+
+	p99 := latencies[len(latencies)*99/100]
+	maxAllowed := minAllowTime + 20*time.Microsecond
+
+	if p99 > maxAllowed {
+		t.Fatalf("P99 latency %v exceeds allowed bound %v", p99, maxAllowed)
+	}
+}
+
+// BenchmarkRateLimiter_Allow measures the latency of Allow under load.
+func BenchmarkRateLimiter_Allow(b *testing.B) {
+	logger := logrus.New()
+	logger.SetLevel(logrus.ErrorLevel)
+
+	limiter := NewRateLimiter(1000, 1*time.Second, logger)
+	defer limiter.Stop()
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		limiter.Allow("bench-client")
 	}
 }
