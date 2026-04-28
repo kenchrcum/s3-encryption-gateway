@@ -215,3 +215,67 @@ func TestBuildCosmianTLSConfig_InvalidCACert(t *testing.T) {
 		t.Errorf("expected cert parse error, got: %v", err)
 	}
 }
+
+// TestBuildCosmianTLSConfig_InsecureSkipVerify_Warning verifies that an
+// ERROR-level warning is logged when InsecureSkipVerify is enabled.
+func TestBuildCosmianTLSConfig_InsecureSkipVerify_Warning(t *testing.T) {
+	// Capture log output
+	var buf strings.Builder
+	originalOutput := logrus.StandardLogger().Out
+	originalLevel := logrus.StandardLogger().Level
+	defer func() {
+		logrus.StandardLogger().Out = originalOutput
+		logrus.StandardLogger().Level = originalLevel
+	}()
+	logrus.StandardLogger().Out = &buf
+	logrus.StandardLogger().Level = logrus.ErrorLevel
+
+	cfg := config.CosmianConfig{
+		InsecureSkipVerify: true,
+	}
+
+	_, err := buildCosmianTLSConfig(cfg)
+	if err != nil {
+		t.Fatalf("buildCosmianTLSConfig() error: %v", err)
+	}
+
+	logOutput := buf.String()
+	if !strings.Contains(logOutput, "InsecureSkipVerify is ENABLED") {
+		t.Errorf("expected ERROR log with 'InsecureSkipVerify is ENABLED', got: %s", logOutput)
+	}
+	if !strings.Contains(logOutput, "COSMIAN_KMS_INSECURE_SKIP_VERIFY") {
+		t.Errorf("expected ERROR log to mention 'COSMIAN_KMS_INSECURE_SKIP_VERIFY', got: %s", logOutput)
+	}
+	if !strings.Contains(logOutput, "UNSAFE in production") {
+		t.Errorf("expected ERROR log to mention 'UNSAFE in production', got: %s", logOutput)
+	}
+}
+
+// TestBuildCosmianTLSConfig_NoInsecureSkipVerify_NoWarning verifies that no
+// warning is logged when InsecureSkipVerify is disabled.
+func TestBuildCosmianTLSConfig_NoInsecureSkipVerify_NoWarning(t *testing.T) {
+	// Capture log output
+	var buf strings.Builder
+	originalOutput := logrus.StandardLogger().Out
+	originalLevel := logrus.StandardLogger().Level
+	defer func() {
+		logrus.StandardLogger().Out = originalOutput
+		logrus.StandardLogger().Level = originalLevel
+	}()
+	logrus.StandardLogger().Out = &buf
+	logrus.StandardLogger().Level = logrus.ErrorLevel
+
+	cfg := config.CosmianConfig{
+		InsecureSkipVerify: false,
+	}
+
+	_, err := buildCosmianTLSConfig(cfg)
+	if err != nil {
+		t.Fatalf("buildCosmianTLSConfig() error: %v", err)
+	}
+
+	logOutput := buf.String()
+	if strings.Contains(logOutput, "InsecureSkipVerify is ENABLED") {
+		t.Errorf("expected no warning when InsecureSkipVerify is false, but got: %s", logOutput)
+	}
+}

@@ -4,12 +4,14 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/alicebob/miniredis/v2"
 	"github.com/kenneth/s3-encryption-gateway/internal/config"
 	"github.com/redis/go-redis/v9"
+	"github.com/sirupsen/logrus"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -433,4 +435,58 @@ func TestStateStore_List_Empty(t *testing.T) {
 	states, err := s.List(ctx)
 	require.NoError(t, err)
 	assert.Empty(t, states)
+}
+
+// TestBuildTLSConfig_InsecureSkipVerify_Warning verifies that an
+// ERROR-level warning is logged when InsecureSkipVerify is enabled.
+func TestBuildTLSConfig_InsecureSkipVerify_Warning(t *testing.T) {
+	// Capture log output
+	var buf strings.Builder
+	originalOutput := logrus.StandardLogger().Out
+	originalLevel := logrus.StandardLogger().Level
+	defer func() {
+		logrus.StandardLogger().Out = originalOutput
+		logrus.StandardLogger().Level = originalLevel
+	}()
+	logrus.StandardLogger().Out = &buf
+	logrus.StandardLogger().Level = logrus.ErrorLevel
+
+	cfg := config.ValkeyTLSConfig{
+		Enabled:            true,
+		InsecureSkipVerify: true,
+	}
+
+	_, err := buildTLSConfig(cfg)
+	require.NoError(t, err)
+
+	logOutput := buf.String()
+	assert.Contains(t, logOutput, "InsecureSkipVerify is ENABLED", "expected ERROR log with warning")
+	assert.Contains(t, logOutput, "VALKEY_TLS_INSECURE_SKIP_VERIFY", "expected log to mention env var")
+	assert.Contains(t, logOutput, "UNSAFE in production", "expected log to mention UNSAFE")
+}
+
+// TestBuildTLSConfig_NoInsecureSkipVerify_NoWarning verifies that no
+// warning is logged when InsecureSkipVerify is disabled.
+func TestBuildTLSConfig_NoInsecureSkipVerify_NoWarning(t *testing.T) {
+	// Capture log output
+	var buf strings.Builder
+	originalOutput := logrus.StandardLogger().Out
+	originalLevel := logrus.StandardLogger().Level
+	defer func() {
+		logrus.StandardLogger().Out = originalOutput
+		logrus.StandardLogger().Level = originalLevel
+	}()
+	logrus.StandardLogger().Out = &buf
+	logrus.StandardLogger().Level = logrus.ErrorLevel
+
+	cfg := config.ValkeyTLSConfig{
+		Enabled:            true,
+		InsecureSkipVerify: false,
+	}
+
+	_, err := buildTLSConfig(cfg)
+	require.NoError(t, err)
+
+	logOutput := buf.String()
+	assert.NotContains(t, logOutput, "InsecureSkipVerify is ENABLED", "expected no warning when InsecureSkipVerify is false")
 }

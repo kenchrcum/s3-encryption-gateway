@@ -18,6 +18,7 @@ import (
 
 	"github.com/kenneth/s3-encryption-gateway/internal/config"
 	"github.com/redis/go-redis/v9"
+	"github.com/sirupsen/logrus"
 )
 
 // Sentinel errors — use errors.Is for matching.
@@ -159,6 +160,13 @@ func NewValkeyStateStore(ctx context.Context, cfg config.ValkeyConfig) (*ValkeyS
 
 // buildTLSConfig constructs a *tls.Config from ValkeyTLSConfig.
 func buildTLSConfig(cfg config.ValkeyTLSConfig) (*tls.Config, error) {
+	if cfg.InsecureSkipVerify {
+		logrus.WithFields(logrus.Fields{
+			"component": "mpu_state",
+			"setting":   "VALKEY_TLS_INSECURE_SKIP_VERIFY",
+		}).Error("InsecureSkipVerify is ENABLED: TLS certificate verification is disabled for Valkey connections. This is UNSAFE in production and allows MITM attacks.")
+	}
+
 	tc := &tls.Config{
 		InsecureSkipVerify: cfg.InsecureSkipVerify, //nolint:gosec
 	}

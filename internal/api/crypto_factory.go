@@ -112,6 +112,13 @@ func buildCosmianOptions(kmCfg *config.KeyManagerConfig) (crypto.CosmianKMIPOpti
 }
 
 func buildCosmianTLSConfig(cfg config.CosmianConfig) (*tls.Config, error) {
+	if cfg.InsecureSkipVerify {
+		logrus.WithFields(logrus.Fields{
+			"component": "crypto_factory",
+			"setting":   "COSMIAN_KMS_INSECURE_SKIP_VERIFY",
+		}).Error("InsecureSkipVerify is ENABLED: TLS certificate verification is disabled for KMS connections. This is UNSAFE in production and allows MITM attacks.")
+	}
+
 	tlsCfg := &tls.Config{
 		MinVersion:         tls.VersionTLS12,
 		InsecureSkipVerify: cfg.InsecureSkipVerify, //nolint:gosec // operator opt-in
