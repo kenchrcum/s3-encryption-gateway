@@ -385,6 +385,35 @@ type SinkConfig struct {
 	FlushInterval time.Duration     `yaml:"flush_interval" env:"AUDIT_SINK_FLUSH_INTERVAL"`
 	RetryCount    int               `yaml:"retry_count" env:"AUDIT_SINK_RETRY_COUNT"`
 	RetryBackoff  time.Duration     `yaml:"retry_backoff" env:"AUDIT_SINK_RETRY_BACKOFF"`
+	// HTTP transport configuration for HTTP sink (V1.0-SEC-8)
+	HTTP HTTPTransportConfig `yaml:"http"`
+}
+
+// HTTPTransportConfig holds HTTP client transport settings for the audit HTTP sink.
+// These settings harden the HTTP client against slow endpoints and resource exhaustion.
+// V1.0-SEC-8 — hardened HTTP transport for audit sink.
+type HTTPTransportConfig struct {
+	// Timeout is the total request timeout (including retries).
+	// Default: 30s
+	Timeout time.Duration `yaml:"timeout" env:"AUDIT_SINK_HTTP_TIMEOUT"`
+	// MaxConnsPerHost limits connections per host to prevent resource exhaustion.
+	// Default: 20
+	MaxConnsPerHost int `yaml:"max_conns_per_host" env:"AUDIT_SINK_HTTP_MAX_CONNS_PER_HOST"`
+	// MaxIdleConns is the maximum number of idle connections across all hosts.
+	// Default: 100
+	MaxIdleConns int `yaml:"max_idle_conns" env:"AUDIT_SINK_HTTP_MAX_IDLE_CONNS"`
+	// MaxIdleConnsPerHost is the maximum idle connections per host.
+	// Default: 10
+	MaxIdleConnsPerHost int `yaml:"max_idle_conns_per_host" env:"AUDIT_SINK_HTTP_MAX_IDLE_CONNS_PER_HOST"`
+	// IdleConnTimeout is the maximum time an idle connection remains open.
+	// Default: 90s
+	IdleConnTimeout time.Duration `yaml:"idle_conn_timeout" env:"AUDIT_SINK_HTTP_IDLE_CONN_TIMEOUT"`
+	// TLSHandshakeTimeout is the maximum time to wait for TLS handshake.
+	// Default: 10s
+	TLSHandshakeTimeout time.Duration `yaml:"tls_handshake_timeout" env:"AUDIT_SINK_HTTP_TLS_HANDSHAKE_TIMEOUT"`
+	// ResponseHeaderTimeout is the maximum time to wait for response headers.
+	// Default: 10s
+	ResponseHeaderTimeout time.Duration `yaml:"response_header_timeout" env:"AUDIT_SINK_HTTP_RESPONSE_HEADER_TIMEOUT"`
 }
 
 // TracingConfig holds OpenTelemetry tracing configuration.
@@ -895,6 +924,42 @@ func loadFromEnv(config *Config) {
 	if v := os.Getenv("AUDIT_SINK_RETRY_BACKOFF"); v != "" {
 		if d, err := time.ParseDuration(v); err == nil {
 			config.Audit.Sink.RetryBackoff = d
+		}
+	}
+	// V1.0-SEC-8 — HTTP transport configuration for audit sink
+	if v := os.Getenv("AUDIT_SINK_HTTP_TIMEOUT"); v != "" {
+		if d, err := time.ParseDuration(v); err == nil {
+			config.Audit.Sink.HTTP.Timeout = d
+		}
+	}
+	if v := os.Getenv("AUDIT_SINK_HTTP_MAX_CONNS_PER_HOST"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			config.Audit.Sink.HTTP.MaxConnsPerHost = n
+		}
+	}
+	if v := os.Getenv("AUDIT_SINK_HTTP_MAX_IDLE_CONNS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			config.Audit.Sink.HTTP.MaxIdleConns = n
+		}
+	}
+	if v := os.Getenv("AUDIT_SINK_HTTP_MAX_IDLE_CONNS_PER_HOST"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			config.Audit.Sink.HTTP.MaxIdleConnsPerHost = n
+		}
+	}
+	if v := os.Getenv("AUDIT_SINK_HTTP_IDLE_CONN_TIMEOUT"); v != "" {
+		if d, err := time.ParseDuration(v); err == nil {
+			config.Audit.Sink.HTTP.IdleConnTimeout = d
+		}
+	}
+	if v := os.Getenv("AUDIT_SINK_HTTP_TLS_HANDSHAKE_TIMEOUT"); v != "" {
+		if d, err := time.ParseDuration(v); err == nil {
+			config.Audit.Sink.HTTP.TLSHandshakeTimeout = d
+		}
+	}
+	if v := os.Getenv("AUDIT_SINK_HTTP_RESPONSE_HEADER_TIMEOUT"); v != "" {
+		if d, err := time.ParseDuration(v); err == nil {
+			config.Audit.Sink.HTTP.ResponseHeaderTimeout = d
 		}
 	}
 	if v := os.Getenv("AUDIT_REDACT_METADATA_KEYS"); v != "" {

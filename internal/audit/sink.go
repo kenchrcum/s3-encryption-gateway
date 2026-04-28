@@ -4,10 +4,24 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"os"
 	"sync"
 	"time"
+
+	"github.com/kenneth/s3-encryption-gateway/internal/config"
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promauto"
+)
+
+// droppedAuditEventsTotal counts audit events dropped due to sink failures
+// or backpressure. V1.0-SEC-8.
+var droppedAuditEventsTotal = promauto.NewCounter(
+	prometheus.CounterOpts{
+		Name: "dropped_audit_events_total",
+		Help: "Total number of audit events dropped due to sink failures or backpressure",
+	},
 )
 
 // Sink is an interface for audit event sinks that support closing.
@@ -161,14 +175,66 @@ type HTTPSink struct {
 	endpoint string
 	client   *http.Client
 	headers  map[string]string
+	logger   *slog.Logger
 }
 
-// NewHTTPSink creates a new HTTP sink.
+// NewHTTPSink creates a new HTTP sink with default (hardened) transport settings.
+// For configurable settings, use NewHTTPSinkWithConfig.
 func NewHTTPSink(endpoint string, headers map[string]string) *HTTPSink {
+	return NewHTTPSinkWithConfig(endpoint, headers, config.HTTPTransportConfig{})
+}
+
+// NewHTTPSinkWithConfig creates a new HTTP sink with configurable transport settings.
+// V1.0-SEC-8 — hardened HTTP transport with per-phase timeouts, connection limits,
+// and concurrency caps to prevent resource exhaustion.
+func NewHTTPSinkWithConfig(endpoint string, headers map[string]string, cfg config.HTTPTransportConfig) *HTTPSink {
+	// Apply defaults for zero values
+	timeout := cfg.Timeout
+	if timeout == 0 {
+		timeout = 30 * time.Second
+	}
+	maxConnsPerHost := cfg.MaxConnsPerHost
+	if maxConnsPerHost == 0 {
+		maxConnsPerHost = 20
+	}
+	maxIdleConns := cfg.MaxIdleConns
+	if maxIdleConns == 0 {
+		maxIdleConns = 100
+	}
+	maxIdleConnsPerHost := cfg.MaxIdleConnsPerHost
+	if maxIdleConnsPerHost == 0 {
+		maxIdleConnsPerHost = 10
+	}
+	idleConnTimeout := cfg.IdleConnTimeout
+	if idleConnTimeout == 0 {
+		idleConnTimeout = 90 * time.Second
+	}
+	tlsHandshakeTimeout := cfg.TLSHandshakeTimeout
+	if tlsHandshakeTimeout == 0 {
+		tlsHandshakeTimeout = 10 * time.Second
+	}
+	responseHeaderTimeout := cfg.ResponseHeaderTimeout
+	if responseHeaderTimeout == 0 {
+		responseHeaderTimeout = 10 * time.Second
+	}
+
+	transport := &http.Transport{
+		TLSHandshakeTimeout:   tlsHandshakeTimeout,
+		ResponseHeaderTimeout: responseHeaderTimeout,
+		MaxIdleConns:          maxIdleConns,
+		MaxIdleConnsPerHost:   maxIdleConnsPerHost,
+		IdleConnTimeout:       idleConnTimeout,
+		MaxConnsPerHost:       maxConnsPerHost,
+	}
+
 	return &HTTPSink{
 		endpoint: endpoint,
-		client:   &http.Client{Timeout: 10 * time.Second},
-		headers:  headers,
+		client: &http.Client{
+			Timeout:   timeout,
+			Transport: transport,
+		},
+		headers: headers,
+		logger:  slog.Default(),
 	}
 }
 
@@ -178,15 +244,35 @@ func (s *HTTPSink) WriteEvent(event *AuditEvent) error {
 }
 
 // WriteBatch writes a batch of events.
+// V1.0-SEC-8 — failures are logged via structured logging and do not block
+// the caller indefinitely. Dropped events are counted.
 func (s *HTTPSink) WriteBatch(events []*AuditEvent) error {
+	if len(events) == 0 {
+		return nil
+	}
+
 	data, err := json.Marshal(events)
 	if err != nil {
-		return err
+		droppedAuditEventsTotal.Add(float64(len(events)))
+		if s.logger != nil {
+			s.logger.Error("failed to marshal audit events",
+				slog.String("error", err.Error()),
+				slog.Int("event_count", len(events)),
+			)
+		}
+		return fmt.Errorf("failed to marshal audit events: %w", err)
 	}
 
 	req, err := http.NewRequest("POST", s.endpoint, bytes.NewReader(data))
 	if err != nil {
-		return err
+		droppedAuditEventsTotal.Add(float64(len(events)))
+		if s.logger != nil {
+			s.logger.Error("failed to create HTTP request for audit events",
+				slog.String("error", err.Error()),
+				slog.Int("event_count", len(events)),
+			)
+		}
+		return fmt.Errorf("failed to create HTTP request: %w", err)
 	}
 
 	req.Header.Set("Content-Type", "application/json")
@@ -196,15 +282,37 @@ func (s *HTTPSink) WriteBatch(events []*AuditEvent) error {
 
 	resp, err := s.client.Do(req)
 	if err != nil {
-		return err
+		droppedAuditEventsTotal.Add(float64(len(events)))
+		if s.logger != nil {
+			s.logger.Error("failed to send audit events to HTTP sink",
+				slog.String("error", err.Error()),
+				slog.String("endpoint", s.endpoint),
+				slog.Int("event_count", len(events)),
+			)
+		}
+		return fmt.Errorf("failed to send audit events: %w", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode >= 400 {
+		droppedAuditEventsTotal.Add(float64(len(events)))
+		if s.logger != nil {
+			s.logger.Error("HTTP sink returned error status",
+				slog.String("status", resp.Status),
+				slog.String("endpoint", s.endpoint),
+				slog.Int("event_count", len(events)),
+			)
+		}
 		return fmt.Errorf("http sink returned status: %s", resp.Status)
 	}
 
 	return nil
+}
+
+// SetLogger sets the structured logger for the HTTP sink.
+// If not set, slog.Default() is used.
+func (s *HTTPSink) SetLogger(logger *slog.Logger) {
+	s.logger = logger
 }
 
 // FileSink writes events to a file.
