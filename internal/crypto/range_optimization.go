@@ -2,6 +2,7 @@ package crypto
 
 import (
 	"fmt"
+	"math"
 	"strconv"
 	"strings"
 )
@@ -32,16 +33,32 @@ func calculateChunkRangeFromPlaintext(plaintextStart, plaintextEnd int64, chunkS
 
 // calculateEncryptedByteRange calculates the byte range in encrypted data for given chunk indices.
 // Each encrypted chunk = chunkSize + tagSize (16 bytes for GCM)
-func calculateEncryptedByteRange(startChunk, endChunk int, chunkSize int) (encryptedStart, encryptedEnd int64) {
-	if chunkSize <= 0 || startChunk < 0 || endChunk < startChunk {
-		return 0, 0
+func calculateEncryptedByteRange(startChunk, endChunk int, chunkSize int) (encryptedStart, encryptedEnd int64, err error) {
+	// Input validation guards
+	if chunkSize <= 0 || startChunk < 0 || endChunk < 0 || endChunk < startChunk {
+		return 0, 0, fmt.Errorf("invalid range parameters: chunkSize=%d, startChunk=%d, endChunk=%d", chunkSize, startChunk, endChunk)
+	}
+
+	// Pre-cast overflow detection: ensure intermediate int arithmetic won't overflow
+	// before promotion to int64. These checks protect against integer overflow on
+	// 32-bit platforms or when inputs are near math.MaxInt32.
+	if endChunk > math.MaxInt32-1 {
+		return 0, 0, fmt.Errorf("endChunk exceeds safe limit")
+	}
+	if chunkSize > math.MaxInt32-tagSize {
+		return 0, 0, fmt.Errorf("chunkSize exceeds safe limit")
 	}
 
 	encryptedChunkSize := int64(chunkSize + tagSize)
 	encryptedStart = int64(startChunk) * encryptedChunkSize
 	encryptedEnd = int64(endChunk+1) * encryptedChunkSize - 1
 
-	return encryptedStart, encryptedEnd
+	// Post-calculation sanity check: detect any overflow that may have occurred
+	if encryptedEnd < encryptedStart {
+		return 0, 0, fmt.Errorf("range calculation overflow")
+	}
+
+	return encryptedStart, encryptedEnd, nil
 }
 
 // CalculateEncryptedRangeForPlaintextRange calculates the encrypted byte range needed to satisfy a plaintext range request.
@@ -72,7 +89,10 @@ func CalculateEncryptedRangeForPlaintextRange(metadata map[string]string, plaint
 	)
 
 	// Calculate encrypted byte range for those chunks
-	encryptedStart, encryptedEnd = calculateEncryptedByteRange(startChunk, endChunk, manifest.ChunkSize)
+	encryptedStart, encryptedEnd, err = calculateEncryptedByteRange(startChunk, endChunk, manifest.ChunkSize)
+	if err != nil {
+		return 0, 0, fmt.Errorf("failed to calculate encrypted byte range: %w", err)
+	}
 
 	return encryptedStart, encryptedEnd, nil
 }

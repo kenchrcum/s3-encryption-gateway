@@ -98,6 +98,7 @@ func TestCalculateEncryptedByteRange(t *testing.T) {
 		chunkSize          int
 		expectedEncryptedStart int64
 		expectedEncryptedEnd   int64
+		expectError        bool
 	}{
 		{
 			name:                  "single chunk",
@@ -106,6 +107,7 @@ func TestCalculateEncryptedByteRange(t *testing.T) {
 			chunkSize:             65536, // 64KB
 			expectedEncryptedStart: 0,
 			expectedEncryptedEnd:   65551, // 65536 + 16 - 1
+			expectError:           false,
 		},
 		{
 			name:                  "two chunks",
@@ -114,6 +116,7 @@ func TestCalculateEncryptedByteRange(t *testing.T) {
 			chunkSize:             65536,
 			expectedEncryptedStart: 0,
 			expectedEncryptedEnd:   131103, // 2 * (65536 + 16) - 1
+			expectError:           false,
 		},
 		{
 			name:                  "multiple chunks",
@@ -122,16 +125,57 @@ func TestCalculateEncryptedByteRange(t *testing.T) {
 			chunkSize:             65536,
 			expectedEncryptedStart: 131104, // 2 * (65536 + 16)
 			expectedEncryptedEnd:   393311, // (5+1) * (65536 + 16) - 1 = 6 * 65552 - 1
+			expectError:           false,
+		},
+		{
+			name:        "endChunk negative",
+			startChunk:  0,
+			endChunk:    -1,
+			chunkSize:   65536,
+			expectError: true,
+		},
+		{
+			name:        "startChunk negative",
+			startChunk:  -1,
+			endChunk:    0,
+			chunkSize:   65536,
+			expectError: true,
+		},
+		{
+			name:        "chunkSize near MaxInt32",
+			startChunk:  0,
+			endChunk:    1,
+			chunkSize:   int(^uint(0) >> 1), // math.MaxInt
+			expectError: true,
+		},
+		{
+			name:        "endChunk near MaxInt32",
+			startChunk:  0,
+			endChunk:    int(^uint(0) >> 1), // math.MaxInt
+			chunkSize:   65536,
+			expectError: true,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			encryptedStart, encryptedEnd := calculateEncryptedByteRange(
+			encryptedStart, encryptedEnd, err := calculateEncryptedByteRange(
 				tt.startChunk,
 				tt.endChunk,
 				tt.chunkSize,
 			)
+
+			if tt.expectError {
+				if err == nil {
+					t.Errorf("expected error but got none")
+				}
+				return
+			}
+
+			if err != nil {
+				t.Errorf("unexpected error: %v", err)
+				return
+			}
 
 			if encryptedStart != tt.expectedEncryptedStart {
 				t.Errorf("encryptedStart = %d, expected %d", encryptedStart, tt.expectedEncryptedStart)
@@ -141,6 +185,66 @@ func TestCalculateEncryptedByteRange(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestCalculateEncryptedByteRangeOverflow specifically tests overflow conditions
+// for V1.0-SEC-5: Integer Overflow in Encrypted Range Calculation
+func TestCalculateEncryptedByteRangeOverflow(t *testing.T) {
+	// Test that endChunk < 0 returns error (missing guard case)
+	t.Run("endChunk negative", func(t *testing.T) {
+		_, _, err := calculateEncryptedByteRange(0, -1, 65536)
+		if err == nil {
+			t.Error("expected error for negative endChunk, got nil")
+		}
+	})
+
+	// Test that startChunk < 0 returns error
+	t.Run("startChunk negative", func(t *testing.T) {
+		_, _, err := calculateEncryptedByteRange(-1, 0, 65536)
+		if err == nil {
+			t.Error("expected error for negative startChunk, got nil")
+		}
+	})
+
+	// Test endChunk > MaxInt32-1 returns error
+	t.Run("endChunk exceeds safe limit", func(t *testing.T) {
+		_, _, err := calculateEncryptedByteRange(0, int(^uint(0)>>1), 65536)
+		if err == nil {
+			t.Error("expected error for endChunk exceeding safe limit, got nil")
+		}
+	})
+
+	// Test chunkSize > MaxInt32-tagSize returns error
+	t.Run("chunkSize exceeds safe limit", func(t *testing.T) {
+		_, _, err := calculateEncryptedByteRange(0, 1, int(^uint(0)>>1))
+		if err == nil {
+			t.Error("expected error for chunkSize exceeding safe limit, got nil")
+		}
+	})
+
+	// Test that invalid range (end < start) returns error
+	t.Run("endChunk less than startChunk", func(t *testing.T) {
+		_, _, err := calculateEncryptedByteRange(5, 3, 65536)
+		if err == nil {
+			t.Error("expected error for endChunk < startChunk, got nil")
+		}
+	})
+
+	// Test normal values still work correctly (regression test)
+	t.Run("normal values produce correct results", func(t *testing.T) {
+		start, end, err := calculateEncryptedByteRange(2, 5, 65536)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		// 2 * (65536 + 16) = 131104
+		if start != 131104 {
+			t.Errorf("encryptedStart = %d, expected 131104", start)
+		}
+		// (5+1) * (65536 + 16) - 1 = 393311
+		if end != 393311 {
+			t.Errorf("encryptedEnd = %d, expected 393311", end)
+		}
+	})
 }
 
 func TestParseHTTPRangeHeader(t *testing.T) {
@@ -602,7 +706,10 @@ func TestRangeDecryptionContentRangeMapping(t *testing.T) {
 			}
 
 			// Test encrypted range calculation
-			encryptedStart, encryptedEnd := calculateEncryptedByteRange(startChunk, endChunk, chunkSize)
+			encryptedStart, encryptedEnd, err := calculateEncryptedByteRange(startChunk, endChunk, chunkSize)
+			if err != nil {
+				t.Fatalf("calculateEncryptedByteRange failed: %v", err)
+			}
 
 			// Verify encrypted range covers the necessary chunks
 			encryptedChunkSize := int64(chunkSize + tagSize)

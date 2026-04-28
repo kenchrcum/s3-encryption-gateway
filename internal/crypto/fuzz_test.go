@@ -107,7 +107,11 @@ func FuzzRangeCalculation(f *testing.F) {
 		}
 		
 		// 4. Calculate encrypted range should not panic
-		encStart, encEnd := calculateEncryptedByteRange(startChunk, endChunk, chunkSize)
+		encStart, encEnd, err := calculateEncryptedByteRange(startChunk, endChunk, chunkSize)
+		if err != nil {
+			// Error is acceptable for invalid inputs (e.g., overflow conditions)
+			return
+		}
 		if encStart < 0 {
 			t.Errorf("encryptedStart negative: %d", encStart)
 		}
