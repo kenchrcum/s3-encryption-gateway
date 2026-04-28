@@ -12,9 +12,35 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Security
 
-This patch release addresses six medium/minor findings from the v0.6 security
-analysis. All findings are non-breaking; no configuration changes are required
+This patch release addresses eight security findings from the v0.6 security
+analysis. All fixes are non-breaking; no configuration changes are required
 unless noted.
+
+- **Sensitive data zeroization, constant-time audit & crypto hygiene**
+  (V1.0-SEC-1): Six concrete crypto-hardening findings in `internal/crypto/`:
+  - `engine.password` changed from `string` to `[]byte`; new `Close()` method
+    zeroizes the password buffer before deallocation.
+  - `mpuDecryptReader.returnEncBuf()` now zeroizes `r.dek` after use; the
+    reader defensively copies the caller's DEK so the caller can safely
+    `zeroBytes(dek)` immediately after construction.
+  - Removed base64-encoded wrapped-key material from error messages; only
+    non-secret length information is retained.
+  - `computeETag` split into build-tagged files (`etag_default.go` with
+    `crypto/md5`, `etag_fips.go` with SHA-256) so FIPS builds never link
+    MD5. ETag remains an S3 protocol identifier with no cryptographic
+    security requirement.
+  - KMIP adapter ECB comment corrected: `keymanager_cosmian.go` now
+    documents that AES-KW (RFC 3394) or AES-GCM is used internally and
+    that ECB is **not** suitable for key wrapping.
+  - Constant-time comparison audit confirmed: all credential/token
+    comparisons use `hmac.Equal` or `subtle.ConstantTimeCompare`.
+
+- **Remove debug logging of cryptographic parameters** (V1.0-SEC-3):
+  All `fmt.Printf` calls inside `debug.Enabled()` blocks in
+  `internal/crypto/engine.go` have been replaced with `slog.Debug(...)`.
+  Raw cryptographic values (salt bytes, IV bytes, ciphertext previews) are
+  never logged; only lengths are recorded. A startup warning is emitted at
+  `WARN` level when debug mode is active.
 
 - **Integer overflow in encrypted range calculation** (V1.0-SEC-5):
   `calculateEncryptedByteRange` in `internal/crypto/range_optimization.go`
