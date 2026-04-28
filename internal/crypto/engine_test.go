@@ -2,8 +2,6 @@ package crypto
 
 import (
 	"bytes"
-	"crypto/md5"
-	"encoding/hex"
 	"io"
 	"testing"
 )
@@ -337,8 +335,9 @@ func TestEngine_OriginalETagPreservation(t *testing.T) {
 	data := []byte("test data for ETag preservation")
 	reader := bytes.NewReader(data)
 
-	// Compute expected ETag for the test
-	expectedETag := computeETagForTest(data)
+	// Compute expected ETag for the test (uses the same algorithm as the
+	// engine – MD5 in default builds, SHA-256 in FIPS builds).
+	expectedETag := computeETag(data)
 
 	// Encrypt with ETag provided in metadata
 	metadata := map[string]string{
@@ -358,9 +357,9 @@ func TestEngine_OriginalETagPreservation(t *testing.T) {
 		t.Errorf("Encrypt() original ETag should not be empty")
 	}
 
-	// Verify ETag is MD5 hash (32 hex characters)
-	if len(originalETag) != 32 {
-		t.Errorf("Encrypt() original ETag should be 32 hex characters (MD5), got %d", len(originalETag))
+	// Verify ETag is a valid hex string (MD5 = 32 chars, SHA-256 = 64 chars).
+	if len(originalETag) != 32 && len(originalETag) != 64 {
+		t.Errorf("Encrypt() original ETag has unexpected length, got %d", len(originalETag))
 	}
 
 	// Decrypt and verify ETag is restored
@@ -394,8 +393,4 @@ func TestEngine_OriginalETagPreservation(t *testing.T) {
 	}
 }
 
-// computeETagForTest is a test helper to compute ETag
-func computeETagForTest(data []byte) string {
-	hash := md5.Sum(data)
-	return hex.EncodeToString(hash[:])
-}
+
