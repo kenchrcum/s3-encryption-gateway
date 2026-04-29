@@ -748,6 +748,12 @@ func main() {
 
 	logger.Info("Shutting down server...")
 
+	// Close the API handler, zeroising any cached per-policy engine passwords.
+	if handler != nil {
+		handler.Close()
+		logger.Info("API handler closed")
+	}
+
 	// Stop admin server if running
 	if adminServer != nil {
 		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)

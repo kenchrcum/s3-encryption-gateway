@@ -14,7 +14,6 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/gorilla/mux"
@@ -41,8 +40,8 @@ type Handler struct {
 	auditLogger      audit.Logger
 	config           *config.Config
 	policyManager    *config.PolicyManager
-	engineCache      sync.Map
-	mpuStateStore    mpu.StateStore // nil when encrypted MPU is not configured
+	engineCache      *ttlEngineCache // TTL cache for per-policy engines (V1.0-SEC-20)
+	mpuStateStore    mpu.StateStore  // nil when encrypted MPU is not configured
 }
 
 // NewHandler creates a new API handler (backward compatibility).
@@ -78,6 +77,10 @@ func NewHandlerWithFeatures(
 	if config != nil {
 		h.clientFactory = s3.NewClientFactory(&config.Backend, s3.WithMetrics(m))
 	}
+	if policyManager != nil {
+		// Initialise the TTL cache with a 1-hour default TTL and 5-minute sweep.
+		h.engineCache = newTTLEngineCache(1*time.Hour, 5*time.Minute)
+	}
 	return h
 }
 
@@ -85,6 +88,15 @@ func NewHandlerWithFeatures(
 // When non-nil, buckets with EncryptMultipartUploads=true will use this store.
 func (h *Handler) WithMPUStateStore(store mpu.StateStore) {
 	h.mpuStateStore = store
+}
+
+// Close stops the per-policy engine cache sweeper and calls Close() on every
+// cached engine so that password bytes are zeroised (V1.0-SEC-20).
+func (h *Handler) Close() {
+	if h.engineCache != nil {
+		h.engineCache.Stop()
+		h.engineCache = nil
+	}
 }
 
 // bucketEncryptsMPU reports whether the bucket's CURRENT policy requires
@@ -655,8 +667,10 @@ func (h *Handler) getEncryptionEngine(bucket string) (crypto.EncryptionEngine, e
 	}
 
 	// Check cache first (key by policy ID)
-	if val, ok := h.engineCache.Load(policy.ID); ok {
-		return val.(crypto.EncryptionEngine), nil
+	if h.engineCache != nil {
+		if cached, ok := h.engineCache.Get(policy.ID); ok {
+			return cached, nil
+		}
 	}
 
 	// Create new engine based on policy
@@ -724,8 +738,11 @@ func (h *Handler) getEncryptionEngine(bucket string) (crypto.EncryptionEngine, e
 		}
 	}
 
-	// Cache the new engine
-	h.engineCache.Store(policy.ID, engine)
+	// Cache the new engine (atomically — if another goroutine raced us
+	// and stored first, we close the redundant engine and return the winner).
+	if h.engineCache != nil {
+		engine = h.engineCache.GetOrStore(policy.ID, engine)
+	}
 
 	return engine, nil
 }
