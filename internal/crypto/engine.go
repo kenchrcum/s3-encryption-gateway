@@ -303,7 +303,10 @@ func (e *engine) createCipher(key []byte) (cipher.AEAD, error) {
 	return gcm, nil
 }
 
-func generateDataKey(size int) ([]byte, error) {
+// generateDataKey generates a random data key of the specified size.
+// It is assigned to a variable so tests can temporarily replace it to
+// simulate key-size mismatches.
+var generateDataKey = func(size int) ([]byte, error) {
 	key := make([]byte, size)
 	if _, err := rand.Read(key); err != nil {
 		return nil, fmt.Errorf("failed to generate data key: %w", err)
@@ -421,21 +424,22 @@ func (e *engine) Encrypt(reader io.Reader, metadata map[string]string) (io.Reade
 			metadata = make(map[string]string)
 		}
 		metadata[MetaKeyVersion] = fmt.Sprintf("%d", envelope.KeyVersion)
+		// generateDataKey always returns exactly keySize bytes;
+		// the following check is a defensive assertion.
+		if len(key) != keySize {
+			zeroBytes(key)
+			return nil, nil, fmt.Errorf("internal: generateDataKey returned unexpected key size %d (want %d)", len(key), keySize)
+		}
 	} else {
 		key, err = e.deriveKey(salt)
 		if err != nil {
 			return nil, nil, fmt.Errorf("failed to derive key: %w", err)
 		}
+		// deriveKey always returns exactly aesKeySize bytes via PBKDF2;
+		// the following size check is a defensive assertion only.
 		if len(key) != keySize {
-			// Trim or pad key to required size
-			adjustedKey := make([]byte, keySize)
-			copy(adjustedKey, key)
-			if len(key) < keySize {
-				// Pad with PBKDF2 of original key (simple approach)
-				copy(adjustedKey[len(key):], key[:keySize-len(key)])
-			}
 			zeroBytes(key)
-			key = adjustedKey
+			return nil, nil, fmt.Errorf("internal: PBKDF2 returned unexpected key size %d (want %d)", len(key), keySize)
 		}
 	}
 	defer zeroBytes(key)
@@ -645,15 +649,11 @@ func (e *engine) Decrypt(reader io.Reader, metadata map[string]string) (io.Reade
 		if err != nil {
 			return nil, nil, fmt.Errorf("failed to derive key: %w", err)
 		}
+		// deriveKey always returns exactly aesKeySize bytes via PBKDF2;
+		// the following size check is a defensive assertion only.
 		if len(key) != keySize {
-			adjustedKey := e.bufferPool.Get32()
-			copy(adjustedKey, key)
-			if len(key) < keySize {
-				copy(adjustedKey[len(key):], key[:keySize-len(key)])
-			}
 			zeroBytes(key)
-			key = adjustedKey
-			defer e.bufferPool.Put32(adjustedKey)
+			return nil, nil, fmt.Errorf("internal: PBKDF2 returned unexpected key size %d (want %d)", len(key), keySize)
 		}
 	}
 	defer zeroBytes(key)
@@ -865,33 +865,25 @@ func (e *engine) encryptChunked(ctx context.Context, reader io.Reader, metadata 
 			metadata = make(map[string]string)
 		}
 		metadata[MetaKeyVersion] = fmt.Sprintf("%d", envelope.KeyVersion)
+		// generateDataKey always returns exactly keySize bytes;
+		// the following check is a defensive assertion.
+		if len(key) != keySize {
+			zeroBytes(key)
+			return nil, nil, fmt.Errorf("internal: generateDataKey returned unexpected key size %d (want %d)", len(key), keySize)
+		}
 	} else {
 		key, err = e.deriveKey(salt)
 		if err != nil {
 			return nil, nil, fmt.Errorf("failed to derive key: %w", err)
 		}
+		// deriveKey always returns exactly aesKeySize bytes via PBKDF2;
+		// the following size check is a defensive assertion only.
 		if len(key) != keySize {
-			adjustedKey := e.bufferPool.Get32()
-			copy(adjustedKey, key)
-			if len(key) < keySize {
-				copy(adjustedKey[len(key):], key[:keySize-len(key)])
-			}
 			zeroBytes(key)
-			key = adjustedKey
-			defer e.bufferPool.Put32(adjustedKey)
+			return nil, nil, fmt.Errorf("internal: PBKDF2 returned unexpected key size %d (want %d)", len(key), keySize)
 		}
 	}
 	defer zeroBytes(key)
-	if len(key) != keySize {
-		adjustedKey := e.bufferPool.Get32()
-		copy(adjustedKey, key)
-		if len(key) < keySize {
-			copy(adjustedKey[len(key):], key[:keySize-len(key)])
-		}
-		zeroBytes(key)
-		key = adjustedKey
-		defer e.bufferPool.Put32(adjustedKey) // Return to pool when function exits
-	}
 
 	// Create cipher using selected algorithm
 	aeadCipher, err := createAEADCipher(algorithm, key)
@@ -994,33 +986,25 @@ func (e *engine) encryptChunkedWithMetadataFallback(ctx context.Context, plainte
 			return nil, nil, fmt.Errorf("failed to wrap data key: %w", err)
 		}
 		fullMetadata[MetaKeyVersion] = fmt.Sprintf("%d", envelope.KeyVersion)
+		// generateDataKey always returns exactly keySize bytes;
+		// the following check is a defensive assertion.
+		if len(key) != keySize {
+			zeroBytes(key)
+			return nil, nil, fmt.Errorf("internal: generateDataKey returned unexpected key size %d (want %d)", len(key), keySize)
+		}
 	} else {
 		key, err = e.deriveKey(salt)
 		if err != nil {
 			return nil, nil, fmt.Errorf("failed to derive key: %w", err)
 		}
+		// deriveKey always returns exactly aesKeySize bytes via PBKDF2;
+		// the following size check is a defensive assertion only.
 		if len(key) != keySize {
-			adjustedKey := e.bufferPool.Get32()
-			copy(adjustedKey, key)
-			if len(key) < keySize {
-				copy(adjustedKey[len(key):], key[:keySize-len(key)])
-			}
 			zeroBytes(key)
-			key = adjustedKey
-			defer e.bufferPool.Put32(adjustedKey)
+			return nil, nil, fmt.Errorf("internal: PBKDF2 returned unexpected key size %d (want %d)", len(key), keySize)
 		}
 	}
 	defer zeroBytes(key)
-	if len(key) != keySize {
-		adjustedKey := e.bufferPool.Get32()
-		copy(adjustedKey, key)
-		if len(key) < keySize {
-			copy(adjustedKey[len(key):], key[:keySize-len(key)])
-		}
-		zeroBytes(key)
-		key = adjustedKey
-		defer e.bufferPool.Put32(adjustedKey) // Return to pool when function exits
-	}
 
 	// Create cipher
 	aeadCipher, err := createAEADCipher(algorithm, key)
@@ -1172,33 +1156,23 @@ func (e *engine) decryptChunked(ctx context.Context, reader io.Reader, metadata 
 		if err != nil {
 			return nil, nil, fmt.Errorf("failed to unwrap data key: %w", err)
 		}
+		if len(key) != keySize {
+			zeroBytes(key)
+			return nil, nil, fmt.Errorf("failed to unwrap data key: KMS returned key of size %d, expected %d", len(key), keySize)
+		}
 	} else {
 		key, err = e.deriveKey(salt)
 		if err != nil {
 			return nil, nil, fmt.Errorf("failed to derive key: %w", err)
 		}
+		// deriveKey always returns exactly aesKeySize bytes via PBKDF2;
+		// the following size check is a defensive assertion only.
 		if len(key) != keySize {
-			adjustedKey := e.bufferPool.Get32()
-			copy(adjustedKey, key)
-			if len(key) < keySize {
-				copy(adjustedKey[len(key):], key[:keySize-len(key)])
-			}
 			zeroBytes(key)
-			key = adjustedKey
-			defer e.bufferPool.Put32(adjustedKey)
+			return nil, nil, fmt.Errorf("internal: PBKDF2 returned unexpected key size %d (want %d)", len(key), keySize)
 		}
 	}
 	defer zeroBytes(key)
-	if len(key) != keySize {
-		adjustedKey := e.bufferPool.Get32()
-		copy(adjustedKey, key)
-		if len(key) < keySize {
-			copy(adjustedKey[len(key):], key[:keySize-len(key)])
-		}
-		zeroBytes(key)
-		key = adjustedKey
-		defer e.bufferPool.Put32(adjustedKey) // Return to pool when function exits
-	}
 
 	// Create cipher using algorithm from metadata
 	aeadCipher, err := createAEADCipher(algorithm, key)
@@ -1345,33 +1319,23 @@ func (e *engine) DecryptRange(reader io.Reader, metadata map[string]string, plai
 		if err != nil {
 			return nil, nil, fmt.Errorf("failed to unwrap data key: %w", err)
 		}
+		if len(key) != keySize {
+			zeroBytes(key)
+			return nil, nil, fmt.Errorf("failed to unwrap data key: KMS returned key of size %d, expected %d", len(key), keySize)
+		}
 	} else {
 		key, err = e.deriveKey(salt)
 		if err != nil {
 			return nil, nil, fmt.Errorf("failed to derive key: %w", err)
 		}
+		// deriveKey always returns exactly aesKeySize bytes via PBKDF2;
+		// the following size check is a defensive assertion only.
 		if len(key) != keySize {
-			adjustedKey := e.bufferPool.Get32()
-			copy(adjustedKey, key)
-			if len(key) < keySize {
-				copy(adjustedKey[len(key):], key[:keySize-len(key)])
-			}
 			zeroBytes(key)
-			key = adjustedKey
-			defer e.bufferPool.Put32(adjustedKey)
+			return nil, nil, fmt.Errorf("internal: PBKDF2 returned unexpected key size %d (want %d)", len(key), keySize)
 		}
 	}
 	defer zeroBytes(key)
-	if len(key) != keySize {
-		adjustedKey := e.bufferPool.Get32()
-		copy(adjustedKey, key)
-		if len(key) < keySize {
-			copy(adjustedKey[len(key):], key[:keySize-len(key)])
-		}
-		zeroBytes(key)
-		key = adjustedKey
-		defer e.bufferPool.Put32(adjustedKey) // Return to pool when function exits
-	}
 
 	// Create cipher
 	aeadCipher, err := createAEADCipher(algorithm, key)
@@ -1473,15 +1437,11 @@ func (e *engine) encryptWithMetadataFallback(plaintext []byte, fullMetadata map[
 	if algorithm == AlgorithmChaCha20Poly1305 {
 		keySize = chacha20KeySize
 	}
+	// deriveKey always returns exactly aesKeySize bytes via PBKDF2;
+	// the following size check is a defensive assertion only.
 	if len(key) != keySize {
-		adjustedKey := e.bufferPool.Get32()
-		copy(adjustedKey, key)
-		if len(key) < keySize {
-			copy(adjustedKey[len(key):], key[:keySize-len(key)])
-		}
 		zeroBytes(key)
-		key = adjustedKey
-		defer e.bufferPool.Put32(adjustedKey) // Return to pool when function exits
+		return nil, nil, fmt.Errorf("internal: PBKDF2 returned unexpected key size %d (want %d)", len(key), keySize)
 	}
 
 	// Create cipher
@@ -1587,15 +1547,11 @@ func (e *engine) decryptWithMetadataFallback(reader io.Reader, metadata map[stri
 	if algorithm == AlgorithmChaCha20Poly1305 {
 		keySize = chacha20KeySize
 	}
+	// deriveKey always returns exactly aesKeySize bytes via PBKDF2;
+	// the following size check is a defensive assertion only.
 	if len(key) != keySize {
-		adjustedKey := e.bufferPool.Get32()
-		copy(adjustedKey, key)
-		if len(key) < keySize {
-			copy(adjustedKey[len(key):], key[:keySize-len(key)])
-		}
 		zeroBytes(key)
-		key = adjustedKey
-		defer e.bufferPool.Put32(adjustedKey) // Return to pool when function exits
+		return nil, nil, fmt.Errorf("internal: PBKDF2 returned unexpected key size %d (want %d)", len(key), keySize)
 	}
 
 	// Create cipher
