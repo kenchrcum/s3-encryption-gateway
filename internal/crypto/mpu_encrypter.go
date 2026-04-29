@@ -3,14 +3,13 @@ package crypto
 import (
 	"bytes"
 	"context"
-	"crypto/aes"
 	"crypto/cipher"
 	"fmt"
 	"io"
 	"sync"
 )
 
-const mpuAEADTagSize = 16 // AES-GCM authentication tag size
+const mpuAEADTagSize = 16 // AES-GCM and ChaCha20-Poly1305 authentication tag size
 
 // mpuEncryptReader is a streaming io.Reader that encrypts an MPU part one AEAD
 // chunk at a time. It never buffers more than one plaintext chunk
@@ -68,19 +67,17 @@ func NewMPUPartEncryptReader(
 	partNumber int32,
 	chunkSize int,
 	plainLen int64,
+	algorithm string,
 ) (io.Reader, int64, error) {
 	if chunkSize <= 0 {
 		chunkSize = DefaultChunkSize
 	}
 
-	block, err := aes.NewCipher(dek)
+	aead, err := createMPUAEADCipher(algorithm, dek)
 	if err != nil {
-		return nil, 0, fmt.Errorf("mpu_encrypter: create AES cipher: %w", err)
+		return nil, 0, err
 	}
-	gcm, err := cipher.NewGCM(block)
-	if err != nil {
-		return nil, 0, fmt.Errorf("mpu_encrypter: create GCM: %w", err)
-	}
+	tagSize := aead.Overhead()
 
 	// Compute exact output length upfront so callers can set ContentLength.
 	// Formula: every full chunk → chunkSize + tagSize bytes; if plainLen is
@@ -93,10 +90,10 @@ func NewMPUPartEncryptReader(
 	if plainLen > 0 {
 		fullChunks := plainLen / int64(chunkSize)
 		rem := plainLen % int64(chunkSize)
-		encLen = fullChunks * int64(chunkSize+mpuAEADTagSize)
+		encLen = fullChunks * int64(chunkSize+tagSize)
 		if rem > 0 {
 			// Trailing partial chunk.
-			encLen += rem + int64(mpuAEADTagSize)
+			encLen += rem + int64(tagSize)
 		}
 	}
 
@@ -117,7 +114,7 @@ func NewMPUPartEncryptReader(
 
 	return &mpuEncryptReader{
 		src:    body,
-		gcm:    gcm,
+		gcm:    aead,
 		dek:    dekCopy,
 		hash:   uploadIDHash,
 		prefix: ivPrefix,
@@ -218,8 +215,9 @@ func newMPUPartEncryptReader(
 	partNumber int32,
 	chunkSize int,
 	plainLen int64,
+	algorithm string,
 ) (io.Reader, int64, error) {
-	return NewMPUPartEncryptReader(ctx, body, dek, uploadIDHash, ivPrefix, partNumber, chunkSize, plainLen)
+	return NewMPUPartEncryptReader(ctx, body, dek, uploadIDHash, ivPrefix, partNumber, chunkSize, plainLen, algorithm)
 }
 
 // mpuDecryptReader is a streaming io.Reader that decrypts an MPU-encrypted
@@ -270,17 +268,14 @@ func NewMPUDecryptReader(
 	dek []byte,
 	uploadIDHash [32]byte,
 	ivPrefix [12]byte,
+	algorithm string,
 ) (io.Reader, error) {
 	if len(manifest.Parts) == 0 {
 		return bytes.NewReader(nil), nil
 	}
-	block, err := aes.NewCipher(dek)
+	aead, err := createMPUAEADCipher(algorithm, dek)
 	if err != nil {
-		return nil, fmt.Errorf("mpu_encrypter: create AES cipher: %w", err)
-	}
-	gcm, err := cipher.NewGCM(block)
-	if err != nil {
-		return nil, fmt.Errorf("mpu_encrypter: create GCM: %w", err)
+		return nil, err
 	}
 	// Copy the DEK so that the reader has sole ownership and can safely
 	// zeroize it in returnEncBuf() without affecting the caller's slice.
@@ -293,7 +288,7 @@ func NewMPUDecryptReader(
 		dek:          dekCopy,
 		uploadIDHash: uploadIDHash,
 		ivPrefix:     ivPrefix,
-		gcm:          gcm,
+		gcm:          aead,
 		encBuf:       encBufPool.Get().([]byte),
 	}, nil
 }
@@ -403,21 +398,18 @@ func DecryptMPUPartRange(
 	partNumber int32,
 	chunkSize int,
 	startChunkIdx int32,
+	algorithm string,
 ) ([]byte, error) {
 	if chunkSize <= 0 {
 		chunkSize = DefaultChunkSize
 	}
 
-	block, err := aes.NewCipher(dek)
+	aead, err := createMPUAEADCipher(algorithm, dek)
 	if err != nil {
-		return nil, fmt.Errorf("mpu_encrypter: create AES cipher: %w", err)
-	}
-	gcm, err := cipher.NewGCM(block)
-	if err != nil {
-		return nil, fmt.Errorf("mpu_encrypter: create GCM: %w", err)
+		return nil, err
 	}
 
-	encChunkSize := chunkSize + mpuAEADTagSize
+	encChunkSize := chunkSize + aead.Overhead()
 	var (
 		out        []byte
 		offset     int
@@ -431,7 +423,7 @@ func DecryptMPUPartRange(
 		}
 		encChunk := ciphertext[offset:end]
 		iv := DeriveMultipartIV(dek, uploadIDHash, ivPrefix, uint32(partNumber), chunkIndex)
-		plain, err := gcm.Open(nil, iv[:], encChunk, nil)
+		plain, err := aead.Open(nil, iv[:], encChunk, nil)
 		if err != nil {
 			return nil, fmt.Errorf("mpu_encrypter: chunk %d auth failure in part %d: %w", chunkIndex, partNumber, err)
 		}
@@ -452,21 +444,18 @@ func DecryptMPUPart(
 	ivPrefix [12]byte,
 	partNumber int32,
 	chunkSize int,
+	algorithm string,
 ) ([]byte, error) {
 	if chunkSize <= 0 {
 		chunkSize = DefaultChunkSize
 	}
 
-	block, err := aes.NewCipher(dek)
+	aead, err := createMPUAEADCipher(algorithm, dek)
 	if err != nil {
-		return nil, fmt.Errorf("mpu_encrypter: create AES cipher: %w", err)
-	}
-	gcm, err := cipher.NewGCM(block)
-	if err != nil {
-		return nil, fmt.Errorf("mpu_encrypter: create GCM: %w", err)
+		return nil, err
 	}
 
-	encChunkSize := chunkSize + mpuAEADTagSize
+	encChunkSize := chunkSize + aead.Overhead()
 	var (
 		out        []byte
 		chunkIndex uint32
@@ -480,7 +469,7 @@ func DecryptMPUPart(
 		}
 		encChunk := ciphertext[offset:end]
 		iv := DeriveMultipartIV(dek, uploadIDHash, ivPrefix, uint32(partNumber), chunkIndex)
-		plain, err := gcm.Open(nil, iv[:], encChunk, nil)
+		plain, err := aead.Open(nil, iv[:], encChunk, nil)
 		if err != nil {
 			return nil, fmt.Errorf("mpu_encrypter: chunk %d auth failure in part %d: %w", chunkIndex, partNumber, err)
 		}
@@ -489,4 +478,22 @@ func DecryptMPUPart(
 		chunkIndex++
 	}
 	return out, nil
+}
+
+// createMPUAEADCipher creates an AEAD cipher for the given MPU algorithm string.
+// It normalises the legacy bare-string alias "AES256GCM" (no hyphen) to the
+// canonical constant AlgorithmAES256GCM so that objects created before
+// V1.0-SEC-25 continue to decrypt.  An empty algorithm defaults to AES-256-GCM.
+func createMPUAEADCipher(algorithm string, key []byte) (cipher.AEAD, error) {
+	if algorithm == "" {
+		algorithm = AlgorithmAES256GCM
+	}
+	if algorithm == "AES256GCM" {
+		algorithm = AlgorithmAES256GCM
+	}
+	c, err := createAEADCipher(algorithm, key)
+	if err != nil {
+		return nil, fmt.Errorf("mpu_encrypter: create AEAD for algorithm %s: %w", algorithm, err)
+	}
+	return c, nil
 }

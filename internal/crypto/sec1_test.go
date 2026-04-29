@@ -62,7 +62,7 @@ func TestMPUDecryptReader_DEKZeroizedAfterEOF(t *testing.T) {
 	copy(dek, testDEK)
 
 	// Encrypt one part.
-	r, _, err := NewMPUPartEncryptReader(ctx, bytes.NewReader(plaintext), dek, testUIDHash, testIVPrefix, 1, chunkSize, int64(len(plaintext)))
+	r, _, err := NewMPUPartEncryptReader(ctx, bytes.NewReader(plaintext), dek, testUIDHash, testIVPrefix, 1, chunkSize, int64(len(plaintext)), "AES256GCM")
 	require.NoError(t, err)
 	ciphertext, err := io.ReadAll(r)
 	require.NoError(t, err)
@@ -79,7 +79,7 @@ func TestMPUDecryptReader_DEKZeroizedAfterEOF(t *testing.T) {
 	dekForReader := make([]byte, len(dek))
 	copy(dekForReader, testDEK)
 
-	reader, err := NewMPUDecryptReader(bytes.NewReader(ciphertext), manifest, dekForReader, testUIDHash, testIVPrefix)
+	reader, err := NewMPUDecryptReader(bytes.NewReader(ciphertext), manifest, dekForReader, testUIDHash, testIVPrefix, "AES256GCM")
 	require.NoError(t, err)
 
 	// Reach into the concrete type to access dek after reading.
@@ -107,7 +107,7 @@ func TestMPUDecryptReader_CallerDEKUnaffected(t *testing.T) {
 	original := make([]byte, len(callerDEK))
 	copy(original, callerDEK)
 
-	r, _, err := NewMPUPartEncryptReader(ctx, bytes.NewReader(plaintext), callerDEK, testUIDHash, testIVPrefix, 1, DefaultChunkSize, int64(len(plaintext)))
+	r, _, err := NewMPUPartEncryptReader(ctx, bytes.NewReader(plaintext), callerDEK, testUIDHash, testIVPrefix, 1, DefaultChunkSize, int64(len(plaintext)), "AES256GCM")
 	require.NoError(t, err)
 	ciphertext, err := io.ReadAll(r)
 	require.NoError(t, err)
@@ -119,7 +119,7 @@ func TestMPUDecryptReader_CallerDEKUnaffected(t *testing.T) {
 		},
 	}
 
-	reader, err := NewMPUDecryptReader(bytes.NewReader(ciphertext), manifest, callerDEK, testUIDHash, testIVPrefix)
+	reader, err := NewMPUDecryptReader(bytes.NewReader(ciphertext), manifest, callerDEK, testUIDHash, testIVPrefix, "AES256GCM")
 	require.NoError(t, err)
 
 	_, err = io.ReadAll(reader)

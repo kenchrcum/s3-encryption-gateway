@@ -68,6 +68,9 @@ type EncryptionEngine interface {
 
 	// IsEncrypted checks if the metadata indicates the object is encrypted.
 	IsEncrypted(metadata map[string]string) bool
+
+	// PreferredAlgorithm returns the preferred encryption algorithm for new objects.
+	PreferredAlgorithm() string
 }
 
 // engine implements the EncryptionEngine interface.
@@ -270,6 +273,10 @@ func (e *engine) generateSalt() ([]byte, error) {
 }
 
 // generateNonce generates a cryptographically secure random nonce/IV.
+func (e *engine) PreferredAlgorithm() string {
+	return e.preferredAlgorithm
+}
+
 func (e *engine) generateNonce() ([]byte, error) {
 	return e.generateNonceForAlgorithm(e.preferredAlgorithm)
 }

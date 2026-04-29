@@ -27,7 +27,7 @@ func benchmarkMPUEncryptReader(b *testing.B, plainLen int) {
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		r, _, err := NewMPUPartEncryptReader(context.Background(), bytes.NewReader(plain), testDEK, testUIDHash, testIVPrefix, 1, DefaultChunkSize, int64(plainLen))
+		r, _, err := NewMPUPartEncryptReader(context.Background(), bytes.NewReader(plain), testDEK, testUIDHash, testIVPrefix, 1, DefaultChunkSize, int64(plainLen), "AES256GCM")
 		if err != nil {
 			b.Fatal(err)
 		}
@@ -54,7 +54,7 @@ func BenchmarkMPUDecryptReader_100MiB(b *testing.B) {
 		context.Background(),
 		bytes.NewReader(plain),
 		testDEK, testUIDHash, testIVPrefix,
-		1, DefaultChunkSize, int64(plainLen),
+		1, DefaultChunkSize, int64(plainLen), "AES256GCM",
 	)
 	if err != nil {
 		b.Fatal(err)
@@ -89,7 +89,7 @@ func BenchmarkMPUDecryptReader_100MiB(b *testing.B) {
 	b.ResetTimer()
 
 	for i := 0; i < b.N; i++ {
-		r, err := NewMPUDecryptReader(bytes.NewReader(ct), manifest, testDEK, testUIDHash, testIVPrefix)
+		r, err := NewMPUDecryptReader(bytes.NewReader(ct), manifest, testDEK, testUIDHash, testIVPrefix, "AES256GCM")
 		if err != nil {
 			b.Fatal(err)
 		}

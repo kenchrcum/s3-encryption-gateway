@@ -21,7 +21,7 @@ func TestMPUEncryptDecrypt_RoundTrip(t *testing.T) {
 	plaintext := bytes.Repeat([]byte("hello world!"), 1000)
 	ctx := context.Background()
 
-	reader, encLen, err := NewMPUPartEncryptReader(ctx, bytes.NewReader(plaintext), testDEK, testUIDHash, testIVPrefix, 1, DefaultChunkSize, int64(len(plaintext)))
+	reader, encLen, err := NewMPUPartEncryptReader(ctx, bytes.NewReader(plaintext), testDEK, testUIDHash, testIVPrefix, 1, DefaultChunkSize, int64(len(plaintext)), "AES256GCM")
 	require.NoError(t, err)
 	assert.Greater(t, encLen, int64(len(plaintext)), "ciphertext must be larger than plaintext")
 
@@ -29,7 +29,7 @@ func TestMPUEncryptDecrypt_RoundTrip(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, encLen, int64(len(ciphertext)), "reported encLen must match actual ciphertext length")
 
-	got, err := DecryptMPUPart(ciphertext, testDEK, testUIDHash, testIVPrefix, 1, DefaultChunkSize)
+	got, err := DecryptMPUPart(ciphertext, testDEK, testUIDHash, testIVPrefix, 1, DefaultChunkSize, "AES256GCM")
 	require.NoError(t, err)
 	assert.Equal(t, plaintext, got)
 }
@@ -43,7 +43,7 @@ func TestMPUEncryptDecrypt_MultiPart(t *testing.T) {
 
 	ciphertexts := make([][]byte, numParts)
 	for p := 1; p <= numParts; p++ {
-		r, encLen, err := NewMPUPartEncryptReader(ctx, bytes.NewReader(plain), testDEK, testUIDHash, testIVPrefix, int32(p), DefaultChunkSize, int64(len(plain)))
+		r, encLen, err := NewMPUPartEncryptReader(ctx, bytes.NewReader(plain), testDEK, testUIDHash, testIVPrefix, int32(p), DefaultChunkSize, int64(len(plain)), "AES256GCM")
 		require.NoErrorf(t, err, "part %d", p)
 		ct, err := io.ReadAll(r)
 		require.NoError(t, err)
@@ -58,7 +58,7 @@ func TestMPUEncryptDecrypt_MultiPart(t *testing.T) {
 
 	// Each must decrypt correctly.
 	for p := 1; p <= numParts; p++ {
-		got, err := DecryptMPUPart(ciphertexts[p-1], testDEK, testUIDHash, testIVPrefix, int32(p), DefaultChunkSize)
+		got, err := DecryptMPUPart(ciphertexts[p-1], testDEK, testUIDHash, testIVPrefix, int32(p), DefaultChunkSize, "AES256GCM")
 		require.NoErrorf(t, err, "part %d", p)
 		assert.Equal(t, plain, got)
 	}
@@ -70,7 +70,7 @@ func TestMPUEncryptDecrypt_TamperDetection(t *testing.T) {
 	ctx := context.Background()
 	plain := bytes.Repeat([]byte("secret"), 1000)
 
-	r, _, err := NewMPUPartEncryptReader(ctx, bytes.NewReader(plain), testDEK, testUIDHash, testIVPrefix, 1, DefaultChunkSize, int64(len(plain)))
+	r, _, err := NewMPUPartEncryptReader(ctx, bytes.NewReader(plain), testDEK, testUIDHash, testIVPrefix, 1, DefaultChunkSize, int64(len(plain)), "AES256GCM")
 	require.NoError(t, err)
 	ct, err := io.ReadAll(r)
 	require.NoError(t, err)
@@ -80,7 +80,7 @@ func TestMPUEncryptDecrypt_TamperDetection(t *testing.T) {
 	copy(tampered, ct)
 	tampered[42] ^= 0xff
 
-	_, err = DecryptMPUPart(tampered, testDEK, testUIDHash, testIVPrefix, 1, DefaultChunkSize)
+	_, err = DecryptMPUPart(tampered, testDEK, testUIDHash, testIVPrefix, 1, DefaultChunkSize, "AES256GCM")
 	require.Error(t, err, "tampered ciphertext must be rejected")
 	assert.Contains(t, err.Error(), "auth failure")
 }
@@ -104,7 +104,7 @@ func TestNewMPUDecryptReader_Streaming(t *testing.T) {
 		plain := bytes.Repeat([]byte{byte(p)}, plainPerPart)
 		fullPlain = append(fullPlain, plain...)
 
-		r, encLen, err := NewMPUPartEncryptReader(ctx, bytes.NewReader(plain), testDEK, testUIDHash, testIVPrefix, int32(p), DefaultChunkSize, int64(len(plain)))
+		r, encLen, err := NewMPUPartEncryptReader(ctx, bytes.NewReader(plain), testDEK, testUIDHash, testIVPrefix, int32(p), DefaultChunkSize, int64(len(plain)), "AES256GCM")
 		require.NoError(t, err)
 		ct, err := io.ReadAll(r)
 		require.NoError(t, err)
@@ -133,7 +133,7 @@ func TestNewMPUDecryptReader_Streaming(t *testing.T) {
 	}
 
 	// Use the streaming reader.
-	r, err := NewMPUDecryptReader(bytes.NewReader(fullCiphertext), manifest, testDEK, testUIDHash, testIVPrefix)
+	r, err := NewMPUDecryptReader(bytes.NewReader(fullCiphertext), manifest, testDEK, testUIDHash, testIVPrefix, "AES256GCM")
 	require.NoError(t, err)
 
 	// Read in small increments to verify streaming behaviour (no full buffer).
@@ -158,7 +158,7 @@ func TestNewMPUDecryptReader_TamperDetected(t *testing.T) {
 	ctx := context.Background()
 	plain := bytes.Repeat([]byte("x"), DefaultChunkSize+1) // 2 chunks
 
-	r, _, err := NewMPUPartEncryptReader(ctx, bytes.NewReader(plain), testDEK, testUIDHash, testIVPrefix, 1, DefaultChunkSize, int64(len(plain)))
+	r, _, err := NewMPUPartEncryptReader(ctx, bytes.NewReader(plain), testDEK, testUIDHash, testIVPrefix, 1, DefaultChunkSize, int64(len(plain)), "AES256GCM")
 	require.NoError(t, err)
 	ct, err := io.ReadAll(r)
 	require.NoError(t, err)
@@ -178,7 +178,7 @@ func TestNewMPUDecryptReader_TamperDetected(t *testing.T) {
 		TotalPlainSize: int64(len(plain)),
 	}
 
-	dr, err := NewMPUDecryptReader(bytes.NewReader(ct), manifest, testDEK, testUIDHash, testIVPrefix)
+	dr, err := NewMPUDecryptReader(bytes.NewReader(ct), manifest, testDEK, testUIDHash, testIVPrefix, "AES256GCM")
 	require.NoError(t, err)
 
 	_, err = io.ReadAll(dr)
@@ -190,14 +190,53 @@ func TestNewMPUDecryptReader_TamperDetected(t *testing.T) {
 func TestMPUEncryptDecrypt_EmptyPart(t *testing.T) {
 	ctx := context.Background()
 
-	r, encLen, err := NewMPUPartEncryptReader(ctx, bytes.NewReader(nil), testDEK, testUIDHash, testIVPrefix, 1, DefaultChunkSize, 0)
+	r, encLen, err := NewMPUPartEncryptReader(ctx, bytes.NewReader(nil), testDEK, testUIDHash, testIVPrefix, 1, DefaultChunkSize, 0, "AES256GCM")
 	require.NoError(t, err)
 	ct, err := io.ReadAll(r)
 	require.NoError(t, err)
 	assert.Equal(t, encLen, int64(len(ct)))
 	assert.Equal(t, int64(0), encLen, "empty part should produce zero ciphertext bytes")
 
-	got, err := DecryptMPUPart(ct, testDEK, testUIDHash, testIVPrefix, 1, DefaultChunkSize)
+	got, err := DecryptMPUPart(ct, testDEK, testUIDHash, testIVPrefix, 1, DefaultChunkSize, "AES256GCM")
 	require.NoError(t, err)
 	assert.Equal(t, []byte(nil), got)
+}
+
+// TestMPUEncryptDecrypt_LegacyAES256GCMString verifies backward compatibility
+// with manifests that use the bare string "AES256GCM" (no hyphen).
+func TestMPUEncryptDecrypt_LegacyAES256GCMString(t *testing.T) {
+	ctx := context.Background()
+	plain := bytes.Repeat([]byte("legacy-compat-"), 1000)
+
+	r, encLen, err := NewMPUPartEncryptReader(ctx, bytes.NewReader(plain), testDEK, testUIDHash, testIVPrefix, 1, DefaultChunkSize, int64(len(plain)), "AES256GCM")
+	require.NoError(t, err)
+	ct, err := io.ReadAll(r)
+	require.NoError(t, err)
+
+	got, err := DecryptMPUPart(ct, testDEK, testUIDHash, testIVPrefix, 1, DefaultChunkSize, "AES256GCM")
+	require.NoError(t, err)
+	assert.Equal(t, plain, got)
+
+	// Streaming path must also accept the legacy string.
+	manifest := &MultipartManifest{
+		Version:        1,
+		Algorithm:      "AES256GCM",
+		ChunkSize:      DefaultChunkSize,
+		IVPrefix:       "aabbccddeeff112233445566",
+		UploadIDHash:   encodeBase64(testUIDHash[:]),
+		WrappedDEK:     "test",
+		Parts: []MPUPartRecord{{
+			PartNumber: 1,
+			PlainLen:   int64(len(plain)),
+			EncLen:     encLen,
+			ChunkCount: 1,
+		}},
+		TotalPlainSize: int64(len(plain)),
+	}
+
+	dr, err := NewMPUDecryptReader(bytes.NewReader(ct), manifest, testDEK, testUIDHash, testIVPrefix, "AES256GCM")
+	require.NoError(t, err)
+	gotStream, err := io.ReadAll(dr)
+	require.NoError(t, err)
+	assert.Equal(t, plain, gotStream)
 }

@@ -229,13 +229,13 @@ func TestDecryptMPUPartRange(t *testing.T) {
 	plain := bytes.Repeat([]byte("abcd"), DefaultChunkSize) // 2.5 chunks
 
 	// Encrypt as a full part.
-	r, _, err := NewMPUPartEncryptReader(ctx, bytes.NewReader(plain), testDEK, testUIDHash, testIVPrefix, 1, DefaultChunkSize, int64(len(plain)))
+	r, _, err := NewMPUPartEncryptReader(ctx, bytes.NewReader(plain), testDEK, testUIDHash, testIVPrefix, 1, DefaultChunkSize, int64(len(plain)), "AES256GCM")
 	require.NoError(t, err)
 	ct, err := io.ReadAll(r)
 	require.NoError(t, err)
 
 	// Decrypt full part via DecryptMPUPart.
-	gotFull, err := DecryptMPUPart(ct, testDEK, testUIDHash, testIVPrefix, 1, DefaultChunkSize)
+	gotFull, err := DecryptMPUPart(ct, testDEK, testUIDHash, testIVPrefix, 1, DefaultChunkSize, "AES256GCM")
 	require.NoError(t, err)
 	assert.Equal(t, plain, gotFull)
 
@@ -243,12 +243,12 @@ func TestDecryptMPUPartRange(t *testing.T) {
 
 	// Decrypt just chunk 1 (second chunk) via DecryptMPUPartRange.
 	chunk1Ct := ct[encChunkSz : 2*encChunkSz]
-	gotChunk1, err := DecryptMPUPartRange(chunk1Ct, testDEK, testUIDHash, testIVPrefix, 1, DefaultChunkSize, 1)
+	gotChunk1, err := DecryptMPUPartRange(chunk1Ct, testDEK, testUIDHash, testIVPrefix, 1, DefaultChunkSize, 1, "AES256GCM")
 	require.NoError(t, err)
 	assert.Equal(t, plain[DefaultChunkSize:2*DefaultChunkSize], gotChunk1)
 
 	// Decrypt chunks 0+1 via DecryptMPUPartRange starting from 0.
-	gotChunks01, err := DecryptMPUPartRange(ct[:2*encChunkSz], testDEK, testUIDHash, testIVPrefix, 1, DefaultChunkSize, 0)
+	gotChunks01, err := DecryptMPUPartRange(ct[:2*encChunkSz], testDEK, testUIDHash, testIVPrefix, 1, DefaultChunkSize, 0, "AES256GCM")
 	require.NoError(t, err)
 	assert.Equal(t, plain[:2*DefaultChunkSize], gotChunks01)
 
@@ -256,7 +256,7 @@ func TestDecryptMPUPartRange(t *testing.T) {
 	tampered := make([]byte, len(chunk1Ct))
 	copy(tampered, chunk1Ct)
 	tampered[0] ^= 0xff
-	_, err = DecryptMPUPartRange(tampered, testDEK, testUIDHash, testIVPrefix, 1, DefaultChunkSize, 1)
+	_, err = DecryptMPUPartRange(tampered, testDEK, testUIDHash, testIVPrefix, 1, DefaultChunkSize, 1, "AES256GCM")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "auth failure")
 }

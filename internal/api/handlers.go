@@ -2382,6 +2382,10 @@ func (h *Handler) initMPUEncryptionState(ctx context.Context, uploadID, bucket, 
 	kmsProvider := envelope.Provider
 	kmsKeyVersion := envelope.KeyVersion
 
+	algorithm := h.encryptionEngine.PreferredAlgorithm()
+	if algorithm == "" {
+		algorithm = crypto.AlgorithmAES256GCM
+	}
 	state := &mpu.UploadState{
 		UploadID:       uploadID,
 		Bucket:         bucket,
@@ -2389,7 +2393,7 @@ func (h *Handler) initMPUEncryptionState(ctx context.Context, uploadID, bucket, 
 		UploadIDHash:   mpu.UploadIDHashB64(uploadID),
 		WrappedDEK:     wrappedDEK,
 		IVPrefixHex:    hex.EncodeToString(ivPrefix[:]),
-		Algorithm:      "AES256GCM",
+		Algorithm:      algorithm,
 		ChunkSize:      crypto.DefaultChunkSize,
 		KMSKeyID:       kmsKeyID,
 		KMSProvider:    kmsProvider,
@@ -3172,7 +3176,7 @@ func (h *Handler) encryptMPUPartWithState(ctx context.Context, bucket, uploadID 
 	defer zeroBytes(dek)
 
 	uploadIDHash := crypto.UploadIDHash(uploadID)
-	encReader, encLen, err := crypto.NewMPUPartEncryptReader(ctx, body, dek, uploadIDHash, ivPrefix, partNumber, state.ChunkSize, plainLen)
+	encReader, encLen, err := crypto.NewMPUPartEncryptReader(ctx, body, dek, uploadIDHash, ivPrefix, partNumber, state.ChunkSize, plainLen, state.Algorithm)
 	if err != nil {
 		return nil, 0, fmt.Errorf("encryptMPUPart: build encrypter: %w", err)
 	}
@@ -3339,7 +3343,7 @@ func (h *Handler) serveMPURangedGet(
 		}
 
 		partCipher := ciphertext[bytesConsumed : bytesConsumed+partCipherLen]
-		plain, err := crypto.DecryptMPUPartRange(partCipher, dek, uploadIDHash, ivPrefix, part.PartNumber, manifest.ChunkSize, firstChunk)
+		plain, err := crypto.DecryptMPUPartRange(partCipher, dek, uploadIDHash, ivPrefix, part.PartNumber, manifest.ChunkSize, firstChunk, manifest.Algorithm)
 		if err != nil {
 			h.logger.WithError(err).WithFields(logrus.Fields{
 				"bucket":     bucket,
@@ -3536,7 +3540,7 @@ func (h *Handler) decryptMPUObject(ctx context.Context, bucket, key string, meta
 	// Return a streaming reader — no full-object buffering.
 	// dek is zeroed when the streaming reader encounters EOF or the caller
 	// discards it (via the wrapper below).
-	inner, err := crypto.NewMPUDecryptReader(reader, manifest, dek, uploadIDHash, ivPrefix)
+	inner, err := crypto.NewMPUDecryptReader(reader, manifest, dek, uploadIDHash, ivPrefix, manifest.Algorithm)
 	if err != nil {
 		zeroBytes(dek)
 		return nil, fmt.Errorf("decryptMPUObject: create decrypt reader: %w", err)

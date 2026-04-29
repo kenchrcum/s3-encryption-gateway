@@ -35,6 +35,10 @@ func (m *mockEngine) IsEncrypted(metadata map[string]string) bool {
 	return false
 }
 
+func (m *mockEngine) PreferredAlgorithm() string {
+	return crypto.AlgorithmAES256GCM
+}
+
 func (m *mockEngine) Close() error {
 	m.closeCount++
 	return nil
