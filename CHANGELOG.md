@@ -8,6 +8,106 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [0.6.4] — 2026-04-29
+
+### Security
+
+This patch release addresses eighteen security findings from the v1.0 deep
+security analysis (DAF-01 through DAF-18). All fixes are non-breaking; no
+configuration changes are required unless noted.
+
+- **SigV4 header auth: clock-skew / replay protection** (V1.0-SEC-11):
+  `ValidateSignatureV4` now validates `X-Amz-Date` against server time for
+  header-based SigV4 requests using a configurable clock-skew tolerance
+  (`auth.sigv4_clock_skew`, default 5 minutes). A monotonic request counter
+  (`X-Amz-Nonce`) is supported as an optional anti-replay mechanism.
+
+- **Remove key padding in `deriveKey`** (V1.0-SEC-12):
+  Removed the catastrophic fallback that repeated the key prefix to reach
+  `keySize`. Keys shorter than 32 bytes now return an error immediately.
+  Companion validation added in `decryptChunked` and `DecryptRange`
+  (V1.0-SEC-15), so unexpectedly short KMS keys are rejected rather than
+  padded.
+
+- **Bounded goroutine spawning in audit BatchSink** (V1.0-SEC-13):
+  `BatchSink.WriteEvent` now uses a semaphore (`maxConcurrentFlushes`)
+  instead of spawning unbounded goroutines. Events dropped under backpressure
+  are counted by `dropped_audit_events_total`.
+
+- **Streaming chunked encryption** (V1.0-SEC-14):
+  `encryptChunked` no longer calls `io.ReadAll` on the entire plaintext.
+  Memory usage is now bounded by the chunk pipeline regardless of object size.
+  The metadata-fallback path was also fixed to avoid holding plaintext and
+  ciphertext simultaneously (V1.0-SEC-27).
+
+- **Trusted-proxy-aware tracing middleware** (V1.0-SEC-16):
+  `TracingMiddleware` now uses the existing `TrustedProxies` configuration
+  when extracting client IPs for `http.client_ip` span attributes. It no
+  longer blindly trusts `X-Real-IP` or the leftmost `X-Forwarded-For` entry.
+
+- **Redact presigned signatures from OTel spans** (V1.0-SEC-17):
+  `HTTPURL` span attributes now contain `scheme://host/path` only. The query
+  string (including `X-Amz-Signature`) is excluded; a separate redaction-safe
+  `http.query` attribute is available when `redactSensitive=false`.
+
+- **Remove debug Printf from S3 client** (V1.0-SEC-18):
+  All `debug.Enabled()` blocks in `internal/s3/client.go` now use
+  `slog.Debug(..., "len", len(v))` instead of `fmt.Printf` with 30-character
+  value previews. No raw metadata (salt, IV, wrapped key) is ever logged.
+
+- **Password loaded as `[]byte` from the start** (V1.0-SEC-19):
+  `cmd/server/main.go` now loads the encryption password directly into a
+  `[]byte` slice and zeroizes it immediately after passing it to the engine
+  constructor. Go's immutable `string` intermediate is eliminated; the
+  explicit security guidance in `docs/SECURITY.md` is updated accordingly.
+
+- **TTL-based engine cache with `Close()` on eviction** (V1.0-SEC-20):
+  `engineCache` is now a TTL cache with a background sweep goroutine. Engines
+  are `Close()`d and their passwords zeroized on eviction and on server
+  shutdown, preventing unbounded accumulation of active password buffers.
+
+- **Admin `MaxHeaderBytes`** (V1.0-SEC-21):
+  The admin HTTP server now explicitly sets `MaxHeaderBytes` (64 KB default),
+  preventing memory exhaustion via oversized headers.
+
+- **Cached admin token with refresh loop** (V1.0-SEC-22):
+  The admin bearer token is now read once at startup and cached in a
+  `RWMutex`-protected field. A `tokenRefreshLoop` re-reads the file every 30
+  seconds and validates permissions, eliminating per-request disk I/O without
+  losing the ability to rotate tokens at runtime.
+
+- **Hardened TLS cipher suites** (V1.0-SEC-23):
+  Both admin listener and Cosmian KMS TLS configs now explicitly restrict
+  `CipherSuites` (ECDHE+AES-256-GCM / CHACHA20-POLY1305) and
+  `CurvePreferences` (X25519, P-256). CBC-mode ciphers are rejected.
+
+- **Recovery middleware is outermost** (V1.0-SEC-24):
+  Middleware ordering corrected so `RecoveryMiddleware` wraps all other
+  middleware (logging, security headers, tracing, bucket validation, rate
+  limiting). Panics in any layer now gracefully return HTTP 500 instead of
+  crashing the server goroutine.
+
+- **Multipart upload respects configured algorithm** (V1.0-SEC-25):
+  `initMPUEncryptionState` now calls `engine.PreferredAlgorithm()` instead of
+  hardcoding `"AES256GCM"`. `NewMPUPartEncryptReader` and `NewMPUDecryptReader`
+  accept an `algorithm string` parameter. This means policies configured for
+  `ChaCha20-Poly1305` are honored for multipart uploads.
+
+- **Audit FileSink permissions** (V1.0-SEC-26):
+  Audit log files are now created with `0600` permissions instead of `0644`.
+
+- **Admin token file TOCTOU fix** (V1.0-SEC-28):
+  Token file validation now uses `os.Lstat` instead of `os.Stat` to detect
+  symlinks and prevent TOCTOU races between permission check and read.
+
+### Dependencies
+
+- Updated `github.com/aws/aws-sdk-go-v2` to v1.41.7
+- Updated `github.com/aws/aws-sdk-go-v2/credentials` to v1.19.16
+- Updated `github.com/aws/aws-sdk-go-v2/service/s3` to v1.100.1
+
+---
+
 ## [0.6.3] — 2026-04-28
 
 ### Security
