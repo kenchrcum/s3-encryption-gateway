@@ -786,19 +786,27 @@ func (e *engine) Decrypt(reader io.Reader, metadata map[string]string) (io.Reade
 
 // encryptChunked implements streaming chunked encryption.
 func (e *engine) encryptChunked(ctx context.Context, reader io.Reader, metadata map[string]string) (io.Reader, map[string]string, error) {
-	// Read all data for chunked encryption to check metadata size
-	plaintext, err := io.ReadAll(reader)
-	if err != nil {
-		return nil, nil, fmt.Errorf("failed to read plaintext for chunked encryption: %w", err)
-	}
-
-	// Extract content type and compute ETag
+	// Extract content type from metadata (no pre-read required).
 	contentType := ""
 	if metadata != nil {
 		contentType = metadata["Content-Type"]
 	}
-	originalETag := computeETag(plaintext)
-	originalSize := int64(len(plaintext))
+
+	// Attempt to get original size and ETag from metadata set by the caller
+	// (e.g., the handler populates these from HTTP headers).  When they are
+	// absent we omit them rather than reading the entire source into memory.
+	var originalSize int64
+	if metadata != nil {
+		if cl := metadata["Content-Length"]; cl != "" {
+			fmt.Sscanf(cl, "%d", &originalSize)
+		} else if cl := metadata["x-amz-meta-original-content-length"]; cl != "" {
+			fmt.Sscanf(cl, "%d", &originalSize)
+		}
+	}
+	originalETag := ""
+	if metadata != nil {
+		originalETag = metadata["ETag"]
+	}
 
 	// Prepare encryption metadata to check size
 	encMetadata := make(map[string]string)
@@ -810,15 +818,19 @@ func (e *engine) encryptChunked(ctx context.Context, reader io.Reader, metadata 
 	// Add basic encryption markers for size check
 	encMetadata[MetaEncrypted] = "true"
 	encMetadata[MetaAlgorithm] = e.preferredAlgorithm
-	encMetadata[MetaOriginalSize] = fmt.Sprintf("%d", originalSize)
-	encMetadata[MetaOriginalETag] = originalETag
+	if originalSize > 0 {
+		encMetadata[MetaOriginalSize] = fmt.Sprintf("%d", originalSize)
+	}
+	if originalETag != "" {
+		encMetadata[MetaOriginalETag] = originalETag
+	}
 	// Add chunked-specific metadata
 	encMetadata[MetaChunkedFormat] = "true"
 	encMetadata[MetaChunkSize] = fmt.Sprintf("%d", e.chunkSize)
 
 	// Check if we need fallback metadata storage
 	if e.needsMetadataFallback(encMetadata) {
-		return e.encryptChunkedWithMetadataFallback(ctx, plaintext, encMetadata, contentType, originalSize, originalETag)
+		return e.encryptChunkedWithMetadataFallback(ctx, reader, encMetadata, contentType, originalSize, originalETag)
 	}
 
 	// Determine algorithm to use
@@ -892,8 +904,9 @@ func (e *engine) encryptChunked(ctx context.Context, reader io.Reader, metadata 
 	}
 	aead := aeadCipher.(cipher.AEAD)
 
-	// Create chunked encrypt reader
-	chunkedReader, manifest := newChunkedEncryptReader(bytes.NewReader(plaintext), aead, baseIV, e.chunkSize, e.bufferPool)
+	// Create chunked encrypt reader directly from the source stream.
+	// No io.ReadAll — memory usage is bounded by the chunk pipeline.
+	chunkedReader, manifest := newChunkedEncryptReader(reader, aead, baseIV, e.chunkSize, e.bufferPool)
 
 	// Encode manifest for storage
 	manifestEncoded, err := encodeManifest(manifest)
@@ -917,7 +930,12 @@ func (e *engine) encryptChunked(ctx context.Context, reader io.Reader, metadata 
 	encMetadata[MetaIV] = encodeBase64(baseIV)
 	encMetadata[MetaChunkSize] = fmt.Sprintf("%d", e.chunkSize)
 	encMetadata[MetaManifest] = manifestEncoded
-	encMetadata[MetaOriginalETag] = originalETag
+	if originalETag != "" {
+		encMetadata[MetaOriginalETag] = originalETag
+	}
+	if originalSize > 0 {
+		encMetadata[MetaOriginalSize] = fmt.Sprintf("%d", originalSize)
+	}
 	// Note: MetaChunkCount is NOT set here because manifest.ChunkCount is 0 at this point
 	// (it only gets incremented during encryption). ChunkCount can be calculated during
 	// decryption from the encrypted object size and chunk size, or from the manifest if needed.
@@ -945,7 +963,7 @@ func (e *engine) encryptChunked(ctx context.Context, reader io.Reader, metadata 
 }
 
 // encryptChunkedWithMetadataFallback encrypts chunked data with metadata stored in object body
-func (e *engine) encryptChunkedWithMetadataFallback(ctx context.Context, plaintext []byte, fullMetadata map[string]string, contentType string, originalSize int64, originalETag string) (io.Reader, map[string]string, error) {
+func (e *engine) encryptChunkedWithMetadataFallback(ctx context.Context, reader io.Reader, fullMetadata map[string]string, contentType string, originalSize int64, originalETag string) (io.Reader, map[string]string, error) {
 	// Generate encryption parameters
 	salt, err := e.generateSalt()
 	if err != nil {
@@ -1013,14 +1031,15 @@ func (e *engine) encryptChunkedWithMetadataFallback(ctx context.Context, plainte
 	}
 	aead := aeadCipher.(cipher.AEAD)
 
-	// Create chunked encrypt reader for the plaintext
-	chunkedReader, manifest := newChunkedEncryptReader(bytes.NewReader(plaintext), aead, baseIV, e.chunkSize, e.bufferPool)
+	// Stream the source through chunked encryption directly.
+	// No plaintext buffer is held — only the encrypted output is accumulated.
+	chunkedReader, manifest := newChunkedEncryptReader(reader, aead, baseIV, e.chunkSize, e.bufferPool)
 
-	// Read the chunked encrypted data
-	chunkedData, err := io.ReadAll(chunkedReader)
-	if err != nil {
+	var chunkedBuf bytes.Buffer
+	if _, err := io.Copy(&chunkedBuf, chunkedReader); err != nil {
 		return nil, nil, fmt.Errorf("failed to read chunked encrypted data: %w", err)
 	}
+	chunkedData := chunkedBuf.Bytes()
 
 	// Encode manifest
 	manifestEncoded, err := encodeManifest(manifest)
@@ -1035,7 +1054,12 @@ func (e *engine) encryptChunkedWithMetadataFallback(ctx context.Context, plainte
 	fullMetadata[MetaIV] = encodeBase64(baseIV)
 	fullMetadata[MetaChunkSize] = fmt.Sprintf("%d", e.chunkSize)
 	fullMetadata[MetaManifest] = manifestEncoded
-	fullMetadata[MetaOriginalETag] = originalETag
+	if originalETag != "" {
+		fullMetadata[MetaOriginalETag] = originalETag
+	}
+	if originalSize > 0 {
+		fullMetadata[MetaOriginalSize] = fmt.Sprintf("%d", originalSize)
+	}
 	if envelope != nil {
 		fullMetadata[MetaKeyVersion] = fmt.Sprintf("%d", envelope.KeyVersion)
 		if envelope.KeyID != "" {
@@ -1068,10 +1092,13 @@ func (e *engine) encryptChunkedWithMetadataFallback(ctx context.Context, plainte
 	dataToEncrypt = append(dataToEncrypt, chunkedData...)
 
 	// Build AAD for authentication
-	aad := buildAAD(algorithm, salt, baseIV, map[string]string{
-		"Content-Type":   contentType,
-		MetaOriginalSize: fmt.Sprintf("%d", originalSize),
-	})
+	aadMap := map[string]string{
+		"Content-Type": contentType,
+	}
+	if originalSize > 0 {
+		aadMap[MetaOriginalSize] = fmt.Sprintf("%d", originalSize)
+	}
+	aad := buildAAD(algorithm, salt, baseIV, aadMap)
 
 	// Encrypt the combined data
 	ciphertext := aead.Seal(nil, baseIV, dataToEncrypt, aad)
@@ -1083,8 +1110,12 @@ func (e *engine) encryptChunkedWithMetadataFallback(ctx context.Context, plainte
 		MetaAlgorithm:    algorithm,
 		MetaKeySalt:      encodeBase64(salt),
 		MetaIV:           encodeBase64(baseIV),
-		MetaOriginalSize: fmt.Sprintf("%d", originalSize),
-		MetaOriginalETag: originalETag,
+	}
+	if originalSize > 0 {
+		minimalMetadata[MetaOriginalSize] = fmt.Sprintf("%d", originalSize)
+	}
+	if originalETag != "" {
+		minimalMetadata[MetaOriginalETag] = originalETag
 	}
 	if envelope != nil {
 		minimalMetadata[MetaKeyVersion] = fmt.Sprintf("%d", envelope.KeyVersion)

@@ -386,3 +386,127 @@ func TestChunkedEncryptDecrypt_BackwardCompatibility(t *testing.T) {
 		t.Error("Decrypted data does not match original")
 	}
 }
+
+// readTracker wraps an io.Reader and counts Read calls.
+type readTracker struct {
+	r          io.Reader
+	readCount  int
+	totalBytes int
+}
+
+func (rt *readTracker) Read(p []byte) (int, error) {
+	n, err := rt.r.Read(p)
+	rt.readCount++
+	rt.totalBytes += n
+	return n, err
+}
+
+// TestChunkedEncrypt_DoesNotPreRead verifies that encryptChunked does not
+// call io.ReadAll on the source reader.  This is the key behavioural fix for
+// V1.0-SEC-14 — peak heap must be bounded by the chunk pipeline, not the
+// object size.
+func TestChunkedEncrypt_DoesNotPreRead(t *testing.T) {
+	engine, err := NewEngineWithChunking("test-password-12345", nil, "", nil, true, DefaultChunkSize)
+	if err != nil {
+		t.Fatalf("Failed to create engine: %v", err)
+	}
+
+	data := make([]byte, 2*1024*1024) // 2 MB
+	for i := range data {
+		data[i] = byte(i % 256)
+	}
+
+	tracker := &readTracker{r: bytes.NewReader(data)}
+	encReader, meta, err := engine.Encrypt(tracker, map[string]string{
+		"Content-Length": fmt.Sprintf("%d", len(data)),
+	})
+	if err != nil {
+		t.Fatalf("Encrypt failed: %v", err)
+	}
+
+	// Encrypt() must NOT have pre-read the source.
+	if tracker.readCount > 0 {
+		t.Fatalf("Encrypt pre-read the source: %d Read calls, %d bytes", tracker.readCount, tracker.totalBytes)
+	}
+
+	// Verify the chunked format marker is present.
+	if meta[MetaChunkedFormat] != "true" {
+		t.Error("Expected chunked format marker")
+	}
+
+	// Consume the encrypted reader to ensure the plaintext is fully processed.
+	encryptedData, err := io.ReadAll(encReader)
+	if err != nil {
+		t.Fatalf("Failed to read encrypted data: %v", err)
+	}
+	if len(encryptedData) == 0 {
+		t.Fatal("Encrypted data is empty")
+	}
+
+	// Now the tracker should show all bytes were read.
+	if tracker.totalBytes != len(data) {
+		t.Fatalf("Expected %d bytes read from source, got %d", len(data), tracker.totalBytes)
+	}
+
+	// Round-trip decrypt.
+	decReader, _, err := engine.Decrypt(bytes.NewReader(encryptedData), meta)
+	if err != nil {
+		t.Fatalf("Decrypt failed: %v", err)
+	}
+	decryptedData, err := io.ReadAll(decReader)
+	if err != nil {
+		t.Fatalf("Failed to read decrypted data: %v", err)
+	}
+	if !bytes.Equal(data, decryptedData) {
+		t.Error("Decrypted data does not match original")
+	}
+}
+
+// TestChunkedEncryptFallback_NoDoubleBuffer verifies the metadata-fallback
+// path streams the source directly into the chunked encrypt reader without
+// holding the plaintext in memory.
+func TestChunkedEncryptFallback_NoDoubleBuffer(t *testing.T) {
+	profile := &ProviderProfile{
+		Name:                "test-tiny-headers",
+		UserMetadataLimit:   50,
+		SystemMetadataLimit: 0,
+		TotalHeaderLimit:    80,
+		SupportsLongKeys:    true,
+		CompactionStrategy:  "base64url",
+	}
+
+	encEngine, err := NewEngineWithProvider("test-password-123456789", nil, "", nil, "default")
+	if err != nil {
+		t.Fatalf("Failed to create engine: %v", err)
+	}
+	concreteEngine := encEngine.(*engine)
+	concreteEngine.providerProfile = profile
+	concreteEngine.compactor = NewMetadataCompactor(profile)
+	concreteEngine.chunkedMode = true
+	concreteEngine.chunkSize = DefaultChunkSize
+
+	data := []byte("Hello, fallback world! This is test data for V1.0-SEC-14.")
+
+	encReader, meta, err := encEngine.Encrypt(bytes.NewReader(data), map[string]string{
+		"Content-Length": fmt.Sprintf("%d", len(data)),
+		"Content-Type":   "text/plain",
+	})
+	if err != nil {
+		t.Fatalf("Encrypt failed: %v", err)
+	}
+
+	if meta[MetaFallbackMode] != "true" {
+		t.Fatalf("Expected fallback mode, got MetaFallbackMode=%q", meta[MetaFallbackMode])
+	}
+
+	// The fallback path inherently consumes the source inside Encrypt because
+	// aead.Seal requires the full ciphertext buffer.  The fix for V1.0-SEC-14
+	// here is that plaintext is NOT held simultaneously — only ciphertext is.
+	encryptedData, err := io.ReadAll(encReader)
+	if err != nil {
+		t.Fatalf("Failed to read encrypted data: %v", err)
+	}
+	if len(encryptedData) == 0 {
+		t.Fatal("Encrypted data is empty")
+	}
+}

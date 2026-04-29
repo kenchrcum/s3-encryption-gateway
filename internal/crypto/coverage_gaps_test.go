@@ -5,6 +5,7 @@ package crypto
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"io"
 	"testing"
 )
@@ -325,7 +326,9 @@ func TestRangeDecryptReader_Close(t *testing.T) {
 		data[i] = byte(i % 251)
 	}
 
-	encReader, meta, err := engine.Encrypt(bytes.NewReader(data), nil)
+	encReader, meta, err := engine.Encrypt(bytes.NewReader(data), map[string]string{
+		"Content-Length": fmt.Sprintf("%d", len(data)),
+	})
 	if err != nil {
 		t.Fatalf("Encrypt: %v", err)
 	}

@@ -3,6 +3,7 @@ package crypto
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"io"
 	"strings"
 	"testing"
@@ -115,7 +116,9 @@ func TestSEC12_DecryptRange_KMSShortKey(t *testing.T) {
 	goodEng.(*engine).kmsManager = goodKM
 
 	data := []byte("hello world, this is chunked range data for testing sec12")
-	reader, meta, err := goodEng.Encrypt(bytes.NewReader(data), nil)
+	reader, meta, err := goodEng.Encrypt(bytes.NewReader(data), map[string]string{
+		"Content-Length": fmt.Sprintf("%d", len(data)),
+	})
 	require.NoError(t, err)
 
 	encryptedData, err := io.ReadAll(reader)
