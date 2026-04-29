@@ -3,10 +3,12 @@ package audit
 import (
 	"encoding/json"
 	"fmt"
+	"io/fs"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"sync"
 	"testing"
 	"time"
@@ -134,6 +136,41 @@ func TestFileSink(t *testing.T) {
 	err = json.Unmarshal(content, &loadedEvent)
 	require.NoError(t, err)
 	assert.Equal(t, "test-file", loadedEvent.Operation)
+}
+
+// TestFileSink_DefaultMode verifies that NewFileSink creates the audit log file
+// with 0600 permissions (owner read/write only) — V1.0-SEC-26.
+func TestFileSink_DefaultMode(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "audit.log")
+
+	sink := NewFileSink(path)
+	event := &AuditEvent{Operation: "perm-test"}
+	require.NoError(t, sink.WriteEvent(event))
+
+	info, err := os.Stat(path)
+	require.NoError(t, err)
+	// Mask to permission bits only.
+	got := info.Mode().Perm()
+	assert.Equal(t, fs.FileMode(0600), got,
+		"audit log must be owner-only readable (0600), got %04o", got)
+}
+
+// TestFileSink_CustomMode verifies that NewFileSinkWithMode honours the
+// caller-supplied permission mode — V1.0-SEC-26.
+func TestFileSink_CustomMode(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "audit.log")
+
+	sink := NewFileSinkWithMode(path, 0640)
+	event := &AuditEvent{Operation: "custom-mode-test"}
+	require.NoError(t, sink.WriteEvent(event))
+
+	info, err := os.Stat(path)
+	require.NoError(t, err)
+	got := info.Mode().Perm()
+	assert.Equal(t, fs.FileMode(0640), got,
+		"audit log mode should match supplied value 0640, got %04o", got)
 }
 
 func TestNewLoggerFromConfig(t *testing.T) {

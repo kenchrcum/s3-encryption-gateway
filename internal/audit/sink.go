@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"io/fs"
 	"log/slog"
 	"net/http"
 	"os"
@@ -336,13 +337,21 @@ func (s *HTTPSink) SetLogger(logger *slog.Logger) {
 
 // FileSink writes events to a file.
 type FileSink struct {
-	path string
-	mu   sync.Mutex
+	path     string
+	fileMode fs.FileMode // V1.0-SEC-26: default 0600; configurable via NewFileSinkWithMode
+	mu       sync.Mutex
 }
 
 // NewFileSink creates a new file sink.
 func NewFileSink(path string) *FileSink {
-	return &FileSink{path: path}
+	return &FileSink{path: path, fileMode: 0600} //nolint:gosec // intentionally restricted
+}
+
+// NewFileSinkWithMode creates a new file sink with a configurable file permission mode.
+// Use this to override the default 0600 (e.g. 0640 for group-readable deployments).
+// V1.0-SEC-26 — configurable file mode override.
+func NewFileSinkWithMode(path string, mode fs.FileMode) *FileSink {
+	return &FileSink{path: path, fileMode: mode}
 }
 
 // WriteEvent writes a single event.
@@ -350,7 +359,7 @@ func (s *FileSink) WriteEvent(event *AuditEvent) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	f, err := os.OpenFile(s.path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	f, err := os.OpenFile(s.path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, s.fileMode) //nolint:gosec // intentionally restricted
 	if err != nil {
 		return err
 	}
