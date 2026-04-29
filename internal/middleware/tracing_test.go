@@ -6,7 +6,11 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/kenneth/s3-encryption-gateway/internal/util"
 	"github.com/stretchr/testify/assert"
+	"go.opentelemetry.io/otel"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 )
 
 func TestTracingMiddleware_Redaction(t *testing.T) {
@@ -25,7 +29,7 @@ func TestTracingMiddleware_Redaction(t *testing.T) {
 	})
 
 	// Test with redaction enabled
-	middleware := TracingMiddleware(true)
+	middleware := TracingMiddleware(true, nil)
 	handler := middleware(testHandler)
 
 	// Create a request with sensitive headers
@@ -51,7 +55,7 @@ func TestTracingMiddleware_Redaction(t *testing.T) {
 
 func TestTracingMiddleware_NoRedaction(t *testing.T) {
 	// Test with redaction disabled
-	middleware := TracingMiddleware(false)
+	middleware := TracingMiddleware(false, nil)
 	testHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte("OK"))
@@ -192,57 +196,126 @@ func TestGetSpanName(t *testing.T) {
 	}
 }
 
-func TestGetRemoteAddr(t *testing.T) {
-	tests := []struct {
-		name string
-		req  *http.Request
-		want string
-	}{
-		{
-			name: "X-Forwarded-For single IP",
-			req: func() *http.Request {
-				req := httptest.NewRequest("GET", "/", nil)
-				req.Header.Set("X-Forwarded-For", "192.168.1.1")
-				req.RemoteAddr = "127.0.0.1:1234"
-				return req
-			}(),
-			want: "192.168.1.1",
-		},
-		{
-			name: "X-Forwarded-For multiple IPs",
-			req: func() *http.Request {
-				req := httptest.NewRequest("GET", "/", nil)
-				req.Header.Set("X-Forwarded-For", "192.168.1.1, 10.0.0.1")
-				req.RemoteAddr = "127.0.0.1:1234"
-				return req
-			}(),
-			want: "192.168.1.1",
-		},
-		{
-			name: "X-Real-IP",
-			req: func() *http.Request {
-				req := httptest.NewRequest("GET", "/", nil)
-				req.Header.Set("X-Real-IP", "192.168.1.1")
-				req.RemoteAddr = "127.0.0.1:1234"
-				return req
-			}(),
-			want: "192.168.1.1",
-		},
-		{
-			name: "fallback to RemoteAddr",
-			req: func() *http.Request {
-				req := httptest.NewRequest("GET", "/", nil)
-				req.RemoteAddr = "127.0.0.1:1234"
-				return req
-			}(),
-			want: "127.0.0.1:1234",
-		},
-	}
+func TestGetRemoteAddr_NilExtractor(t *testing.T) {
+	// No extractor configured → fail-safe fallback to RemoteAddr
+	req := httptest.NewRequest("GET", "/", nil)
+	req.RemoteAddr = "192.168.1.100:54321"
+	req.Header.Set("X-Forwarded-For", "203.0.113.1")
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got := getRemoteAddr(tt.req)
-			assert.Equal(t, tt.want, got)
-		})
+	got := getRemoteAddr(req, nil)
+	assert.Equal(t, "192.168.1.100", got)
+}
+
+func TestGetRemoteAddr_TrustedProxy(t *testing.T) {
+	extractor, err := util.NewIPExtractor([]string{"10.0.0.0/8"})
+	assert.NoError(t, err)
+
+	req := httptest.NewRequest("GET", "/", nil)
+	req.RemoteAddr = "10.0.0.1:54321"
+	req.Header.Set("X-Forwarded-For", "203.0.113.1")
+
+	got := getRemoteAddr(req, extractor)
+	assert.Equal(t, "203.0.113.1", got)
+}
+
+func TestGetRemoteAddr_UntrustedOrigin(t *testing.T) {
+	extractor, err := util.NewIPExtractor([]string{"10.0.0.0/8"})
+	assert.NoError(t, err)
+
+	req := httptest.NewRequest("GET", "/", nil)
+	req.RemoteAddr = "203.0.113.99:54321"
+	req.Header.Set("X-Forwarded-For", "1.2.3.4")
+
+	got := getRemoteAddr(req, extractor)
+	assert.Equal(t, "203.0.113.99", got)
+}
+
+func setupTestTracer(t *testing.T) (*sdktrace.TracerProvider, *tracetest.SpanRecorder) {
+	t.Helper()
+	sr := tracetest.NewSpanRecorder()
+	tp := sdktrace.NewTracerProvider(
+		sdktrace.WithSampler(sdktrace.AlwaysSample()),
+		sdktrace.WithSpanProcessor(sr),
+	)
+	oldTP := otel.GetTracerProvider()
+	otel.SetTracerProvider(tp)
+	t.Cleanup(func() { otel.SetTracerProvider(oldTP) })
+	return tp, sr
+}
+
+func findSpanAttribute(spans []sdktrace.ReadOnlySpan, key string) string {
+	for _, span := range spans {
+		for _, attr := range span.Attributes() {
+			if string(attr.Key) == key {
+				return attr.Value.AsString()
+			}
+		}
 	}
+	return ""
+}
+
+func TestTracingMiddleware_SpanRemoteAddr_NilExtractor(t *testing.T) {
+	_, sr := setupTestTracer(t)
+
+	middleware := TracingMiddleware(true, nil)
+	handler := middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	req := httptest.NewRequest("GET", "/", nil)
+	req.RemoteAddr = "192.168.1.100:54321"
+	req.Header.Set("X-Forwarded-For", "203.0.113.1")
+
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	ended := sr.Ended()
+	assert.Len(t, ended, 1)
+	assert.Equal(t, "192.168.1.100", findSpanAttribute(ended, "http.remote_addr"))
+}
+
+func TestTracingMiddleware_SpanRemoteAddr_TrustedProxy(t *testing.T) {
+	_, sr := setupTestTracer(t)
+
+	extractor, err := util.NewIPExtractor([]string{"10.0.0.0/8"})
+	assert.NoError(t, err)
+
+	middleware := TracingMiddleware(true, extractor)
+	handler := middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	req := httptest.NewRequest("GET", "/", nil)
+	req.RemoteAddr = "10.0.0.1:54321"
+	req.Header.Set("X-Forwarded-For", "203.0.113.1")
+
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	ended := sr.Ended()
+	assert.Len(t, ended, 1)
+	assert.Equal(t, "203.0.113.1", findSpanAttribute(ended, "http.remote_addr"))
+}
+
+func TestTracingMiddleware_SpanRemoteAddr_UntrustedOrigin(t *testing.T) {
+	_, sr := setupTestTracer(t)
+
+	extractor, err := util.NewIPExtractor([]string{"10.0.0.0/8"})
+	assert.NoError(t, err)
+
+	middleware := TracingMiddleware(true, extractor)
+	handler := middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	req := httptest.NewRequest("GET", "/", nil)
+	req.RemoteAddr = "203.0.113.99:54321"
+	req.Header.Set("X-Forwarded-For", "1.2.3.4")
+
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	ended := sr.Ended()
+	assert.Len(t, ended, 1)
+	assert.Equal(t, "203.0.113.99", findSpanAttribute(ended, "http.remote_addr"))
 }

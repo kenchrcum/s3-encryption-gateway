@@ -22,6 +22,7 @@ import (
 	"github.com/kenneth/s3-encryption-gateway/internal/middleware"
 	mpupkg "github.com/kenneth/s3-encryption-gateway/internal/mpu"
 	"github.com/kenneth/s3-encryption-gateway/internal/s3"
+	"github.com/kenneth/s3-encryption-gateway/internal/util"
 	"github.com/sirupsen/logrus"
 
 	"go.opentelemetry.io/otel"
@@ -604,6 +605,17 @@ func main() {
 	// Register API routes
 	handler.RegisterRoutes(router)
 
+	// Initialize IP extractor with trusted proxies (V1.0-SEC-6, V1.0-SEC-16).
+	// This ensures client IP extraction honors trusted proxy configuration
+	// and prevents X-Forwarded-For header spoofing in tracing, rate limiting,
+	// and audit logging.
+	ipExtractor, err := util.NewIPExtractor(cfg.Server.TrustedProxies)
+	if err != nil {
+		logger.WithError(err).Fatal("Invalid trusted proxies configuration")
+	}
+	api.SetIPExtractor(ipExtractor)
+	middleware.SetIPExtractor(ipExtractor)
+
 	// Apply middleware
 	httpHandler := middleware.RecoveryMiddleware(logger)(router)
 	httpHandler = middleware.LoggingMiddleware(logger, &cfg.Logging)(httpHandler)
@@ -611,7 +623,7 @@ func main() {
 
 	// Apply tracing middleware if tracing is enabled
 	if cfg.Tracing.Enabled {
-		httpHandler = middleware.TracingMiddleware(cfg.Tracing.RedactSensitive)(httpHandler)
+		httpHandler = middleware.TracingMiddleware(cfg.Tracing.RedactSensitive, ipExtractor)(httpHandler)
 	}
 
 	// Apply bucket validation middleware if proxied bucket is configured

@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/kenneth/s3-encryption-gateway/internal/util"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
@@ -12,7 +13,7 @@ import (
 )
 
 // TracingMiddleware wraps handlers with OpenTelemetry tracing.
-func TracingMiddleware(redactSensitive bool) func(http.Handler) http.Handler {
+func TracingMiddleware(redactSensitive bool, extractor *util.IPExtractor) func(http.Handler) http.Handler {
 	tracer := otel.Tracer("s3-encryption-gateway")
 
 	return func(next http.Handler) http.Handler {
@@ -34,7 +35,7 @@ func TracingMiddleware(redactSensitive bool) func(http.Handler) http.Handler {
 			semconv.HTTPRoute(r.URL.Path),
 			attribute.String("http.host", r.Host),
 			attribute.String("http.user_agent", r.UserAgent()),
-			attribute.String("http.remote_addr", getRemoteAddr(r)),
+			attribute.String("http.remote_addr", getRemoteAddr(r, extractor)),
 		),
 			)
 
@@ -134,21 +135,13 @@ func getSpanName(method, bucket, key string) string {
 	}
 }
 
-// getRemoteAddr extracts the real remote address, handling X-Forwarded-For and X-Real-IP
-func getRemoteAddr(r *http.Request) string {
-	// Check X-Real-IP first (single IP, more trusted than X-Forwarded-For)
-	if xri := r.Header.Get("X-Real-IP"); xri != "" {
-		return xri
+// getRemoteAddr extracts the real remote address using the configured IP extractor.
+// If extractor is nil, it falls back to RemoteAddr directly (fail-safe).
+func getRemoteAddr(r *http.Request, extractor *util.IPExtractor) string {
+	if extractor != nil {
+		return extractor.GetClientIP(r)
 	}
-	// Check X-Forwarded-For (may contain multiple IPs)
-	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
-		// Take the first IP in case of multiple
-		if idx := strings.Index(xff, ","); idx > 0 {
-			return strings.TrimSpace(xff[:idx])
-		}
-		return xff
-	}
-	return r.RemoteAddr
+	return util.ExtractIP(r.RemoteAddr)
 }
 
 // addHeadersToSpan adds relevant headers to the span, redacting sensitive ones
