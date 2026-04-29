@@ -15,7 +15,7 @@ import (
 // TestChunkedEncryptReader_Close verifies that Close returns nil and is safe
 // to call multiple times.
 func TestChunkedEncryptReader_Close(t *testing.T) {
-	engine, err := NewEngineWithChunking("test-password-12345678", nil, "", nil, true, DefaultChunkSize)
+	engine, err := NewEngineWithChunking([]byte("test-password-12345678"), nil, "", nil, true, DefaultChunkSize)
 	if err != nil {
 		t.Fatalf("create engine: %v", err)
 	}
@@ -48,7 +48,7 @@ func TestChunkedEncryptReader_Close(t *testing.T) {
 // TestChunkedDecryptReader_Close verifies that the decrypt reader's Close
 // returns nil.
 func TestChunkedDecryptReader_Close(t *testing.T) {
-	engine, err := NewEngineWithChunking("test-password-12345678", nil, "", nil, true, DefaultChunkSize)
+	engine, err := NewEngineWithChunking([]byte("test-password-12345678"), nil, "", nil, true, DefaultChunkSize)
 	if err != nil {
 		t.Fatalf("create engine: %v", err)
 	}
@@ -83,7 +83,7 @@ func TestChunkedDecryptReader_Close(t *testing.T) {
 // ---- passwordKeyManager.Provider -------------------------------------------
 
 func TestPasswordKeyManager_Provider(t *testing.T) {
-	km, err := NewPasswordKeyManager("test-password-long-enough")
+	km, err := NewPasswordKeyManager([]byte("test-password-long-enough"))
 	if err != nil {
 		t.Fatalf("NewPasswordKeyManager: %v", err)
 	}
@@ -95,7 +95,7 @@ func TestPasswordKeyManager_Provider(t *testing.T) {
 // ---- engine.GetKeyManager --------------------------------------------------
 
 func TestGetKeyManager_NoManager(t *testing.T) {
-	eng, err := NewEngineWithOpts("test-password-for-getkey", nil)
+	eng, err := NewEngineWithOpts([]byte("test-password-for-getkey"), nil)
 	if err != nil {
 		t.Fatalf("NewEngineWithOpts: %v", err)
 	}
@@ -106,7 +106,7 @@ func TestGetKeyManager_NoManager(t *testing.T) {
 
 func TestGetKeyManager_WithManager(t *testing.T) {
 	km := NewInMemoryKeyManagerForTestDefault()
-	eng, err := NewEngineWithOpts("test-password-for-getkey2", nil, WithKeyManager(km))
+	eng, err := NewEngineWithOpts([]byte("test-password-for-getkey2"), nil, WithKeyManager(km))
 	if err != nil {
 		t.Fatalf("NewEngineWithOpts: %v", err)
 	}
@@ -119,7 +119,7 @@ func TestGetKeyManager_WithManager(t *testing.T) {
 // ---- engine.GetRotationState -----------------------------------------------
 
 func TestGetRotationState_InitialisesIfNil(t *testing.T) {
-	eng, err := NewEngineWithOpts("test-password-rotation-state", nil)
+	eng, err := NewEngineWithOpts([]byte("test-password-rotation-state"), nil)
 	if err != nil {
 		t.Fatalf("NewEngineWithOpts: %v", err)
 	}
@@ -136,7 +136,7 @@ func TestGetRotationState_InitialisesIfNil(t *testing.T) {
 // ---- engine.SetKeyResolver -------------------------------------------------
 
 func TestSetKeyResolver_Works(t *testing.T) {
-	eng, err := NewEngineWithOpts("test-password-set-resolver", nil)
+	eng, err := NewEngineWithOpts([]byte("test-password-set-resolver"), nil)
 	if err != nil {
 		t.Fatalf("NewEngineWithOpts: %v", err)
 	}
@@ -181,7 +181,7 @@ func TestNewEngineWithResolver(t *testing.T) {
 	resolver := func(version int) (string, bool) {
 		return "password-v1", version == 1
 	}
-	eng, err := NewEngineWithResolver("test-password-resolver-new", nil, "", nil, resolver)
+	eng, err := NewEngineWithResolver([]byte("test-password-resolver-new"), nil, "", nil, resolver)
 	if err != nil {
 		t.Fatalf("NewEngineWithResolver: %v", err)
 	}
@@ -195,7 +195,7 @@ func TestNewEngineWithResolverAndProvider(t *testing.T) {
 		return "resolver-pw-2", true
 	}
 	eng, err := NewEngineWithResolverAndProvider(
-		"test-password-resolver-provider", nil, "", nil, resolver, "default",
+		[]byte("test-password-resolver-provider"), nil, "", nil, resolver, "default",
 	)
 	if err != nil {
 		t.Fatalf("NewEngineWithResolverAndProvider: %v", err)
@@ -209,7 +209,7 @@ func TestNewEngineWithResolverAndProvider(t *testing.T) {
 
 func TestNewEngineWithChunkingAndProvider(t *testing.T) {
 	eng, err := NewEngineWithChunkingAndProvider(
-		"test-password-chunk-provider123", nil, "", nil, true, DefaultChunkSize, "default",
+		[]byte("test-password-chunk-provider123"), nil, "", nil, true, DefaultChunkSize, "default",
 	)
 	if err != nil {
 		t.Fatalf("NewEngineWithChunkingAndProvider: %v", err)
@@ -316,7 +316,7 @@ func TestMemoryKeyManager_AdditionalCoverage(t *testing.T) {
 // ---- range_decrypt.Close ---------------------------------------------------
 
 func TestRangeDecryptReader_Close(t *testing.T) {
-	engine, err := NewEngineWithChunking("test-password-12345678", nil, "", nil, true, 16*1024)
+	engine, err := NewEngineWithChunking([]byte("test-password-12345678"), nil, "", nil, true, 16*1024)
 	if err != nil {
 		t.Fatalf("create engine: %v", err)
 	}
@@ -436,7 +436,7 @@ func TestBufferPool_HitRateMissCase(t *testing.T) {
 // ---- engine.Decrypt: unencrypted pass-through ------------------------------
 
 func TestEngine_Decrypt_NotEncrypted(t *testing.T) {
-	eng, err := NewEngineWithOpts("test-password-decrypt-noenc", nil)
+	eng, err := NewEngineWithOpts([]byte("test-password-decrypt-noenc"), nil)
 	if err != nil {
 		t.Fatalf("NewEngineWithOpts: %v", err)
 	}
@@ -463,7 +463,7 @@ func TestEngine_EncryptDecrypt_WithInMemoryKeyManager(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewInMemoryKeyManager: %v", err)
 	}
-	eng, err := NewEngineWithOpts("test-password-base-long-enough", nil, WithKeyManager(km))
+	eng, err := NewEngineWithOpts([]byte("test-password-base-long-enough"), nil, WithKeyManager(km))
 	if err != nil {
 		t.Fatalf("NewEngineWithOpts with km: %v", err)
 	}
@@ -490,7 +490,7 @@ func TestEngine_EncryptDecrypt_WithInMemoryKeyManager(t *testing.T) {
 
 func TestEngine_EncryptDecrypt_LegacyMode(t *testing.T) {
 	// Use non-chunked engine to exercise the legacy buffered decrypt path.
-	eng, err := NewEngine("test-password-legacy-mode-long12345")
+	eng, err := NewEngine([]byte("test-password-legacy-mode-long12345"))
 	if err != nil {
 		t.Fatalf("NewEngine: %v", err)
 	}
@@ -517,7 +517,7 @@ func TestEngine_EncryptDecrypt_LegacyMode(t *testing.T) {
 
 func TestEngine_Encrypt_MultiChunk(t *testing.T) {
 	chunkSize := 16 * 1024 // 16KB chunks
-	eng, err := NewEngineWithChunking("test-password-multichunk-123456", nil, "", nil, true, chunkSize)
+	eng, err := NewEngineWithChunking([]byte("test-password-multichunk-123456"), nil, "", nil, true, chunkSize)
 	if err != nil {
 		t.Fatalf("NewEngineWithChunking: %v", err)
 	}
@@ -550,7 +550,7 @@ func TestEngine_Encrypt_MultiChunk(t *testing.T) {
 // ---- engine.IsEncrypted (additional cases) ---------------------------------
 
 func TestEngine_IsEncrypted_Additional(t *testing.T) {
-	eng, err := NewEngineWithOpts("test-password-isencrypted-long", nil)
+	eng, err := NewEngineWithOpts([]byte("test-password-isencrypted-long"), nil)
 	if err != nil {
 		t.Fatalf("NewEngineWithOpts: %v", err)
 	}

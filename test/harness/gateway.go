@@ -175,7 +175,7 @@ func StartGateway(t *testing.T, inst provider.Instance, opts ...Option) *Gateway
 		)
 	}
 
-	encryptionEngine, err := crypto.NewEngineWithCompression(o.encryptionPassword, compressionEngine)
+	encryptionEngine, err := crypto.NewEngineWithCompression([]byte(o.encryptionPassword), compressionEngine)
 	if err != nil {
 		listener.Close()
 		t.Fatalf("harness.StartGateway: create encryption engine: %v", err)
@@ -232,7 +232,7 @@ func StartGateway(t *testing.T, inst provider.Instance, opts ...Option) *Gateway
 	// When encrypted MPU is active a KeyManager is required for DEK wrap/unwrap.
 	// Default to the password-derived KeyManager if none was supplied.
 	if o.mpuStore != nil && o.keyManager == nil {
-		km, kmErr := crypto.NewPasswordKeyManager(o.encryptionPassword)
+		km, kmErr := crypto.NewPasswordKeyManager([]byte(o.encryptionPassword))
 		if kmErr != nil {
 			listener.Close()
 			t.Fatalf("harness.StartGateway: create password KeyManager: %v", kmErr)

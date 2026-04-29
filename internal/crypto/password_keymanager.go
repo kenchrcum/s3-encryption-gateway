@@ -27,7 +27,7 @@ const passwordKMProvider = "password"
 // backend companion objects are opaque to any party that doesn't hold the
 // password. This is equivalent security to the existing object encryption.
 type passwordKeyManager struct {
-	password string
+	password []byte
 	closed   bool
 }
 
@@ -37,12 +37,15 @@ type passwordKeyManager struct {
 // same confidentiality guarantee as the existing single-PUT encryption.
 //
 // The password must be the gateway's configured encryption password — the same
-// string used for all other object encryption in the deployment.
-func NewPasswordKeyManager(password string) (KeyManager, error) {
+// value used for all other object encryption in the deployment.
+func NewPasswordKeyManager(password []byte) (KeyManager, error) {
 	if len(password) < 12 {
 		return nil, fmt.Errorf("password_keymanager: password must be at least 12 characters")
 	}
-	return &passwordKeyManager{password: password}, nil
+	// Defensive copy so the caller can zero their slice after construction.
+	pw := make([]byte, len(password))
+	copy(pw, password)
+	return &passwordKeyManager{password: pw}, nil
 }
 
 func (m *passwordKeyManager) Provider() string { return passwordKMProvider }
@@ -63,7 +66,7 @@ func (m *passwordKeyManager) WrapKey(ctx context.Context, plaintext []byte, _ ma
 	}
 
 	// Derive wrapping key using the same PBKDF2 parameters as the engine.
-	wk, err := pbkdf2.Key(sha256.New, m.password, salt, pbkdf2Iterations, aesKeySize)
+	wk, err := pbkdf2.Key(sha256.New, string(m.password), salt, pbkdf2Iterations, aesKeySize)
 	if err != nil {
 		return nil, fmt.Errorf("password_keymanager: derive wrapping key: %w", err)
 	}
@@ -122,7 +125,7 @@ func (m *passwordKeyManager) UnwrapKey(ctx context.Context, envelope *KeyEnvelop
 	nonce := payload[saltSize : saltSize+nonceSize]
 	sealed := payload[saltSize+nonceSize:]
 
-	wk, err := pbkdf2.Key(sha256.New, m.password, salt, pbkdf2Iterations, aesKeySize)
+	wk, err := pbkdf2.Key(sha256.New, string(m.password), salt, pbkdf2Iterations, aesKeySize)
 	if err != nil {
 		return nil, fmt.Errorf("password_keymanager: derive wrapping key: %w", err)
 	}
@@ -162,11 +165,8 @@ func (m *passwordKeyManager) Close(_ context.Context) error {
 	if !m.closed {
 		m.closed = true
 		// Zero the password in memory.
-		for i := range m.password {
-			_ = i // string is immutable; set via a []byte copy trick is not possible
-			// Go strings are immutable; best effort is to nil the reference.
-		}
-		m.password = ""
+		zeroBytes(m.password)
+		m.password = nil
 	}
 	return nil
 }

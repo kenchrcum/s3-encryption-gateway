@@ -104,7 +104,7 @@ func TestWriteS3ClientError_NoLeakRegression(t *testing.T) {
 	logger := logrus.New()
 	logger.SetOutput(io.Discard)
 
-	mockEngine, _ := crypto.NewEngine("test-password-123456")
+	mockEngine, _ := crypto.NewEngine([]byte("test-password-123456"))
 
 	cases := []struct {
 		name string

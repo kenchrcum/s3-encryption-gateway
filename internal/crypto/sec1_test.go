@@ -20,7 +20,7 @@ import (
 // TestEngineClose_ZerozisesPassword verifies that after Close() the password
 // bytes held by the engine are all zero.
 func TestEngineClose_ZerozisesPassword(t *testing.T) {
-	const pw = "super-secret-password"
+	var pw = []byte("super-secret-password")
 	eng, err := NewEngine(pw)
 	require.NoError(t, err)
 
@@ -40,7 +40,7 @@ func TestEngineClose_ZerozisesPassword(t *testing.T) {
 
 // TestEngineClose_Idempotent verifies that calling Close() twice does not panic.
 func TestEngineClose_Idempotent(t *testing.T) {
-	eng, err := NewEngine("my-strong-password")
+	eng, err := NewEngine([]byte("my-strong-password"))
 	require.NoError(t, err)
 
 	c := eng.(io.Closer)
@@ -134,7 +134,7 @@ func TestMPUDecryptReader_CallerDEKUnaffected(t *testing.T) {
 // TestDecrypt_NoBase64InErrorMessage verifies that when a wrapped key has an
 // invalid base64 encoding, the error message does NOT include the raw value.
 func TestDecrypt_NoBase64InErrorMessage(t *testing.T) {
-	eng, err := NewEngine("my-strong-password-here")
+	eng, err := NewEngine([]byte("my-strong-password-here"))
 	require.NoError(t, err)
 
 	// Craft metadata with a garbage (but non-empty) base64 value that will fail
@@ -225,7 +225,7 @@ func TestConstantTimeComparisons_AuditNote(t *testing.T) {
 // TestSEC1_EncryptDecryptRoundTrip verifies the engine still works correctly
 // after the password→[]byte refactor.
 func TestSEC1_EncryptDecryptRoundTrip(t *testing.T) {
-	const pw = "my-strong-password-for-roundtrip"
+	var pw = []byte("my-strong-password-for-roundtrip")
 	eng, err := NewEngine(pw)
 	require.NoError(t, err)
 	defer eng.(io.Closer).Close()

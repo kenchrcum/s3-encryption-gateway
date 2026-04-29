@@ -95,7 +95,7 @@ func TestHandleUploadPartCopy_Dispatch(t *testing.T) {
 	logger := logrus.New()
 	logger.SetLevel(logrus.ErrorLevel)
 	mockClient := newMockS3Client()
-	engine, _ := crypto.NewEngine("test-password-123456")
+	engine, _ := crypto.NewEngine([]byte("test-password-123456"))
 
 	handler := NewHandler(mockClient, engine, logger, getTestMetrics())
 	router := mux.NewRouter()
@@ -129,7 +129,7 @@ func TestHandleUploadPartCopy_ErrorCases(t *testing.T) {
 	logger := logrus.New()
 	logger.SetLevel(logrus.ErrorLevel)
 	mockClient := newMockS3Client()
-	engine, _ := crypto.NewEngine("test-password-123456")
+	engine, _ := crypto.NewEngine([]byte("test-password-123456"))
 
 	handler := NewHandler(mockClient, engine, logger, getTestMetrics())
 	router := mux.NewRouter()
@@ -178,7 +178,7 @@ func TestHandleUploadPartCopy_PlaintextFastPath(t *testing.T) {
 	logger := logrus.New()
 	logger.SetLevel(logrus.ErrorLevel)
 	mockClient := newMockS3Client()
-	engine, _ := crypto.NewEngine("test-password-123456")
+	engine, _ := crypto.NewEngine([]byte("test-password-123456"))
 
 	handler := NewHandler(mockClient, engine, logger, getTestMetrics())
 	router := mux.NewRouter()
@@ -211,7 +211,7 @@ func TestHandleUploadPartCopy_PlaintextWithRange(t *testing.T) {
 	logger := logrus.New()
 	logger.SetLevel(logrus.ErrorLevel)
 	mockClient := newMockS3Client()
-	engine, _ := crypto.NewEngine("test-password-123456")
+	engine, _ := crypto.NewEngine([]byte("test-password-123456"))
 
 	handler := NewHandler(mockClient, engine, logger, getTestMetrics())
 	router := mux.NewRouter()
@@ -242,7 +242,7 @@ func TestHandleUploadPartCopy_SourceNotFound(t *testing.T) {
 	logger := logrus.New()
 	logger.SetLevel(logrus.ErrorLevel)
 	mockClient := newMockS3Client()
-	engine, _ := crypto.NewEngine("test-password-123456")
+	engine, _ := crypto.NewEngine([]byte("test-password-123456"))
 
 	handler := NewHandler(mockClient, engine, logger, getTestMetrics())
 	router := mux.NewRouter()
@@ -265,7 +265,7 @@ func TestHandleUploadPartCopy_ResponseXML(t *testing.T) {
 	logger := logrus.New()
 	logger.SetLevel(logrus.ErrorLevel)
 	mockClient := newMockS3Client()
-	engine, _ := crypto.NewEngine("test-password-123456")
+	engine, _ := crypto.NewEngine([]byte("test-password-123456"))
 
 	handler := NewHandler(mockClient, engine, logger, getTestMetrics())
 	router := mux.NewRouter()
@@ -302,7 +302,7 @@ func TestClassifyCopySource_Plaintext(t *testing.T) {
 	logger := logrus.New()
 	logger.SetLevel(logrus.ErrorLevel)
 	mockClient := newMockS3Client()
-	engine, _ := crypto.NewEngine("test-password-123456")
+	engine, _ := crypto.NewEngine([]byte("test-password-123456"))
 
 	handler := NewHandler(mockClient, engine, logger, getTestMetrics())
 
@@ -320,7 +320,7 @@ func TestClassifyCopySource_Chunked(t *testing.T) {
 	logger := logrus.New()
 	logger.SetLevel(logrus.ErrorLevel)
 	mockClient := newMockS3Client()
-	engine, _ := crypto.NewEngine("test-password-123456")
+	engine, _ := crypto.NewEngine([]byte("test-password-123456"))
 
 	handler := NewHandler(mockClient, engine, logger, getTestMetrics())
 
@@ -341,7 +341,7 @@ func TestClassifyCopySource_Legacy(t *testing.T) {
 	logger := logrus.New()
 	logger.SetLevel(logrus.ErrorLevel)
 	mockClient := newMockS3Client()
-	engine, _ := crypto.NewEngine("test-password-123456")
+	engine, _ := crypto.NewEngine([]byte("test-password-123456"))
 
 	handler := NewHandler(mockClient, engine, logger, getTestMetrics())
 
@@ -376,7 +376,7 @@ func TestUploadPartCopy_CrossBucket_ReadDenied(t *testing.T) {
 	logger := logrus.New()
 	logger.SetLevel(logrus.ErrorLevel)
 	mockClient := newMockS3Client()
-	engine, _ := crypto.NewEngine("test-password-123456")
+	engine, _ := crypto.NewEngine([]byte("test-password-123456"))
 
 	handler := NewHandler(mockClient, engine, logger, getTestMetrics())
 	router := mux.NewRouter()
@@ -411,7 +411,7 @@ func TestUploadPartCopy_PlaintextSource_EncryptedDestBucket_Refused(t *testing.T
 	logger := logrus.New()
 	logger.SetLevel(logrus.ErrorLevel)
 	mockClient := newMockS3Client()
-	engine, _ := crypto.NewEngine("test-password-123456")
+	engine, _ := crypto.NewEngine([]byte("test-password-123456"))
 
 	// Build a policy manager that marks dst-bucket as requiring encryption.
 	pm := newPolicyManagerWithRequireEncryption(t, "dst-bucket")
@@ -443,7 +443,7 @@ func TestUploadPartCopy_PlaintextSource_NonRequiringBucket_Allowed(t *testing.T)
 	logger := logrus.New()
 	logger.SetLevel(logrus.ErrorLevel)
 	mockClient := newMockS3Client()
-	engine, _ := crypto.NewEngine("test-password-123456")
+	engine, _ := crypto.NewEngine([]byte("test-password-123456"))
 
 	// PolicyManager with an unrelated policy — dst-bucket is NOT covered.
 	pm := newPolicyManagerWithRequireEncryption(t, "other-bucket")
@@ -473,7 +473,7 @@ func TestUploadPartCopy_LegacySourceExceedsCap(t *testing.T) {
 	logger := logrus.New()
 	logger.SetLevel(logrus.ErrorLevel)
 	mockClient := newMockS3Client()
-	engine, _ := crypto.NewEngine("test-password-123456")
+	engine, _ := crypto.NewEngine([]byte("test-password-123456"))
 
 	// 1 KiB cap for the test; seed a 2 KiB legacy-encrypted object.
 	cfg := &config.Config{}
@@ -521,7 +521,7 @@ func TestUploadPartCopy_SourceRangeExceeds5GiB(t *testing.T) {
 	logger := logrus.New()
 	logger.SetLevel(logrus.ErrorLevel)
 	mockClient := newMockS3Client()
-	engine, _ := crypto.NewEngine("test-password-123456")
+	engine, _ := crypto.NewEngine([]byte("test-password-123456"))
 
 	handler := NewHandler(mockClient, engine, logger, getTestMetrics())
 	router := mux.NewRouter()

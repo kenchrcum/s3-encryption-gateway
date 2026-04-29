@@ -11,7 +11,7 @@ func TestEngine_EncryptDecryptWithCompression(t *testing.T) {
 	compressionEngine := NewCompressionEngine(true, 100, []string{"text/", "application/json"}, "gzip", 6)
 
 	// Create encryption engine with compression
-	engine, err := NewEngineWithCompression("test-password-123456", compressionEngine)
+	engine, err := NewEngineWithCompression([]byte("test-password-123456"), compressionEngine)
 	if err != nil {
 		t.Fatalf("Failed to create engine: %v", err)
 	}
@@ -65,7 +65,7 @@ func TestEngine_EncryptDecryptWithCompression(t *testing.T) {
 
 func TestEngine_EncryptDecryptWithoutCompression(t *testing.T) {
 	// Create encryption engine without compression
-	engine, err := NewEngine("test-password-123456")
+	engine, err := NewEngine([]byte("test-password-123456"))
 	if err != nil {
 		t.Fatalf("Failed to create engine: %v", err)
 	}

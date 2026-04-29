@@ -8,7 +8,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-const testPassword = "a-sufficiently-long-test-password"
+var testPassword = []byte("a-sufficiently-long-test-password")
 
 func TestPasswordKeyManager_WrapUnwrap_RoundTrip(t *testing.T) {
 	km, err := NewPasswordKeyManager(testPassword)
@@ -64,7 +64,7 @@ func TestPasswordKeyManager_WrongPassword(t *testing.T) {
 	env, err := km.WrapKey(ctx, dek, nil)
 	require.NoError(t, err)
 
-	km2, err := NewPasswordKeyManager("totally-different-password!!")
+	km2, err := NewPasswordKeyManager([]byte("totally-different-password!!"))
 	require.NoError(t, err)
 	_, err = km2.UnwrapKey(ctx, env, nil)
 	require.Error(t, err)
@@ -117,7 +117,7 @@ func TestPasswordKeyManager_InvalidEnvelope(t *testing.T) {
 
 // TestPasswordKeyManager_ShortPassword verifies rejection of short passwords.
 func TestPasswordKeyManager_ShortPassword(t *testing.T) {
-	_, err := NewPasswordKeyManager("short")
+	_, err := NewPasswordKeyManager([]byte("short"))
 	require.Error(t, err)
 }
 

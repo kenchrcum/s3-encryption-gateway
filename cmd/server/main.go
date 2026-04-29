@@ -283,6 +283,13 @@ func InitTracing(cfg config.TracingConfig, logger *logrus.Logger) (*sdktrace.Tra
 	return tp, nil
 }
 
+// zeroBytes overwrites a byte slice with zeros for secure memory cleanup.
+func zeroBytes(b []byte) {
+	for i := range b {
+		b[i] = 0
+	}
+}
+
 func main() {
 	// Initialize logger
 	logger := logrus.New()
@@ -379,24 +386,28 @@ func main() {
 	}
 
 	// Load encryption password (required for both single password and KMS modes)
-	var encryptionPassword string
+	var encryptionPassword []byte
 	var keyManager crypto.KeyManager
 
 	if cfg.Encryption.Password != "" {
-		encryptionPassword = cfg.Encryption.Password
+		encryptionPassword = []byte(cfg.Encryption.Password)
 	} else if cfg.Encryption.KeyFile != "" {
 		keyData, err := os.ReadFile(cfg.Encryption.KeyFile)
 		if err != nil {
 			logger.WithError(err).Fatal("Failed to read encryption key file")
 		}
-		encryptionPassword = string(keyData)
+		encryptionPassword = make([]byte, len(keyData))
+		copy(encryptionPassword, keyData)
+		zeroBytes(keyData)
 	}
 
-	if encryptionPassword == "" {
+	if len(encryptionPassword) == 0 {
 		logger.Fatal("Encryption password is required (set ENCRYPTION_PASSWORD or encryption.password)")
 	}
 
-	activePassword := encryptionPassword
+	activePassword := make([]byte, len(encryptionPassword))
+	copy(activePassword, encryptionPassword)
+	zeroBytes(encryptionPassword)
 	if cfg.Encryption.KeyManager.Enabled {
 		keyManager, err = api.BuildKeyManager(&cfg.Encryption.KeyManager, logger)
 		if err != nil {
@@ -482,6 +493,8 @@ func main() {
 		chunkedMode,
 		chunkSize,
 	)
+	// Zero the upstream password copy now that the engine owns its own defensive copy.
+	zeroBytes(activePassword)
 	if err != nil {
 		logger.WithError(err).Fatal("Failed to create encryption engine")
 	}

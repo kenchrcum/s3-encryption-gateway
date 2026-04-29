@@ -37,7 +37,7 @@ func WithKeyResolver(resolver func(version int) (string, bool)) Option {
 //	eng, err := crypto.NewEngineWithOpts(password, nil,
 //	    crypto.WithKeyManager(myKeyManager),
 //	)
-func NewEngineWithOpts(password string, compressionEngine CompressionEngine, opts ...Option) (EncryptionEngine, error) {
+func NewEngineWithOpts(password []byte, compressionEngine CompressionEngine, opts ...Option) (EncryptionEngine, error) {
 	eng, err := NewEngineWithChunkingAndProvider(password, compressionEngine, "", nil, false, DefaultChunkSize, "default")
 	if err != nil {
 		return nil, err

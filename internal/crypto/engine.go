@@ -98,33 +98,33 @@ type engine struct {
 //
 // The password is used to derive encryption keys using PBKDF2 with
 // 100,000 iterations and a random salt per object.
-func NewEngine(password string) (EncryptionEngine, error) {
+func NewEngine(password []byte) (EncryptionEngine, error) {
 	return NewEngineWithCompression(password, nil)
 }
 
 // NewEngineWithCompression creates a new encryption engine with compression support.
-func NewEngineWithCompression(password string, compressionEngine CompressionEngine) (EncryptionEngine, error) {
+func NewEngineWithCompression(password []byte, compressionEngine CompressionEngine) (EncryptionEngine, error) {
 	return NewEngineWithOptions(password, compressionEngine, "", nil)
 }
 
 // NewEngineWithOptions creates a new encryption engine with full options.
-func NewEngineWithOptions(password string, compressionEngine CompressionEngine, preferredAlgorithm string, supportedAlgorithms []string) (EncryptionEngine, error) {
+func NewEngineWithOptions(password []byte, compressionEngine CompressionEngine, preferredAlgorithm string, supportedAlgorithms []string) (EncryptionEngine, error) {
 	return NewEngineWithProvider(password, compressionEngine, preferredAlgorithm, supportedAlgorithms, "default")
 }
 
 // NewEngineWithProvider creates a new encryption engine with provider-specific settings.
-func NewEngineWithProvider(password string, compressionEngine CompressionEngine, preferredAlgorithm string, supportedAlgorithms []string, provider string) (EncryptionEngine, error) {
+func NewEngineWithProvider(password []byte, compressionEngine CompressionEngine, preferredAlgorithm string, supportedAlgorithms []string, provider string) (EncryptionEngine, error) {
 	return NewEngineWithChunkingAndProvider(password, compressionEngine, preferredAlgorithm, supportedAlgorithms, false, DefaultChunkSize, provider)
 }
 
 // NewEngineWithChunking creates a new encryption engine with chunked mode support.
-func NewEngineWithChunking(password string, compressionEngine CompressionEngine, preferredAlgorithm string, supportedAlgorithms []string, chunkedMode bool, chunkSize int) (EncryptionEngine, error) {
+func NewEngineWithChunking(password []byte, compressionEngine CompressionEngine, preferredAlgorithm string, supportedAlgorithms []string, chunkedMode bool, chunkSize int) (EncryptionEngine, error) {
 	return NewEngineWithChunkingAndProvider(password, compressionEngine, preferredAlgorithm, supportedAlgorithms, chunkedMode, chunkSize, "default")
 }
 
 // NewEngineWithChunkingAndProvider creates a new encryption engine with chunked mode and provider support.
-func NewEngineWithChunkingAndProvider(password string, compressionEngine CompressionEngine, preferredAlgorithm string, supportedAlgorithms []string, chunkedMode bool, chunkSize int, provider string) (EncryptionEngine, error) {
-	if password == "" {
+func NewEngineWithChunkingAndProvider(password []byte, compressionEngine CompressionEngine, preferredAlgorithm string, supportedAlgorithms []string, chunkedMode bool, chunkSize int, provider string) (EncryptionEngine, error) {
+	if len(password) == 0 {
 		return nil, fmt.Errorf("encryption password cannot be empty")
 	}
 
@@ -187,12 +187,12 @@ func NewEngineWithChunkingAndProvider(password string, compressionEngine Compres
 }
 
 // NewEngineWithResolver creates a new encryption engine with a key resolver for rotation support.
-func NewEngineWithResolver(password string, compressionEngine CompressionEngine, preferredAlgorithm string, supportedAlgorithms []string, resolver func(version int) (string, bool)) (EncryptionEngine, error) {
+func NewEngineWithResolver(password []byte, compressionEngine CompressionEngine, preferredAlgorithm string, supportedAlgorithms []string, resolver func(version int) (string, bool)) (EncryptionEngine, error) {
 	return NewEngineWithResolverAndProvider(password, compressionEngine, preferredAlgorithm, supportedAlgorithms, resolver, "default")
 }
 
 // NewEngineWithResolverAndProvider creates a new encryption engine with a key resolver and provider support.
-func NewEngineWithResolverAndProvider(password string, compressionEngine CompressionEngine, preferredAlgorithm string, supportedAlgorithms []string, resolver func(version int) (string, bool), provider string) (EncryptionEngine, error) {
+func NewEngineWithResolverAndProvider(password []byte, compressionEngine CompressionEngine, preferredAlgorithm string, supportedAlgorithms []string, resolver func(version int) (string, bool), provider string) (EncryptionEngine, error) {
 	eng, err := NewEngineWithProvider(password, compressionEngine, preferredAlgorithm, supportedAlgorithms, provider)
 	if err != nil {
 		return nil, err

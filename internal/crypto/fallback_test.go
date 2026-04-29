@@ -18,7 +18,7 @@ func TestEngine_MetadataFallback(t *testing.T) {
 		CompactionStrategy:  "base64url",
 	}
 
-	encEngine, err := NewEngineWithProvider("test-password-123456789", nil, "", nil, "default")
+	encEngine, err := NewEngineWithProvider([]byte("test-password-123456789"), nil, "", nil, "default")
 	if err != nil {
 		t.Fatalf("Failed to create engine: %v", err)
 	}
@@ -149,7 +149,7 @@ func TestEngine_FallbackDetection(t *testing.T) {
 				CompactionStrategy:  "base64url",
 			}
 
-			encEngine, err := NewEngineWithProvider("test-password-123", nil, "", nil, "default")
+			encEngine, err := NewEngineWithProvider([]byte("test-password-123"), nil, "", nil, "default")
 			if err != nil {
 				t.Fatalf("Failed to create engine: %v", err)
 			}
@@ -170,7 +170,7 @@ func TestEngine_FallbackDetection(t *testing.T) {
 }
 
 func TestEngine_IsFallbackMode(t *testing.T) {
-	encEngine, err := NewEngine("test-password-123")
+	encEngine, err := NewEngine([]byte("test-password-123"))
 	if err != nil {
 		t.Fatalf("Failed to create engine: %v", err)
 	}
@@ -255,7 +255,7 @@ func TestEngine_FallbackWithCompression(t *testing.T) {
 		CompactionStrategy:  "base64url",
 	}
 
-	encEngine, err := NewEngineWithProvider("test-password-123456789", compressionEngine, "", nil, "default")
+	encEngine, err := NewEngineWithProvider([]byte("test-password-123456789"), compressionEngine, "", nil, "default")
 	if err != nil {
 		t.Fatalf("Failed to create engine: %v", err)
 	}

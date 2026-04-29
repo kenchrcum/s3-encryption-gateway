@@ -9,7 +9,7 @@ import (
 // BenchmarkEngine_Encrypt_Small benchmarks small encryption operations.
 // Buffer pooling is enabled to reduce memory allocations in crypto operations.
 func BenchmarkEngine_Encrypt_Small(b *testing.B) {
-	engine, err := NewEngine("test-password-12345")
+	engine, err := NewEngine([]byte("test-password-12345"))
 	if err != nil {
 		b.Fatalf("Failed to create engine: %v", err)
 	}
@@ -39,7 +39,7 @@ func BenchmarkEngine_Encrypt_Small(b *testing.B) {
 }
 
 func BenchmarkEngine_Encrypt_Medium(b *testing.B) {
-	engine, err := NewEngine("test-password-12345")
+	engine, err := NewEngine([]byte("test-password-12345"))
 	if err != nil {
 		b.Fatalf("Failed to create engine: %v", err)
 	}
@@ -68,7 +68,7 @@ func BenchmarkEngine_Encrypt_Medium(b *testing.B) {
 }
 
 func BenchmarkEngine_Encrypt_Large(b *testing.B) {
-	engine, err := NewEngine("test-password-12345")
+	engine, err := NewEngine([]byte("test-password-12345"))
 	if err != nil {
 		b.Fatalf("Failed to create engine: %v", err)
 	}
@@ -99,7 +99,7 @@ func BenchmarkEngine_Encrypt_Large(b *testing.B) {
 }
 
 func BenchmarkEngine_Decrypt_Small(b *testing.B) {
-	engine, err := NewEngine("test-password-12345")
+	engine, err := NewEngine([]byte("test-password-12345"))
 	if err != nil {
 		b.Fatalf("Failed to create engine: %v", err)
 	}
@@ -140,7 +140,7 @@ func BenchmarkEngine_Decrypt_Small(b *testing.B) {
 }
 
 func BenchmarkEngine_Decrypt_Medium(b *testing.B) {
-	engine, err := NewEngine("test-password-12345")
+	engine, err := NewEngine([]byte("test-password-12345"))
 	if err != nil {
 		b.Fatalf("Failed to create engine: %v", err)
 	}
@@ -181,7 +181,7 @@ func BenchmarkEngine_Decrypt_Medium(b *testing.B) {
 }
 
 func BenchmarkEngine_EncryptDecrypt_RoundTrip(b *testing.B) {
-	engine, err := NewEngine("test-password-12345")
+	engine, err := NewEngine([]byte("test-password-12345"))
 	if err != nil {
 		b.Fatalf("Failed to create engine: %v", err)
 	}

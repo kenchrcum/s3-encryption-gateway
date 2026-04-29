@@ -9,27 +9,27 @@ import (
 func TestNewEngine(t *testing.T) {
 	tests := []struct {
 		name     string
-		password string
+		password []byte
 		wantErr  bool
 	}{
 		{
 			name:     "valid password",
-			password: "test-password-123456",
+			password: []byte("test-password-123456"),
 			wantErr:  false,
 		},
 		{
 			name:     "empty password",
-			password: "",
+			password: []byte(""),
 			wantErr:  true,
 		},
 		{
 			name:     "short password",
-			password: "short",
+			password: []byte("short"),
 			wantErr:  true,
 		},
 		{
 			name:     "minimum length password",
-			password: "123456789012",
+			password: []byte("123456789012"),
 			wantErr:  false,
 		},
 	}
@@ -60,7 +60,7 @@ func TestNewEngine(t *testing.T) {
 }
 
 func TestEngine_EncryptDecrypt(t *testing.T) {
-	engine, err := NewEngine("test-password-123456")
+	engine, err := NewEngine([]byte("test-password-123456"))
 	if err != nil {
 		t.Fatalf("Failed to create engine: %v", err)
 	}
@@ -160,7 +160,7 @@ func TestEngine_EncryptDecrypt(t *testing.T) {
 }
 
 func TestEngine_IsEncrypted(t *testing.T) {
-	engine, err := NewEngine("test-password-123456")
+	engine, err := NewEngine([]byte("test-password-123456"))
 	if err != nil {
 		t.Fatalf("Failed to create engine: %v", err)
 	}
@@ -214,7 +214,7 @@ func TestEngine_IsEncrypted(t *testing.T) {
 }
 
 func TestEngine_DecryptUnencrypted(t *testing.T) {
-	engine, err := NewEngine("test-password-123456")
+	engine, err := NewEngine([]byte("test-password-123456"))
 	if err != nil {
 		t.Fatalf("Failed to create engine: %v", err)
 	}
@@ -247,7 +247,7 @@ func TestEngine_DecryptUnencrypted(t *testing.T) {
 
 func TestEngine_WrongPassword(t *testing.T) {
 	// Encrypt with one password
-	engine1, err := NewEngine("password-123456")
+	engine1, err := NewEngine([]byte("password-123456"))
 	if err != nil {
 		t.Fatalf("Failed to create engine: %v", err)
 	}
@@ -265,7 +265,7 @@ func TestEngine_WrongPassword(t *testing.T) {
 	}
 
 	// Try to decrypt with wrong password
-	engine2, err := NewEngine("wrong-password-123456")
+	engine2, err := NewEngine([]byte("wrong-password-123456"))
 	if err != nil {
 		t.Fatalf("Failed to create engine: %v", err)
 	}
@@ -277,7 +277,7 @@ func TestEngine_WrongPassword(t *testing.T) {
 }
 
 func TestEngine_DifferentSaltPerEncryption(t *testing.T) {
-	engine, err := NewEngine("test-password-123456")
+	engine, err := NewEngine([]byte("test-password-123456"))
 	if err != nil {
 		t.Fatalf("Failed to create engine: %v", err)
 	}
@@ -327,7 +327,7 @@ func TestEngine_DifferentSaltPerEncryption(t *testing.T) {
 }
 
 func TestEngine_OriginalETagPreservation(t *testing.T) {
-	engine, err := NewEngine("test-password-123456")
+	engine, err := NewEngine([]byte("test-password-123456"))
 	if err != nil {
 		t.Fatalf("Failed to create engine: %v", err)
 	}

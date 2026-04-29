@@ -15,7 +15,7 @@ func TestHandler_getS3Client_DefaultMode(t *testing.T) {
 	logger := logrus.New()
 	logger.SetLevel(logrus.ErrorLevel)
 	mockClient := newMockS3Client()
-	mockEngine, _ := crypto.NewEngine("test-password-123456")
+	mockEngine, _ := crypto.NewEngine([]byte("test-password-123456"))
 
 	cfg := &config.Config{
 		Backend: config.BackendConfig{
@@ -51,7 +51,7 @@ func TestHandler_getS3Client_DefaultMode(t *testing.T) {
 func TestHandler_getS3Client_UseClientCredentials_WithQueryParams(t *testing.T) {
 	logger := logrus.New()
 	logger.SetLevel(logrus.ErrorLevel)
-	mockEngine, _ := crypto.NewEngine("test-password-123456")
+	mockEngine, _ := crypto.NewEngine([]byte("test-password-123456"))
 
 	cfg := &config.Config{
 		Backend: config.BackendConfig{
@@ -92,7 +92,7 @@ func TestHandler_getS3Client_UseClientCredentials_WithQueryParams(t *testing.T) 
 func TestHandler_getS3Client_UseClientCredentials_MissingCredentials(t *testing.T) {
 	logger := logrus.New()
 	logger.SetLevel(logrus.ErrorLevel)
-	mockEngine, _ := crypto.NewEngine("test-password-123456")
+	mockEngine, _ := crypto.NewEngine([]byte("test-password-123456"))
 
 	cfg := &config.Config{
 		Backend: config.BackendConfig{
@@ -131,7 +131,7 @@ func TestHandler_getS3Client_UseClientCredentials_MissingCredentials(t *testing.
 func TestHandler_getS3Client_UseClientCredentials_IncompleteCredentials(t *testing.T) {
 	logger := logrus.New()
 	logger.SetLevel(logrus.ErrorLevel)
-	mockEngine, _ := crypto.NewEngine("test-password-123456")
+	mockEngine, _ := crypto.NewEngine([]byte("test-password-123456"))
 
 	cfg := &config.Config{
 		Backend: config.BackendConfig{

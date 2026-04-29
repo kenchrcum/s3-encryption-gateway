@@ -334,7 +334,7 @@ func getTestMetrics() *metrics.Metrics {
 func TestHandler_HandleHealth(t *testing.T) {
 	logger := logrus.New()
 	logger.SetLevel(logrus.ErrorLevel)
-	mockEngine, _ := crypto.NewEngine("test-password-123456")
+	mockEngine, _ := crypto.NewEngine([]byte("test-password-123456"))
 	handler := NewHandler(newMockS3Client(), mockEngine, logger, getTestMetrics())
 
 	req := httptest.NewRequest("GET", "/health", nil)
@@ -353,7 +353,7 @@ func TestHandler_HandlePutObject(t *testing.T) {
 	logger := logrus.New()
 	logger.SetLevel(logrus.ErrorLevel)
 	mockClient := newMockS3Client()
-	mockEngine, _ := crypto.NewEngine("test-password-123456")
+	mockEngine, _ := crypto.NewEngine([]byte("test-password-123456"))
 	handler := NewHandler(mockClient, mockEngine, logger, getTestMetrics())
 
 	// For missing bucket test, simulate NoSuchBucket error
@@ -418,7 +418,7 @@ func TestHandler_HandleGetObject(t *testing.T) {
 	logger := logrus.New()
 	logger.SetLevel(logrus.ErrorLevel)
 	mockClient := newMockS3Client()
-	mockEngine, _ := crypto.NewEngine("test-password-123456")
+	mockEngine, _ := crypto.NewEngine([]byte("test-password-123456"))
 	handler := NewHandler(mockClient, mockEngine, logger, getTestMetrics())
 
 	// Pre-populate with test data
@@ -445,7 +445,7 @@ func TestHandler_HandleDeleteObject(t *testing.T) {
 	logger := logrus.New()
 	logger.SetLevel(logrus.ErrorLevel)
 	mockClient := newMockS3Client()
-	mockEngine, _ := crypto.NewEngine("test-password-123456")
+	mockEngine, _ := crypto.NewEngine([]byte("test-password-123456"))
 	handler := NewHandler(mockClient, mockEngine, logger, getTestMetrics())
 
 	// Pre-populate with test data
@@ -474,7 +474,7 @@ func TestHandler_HandleHeadObject(t *testing.T) {
 	logger := logrus.New()
 	logger.SetLevel(logrus.ErrorLevel)
 	mockClient := newMockS3Client()
-	mockEngine, _ := crypto.NewEngine("test-password-123456")
+	mockEngine, _ := crypto.NewEngine([]byte("test-password-123456"))
 	handler := NewHandler(mockClient, mockEngine, logger, getTestMetrics())
 
 	metadata := map[string]string{"content-type": "text/plain"}
@@ -497,7 +497,7 @@ func TestHandler_HandleHeadBucket(t *testing.T) {
 	logger := logrus.New()
 	logger.SetLevel(logrus.ErrorLevel)
 	mockClient := newMockS3Client()
-	mockEngine, _ := crypto.NewEngine("test-password-123456")
+	mockEngine, _ := crypto.NewEngine([]byte("test-password-123456"))
 	handler := NewHandler(mockClient, mockEngine, logger, getTestMetrics())
 
 	router := mux.NewRouter()
@@ -517,7 +517,7 @@ func TestHandler_HandleHeadBucket_NotFound(t *testing.T) {
 	logger := logrus.New()
 	logger.SetLevel(logrus.ErrorLevel)
 	mockClient := newMockS3Client()
-	mockEngine, _ := crypto.NewEngine("test-password-123456")
+	mockEngine, _ := crypto.NewEngine([]byte("test-password-123456"))
 	handler := NewHandler(mockClient, mockEngine, logger, getTestMetrics())
 	mockClient.errors["missing-bucket/list"] = &mockAPIError{code: "NoSuchBucket", message: "The specified bucket does not exist"}
 
@@ -538,7 +538,7 @@ func TestHandler_HeadBucketTrailingSlash_NotRoutedAsHeadObject(t *testing.T) {
 	logger := logrus.New()
 	logger.SetLevel(logrus.ErrorLevel)
 	mockClient := newMockS3Client()
-	mockEngine, _ := crypto.NewEngine("test-password-123456")
+	mockEngine, _ := crypto.NewEngine([]byte("test-password-123456"))
 	handler := NewHandler(mockClient, mockEngine, logger, getTestMetrics())
 
 	router := mux.NewRouter()
@@ -558,7 +558,7 @@ func TestHandler_HandleListObjects(t *testing.T) {
 	logger := logrus.New()
 	logger.SetLevel(logrus.ErrorLevel)
 	mockClient := newMockS3Client()
-	mockEngine, _ := crypto.NewEngine("test-password-123456")
+	mockEngine, _ := crypto.NewEngine([]byte("test-password-123456"))
 	handler := NewHandler(mockClient, mockEngine, logger, getTestMetrics())
 
 	// Pre-populate with test data
@@ -586,7 +586,7 @@ func TestHandler_HandleListObjects_Delimiter(t *testing.T) {
 	logger := logrus.New()
 	logger.SetLevel(logrus.ErrorLevel)
 	mockClient := newMockS3Client()
-	mockEngine, _ := crypto.NewEngine("test-password-123456")
+	mockEngine, _ := crypto.NewEngine([]byte("test-password-123456"))
 	handler := NewHandler(mockClient, mockEngine, logger, getTestMetrics())
 
 	// Pre-populate with test data for delimiter testing
@@ -680,7 +680,7 @@ func TestHandler_HandleListObjects_ContinuationToken(t *testing.T) {
 	logger := logrus.New()
 	logger.SetLevel(logrus.ErrorLevel)
 	mockClient := newMockS3Client()
-	mockEngine, _ := crypto.NewEngine("test-password-123456")
+	mockEngine, _ := crypto.NewEngine([]byte("test-password-123456"))
 	handler := NewHandler(mockClient, mockEngine, logger, getTestMetrics())
 
 	// Pre-populate with many objects for pagination testing
@@ -717,7 +717,7 @@ func TestHandler_HandleListObjects_Prefix(t *testing.T) {
 	logger := logrus.New()
 	logger.SetLevel(logrus.ErrorLevel)
 	mockClient := newMockS3Client()
-	mockEngine, _ := crypto.NewEngine("test-password-123456")
+	mockEngine, _ := crypto.NewEngine([]byte("test-password-123456"))
 	handler := NewHandler(mockClient, mockEngine, logger, getTestMetrics())
 
 	// Pre-populate with test data
@@ -796,7 +796,7 @@ func TestHandler_HandleListObjects_MaxKeys(t *testing.T) {
 	logger := logrus.New()
 	logger.SetLevel(logrus.ErrorLevel)
 	mockClient := newMockS3Client()
-	mockEngine, _ := crypto.NewEngine("test-password-123456")
+	mockEngine, _ := crypto.NewEngine([]byte("test-password-123456"))
 	handler := NewHandler(mockClient, mockEngine, logger, getTestMetrics())
 
 	// Pre-populate with test data
@@ -835,7 +835,7 @@ func TestHandler_HandleListObjects_MaxKeys(t *testing.T) {
 // TestContentRangeMapping tests Content-Range and Content-Length header mapping for range requests
 func TestContentRangeMapping(t *testing.T) {
 	// Create a crypto engine that supports chunking and range decryption
-	engine, err := crypto.NewEngineWithChunking("test-password-123456", nil, "", nil, true, 16*1024)
+	engine, err := crypto.NewEngineWithChunking([]byte("test-password-123456"), nil, "", nil, true, 16*1024)
 	if err != nil {
 		t.Fatalf("Failed to create engine: %v", err)
 	}
@@ -1281,7 +1281,7 @@ func TestHandler_HandleCreateBucket(t *testing.T) {
 			logger := logrus.New()
 			logger.SetLevel(logrus.ErrorLevel)
 			mockClient := newMockS3Client()
-			mockEngine, _ := crypto.NewEngine("test-password-123456")
+			mockEngine, _ := crypto.NewEngine([]byte("test-password-123456"))
 
 			// Setup mock client
 			tt.setupMock(mockClient)

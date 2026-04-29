@@ -41,7 +41,7 @@ func newLockTestHandler(t *testing.T) (*Handler, *mockS3Client, *mux.Router) {
 	logger := logrus.New()
 	logger.SetLevel(logrus.ErrorLevel)
 	mockClient := newMockS3Client()
-	engine, err := crypto.NewEngine("test-password-123456")
+	engine, err := crypto.NewEngine([]byte("test-password-123456"))
 	if err != nil {
 		t.Fatalf("crypto engine: %v", err)
 	}

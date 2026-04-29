@@ -66,7 +66,7 @@ func TestRotationMetrics_EngineAndCounter(t *testing.T) {
 		keys:          map[int][]byte{1: []byte("k1"), 2: []byte("k2")},
 	}
 
-	enc, err := crypto.NewEngine("fallback-password-123456")
+	enc, err := crypto.NewEngine([]byte("fallback-password-123456"))
 	require.NoError(t, err)
 	crypto.SetKeyManager(enc, km)
 

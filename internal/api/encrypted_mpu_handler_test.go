@@ -215,7 +215,7 @@ func newMPUTestHandler(t *testing.T, bucketPattern string) (*Handler, *mpuMockS3
 	t.Helper()
 	mockClient := newMPUMockS3Client()
 
-	engine, err := crypto.NewEngine(mpuTestPassword)
+	engine, err := crypto.NewEngine([]byte(mpuTestPassword))
 	if err != nil {
 		t.Fatalf("new engine: %v", err)
 	}
@@ -244,7 +244,7 @@ encrypt_multipart_uploads: true
 	}
 
 	// Password-mode KeyManager — mirrors what cmd/server/main.go does.
-	km, err := crypto.NewPasswordKeyManager(mpuTestPassword)
+	km, err := crypto.NewPasswordKeyManager([]byte(mpuTestPassword))
 	if err != nil {
 		t.Fatalf("password keymanager: %v", err)
 	}
@@ -576,7 +576,7 @@ func TestMPU_TamperDetection_MidStream(t *testing.T) {
 
 func TestMPU_FailClosed_NoKeyManager(t *testing.T) {
 	mockClient := newMPUMockS3Client()
-	engine, err := crypto.NewEngine(mpuTestPassword)
+	engine, err := crypto.NewEngine([]byte(mpuTestPassword))
 	if err != nil {
 		t.Fatalf("new engine: %v", err)
 	}

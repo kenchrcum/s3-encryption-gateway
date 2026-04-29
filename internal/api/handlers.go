@@ -698,7 +698,7 @@ func (h *Handler) getEncryptionEngine(bucket string) (crypto.EncryptionEngine, e
 	}
 
 	engine, err := crypto.NewEngineWithChunking(
-		password,
+		[]byte(password),
 		compressionEngine,
 		effectiveConfig.Encryption.PreferredAlgorithm,
 		effectiveConfig.Encryption.SupportedAlgorithms,
