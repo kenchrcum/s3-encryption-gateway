@@ -35,6 +35,7 @@ type Config struct {
 	Metrics        MetricsConfig        `yaml:"metrics"`
 	Logging        LoggingConfig        `yaml:"logging"`
 	Admin          AdminConfig          `yaml:"admin"`
+	Auth           AuthConfig           `yaml:"auth"`
 	PolicyFiles    []string             `yaml:"policies" env:"POLICIES"`
 	MultipartState MultipartStateConfig `yaml:"multipart_state"`
 }
@@ -439,6 +440,15 @@ type LoggingConfig struct {
 	RedactHeaders   []string `yaml:"redact_headers" env:"LOGGING_REDACT_HEADERS"`       // Headers to redact in access logs (comma-separated)
 }
 
+// AuthConfig holds authentication-related configuration for the S3 API.
+type AuthConfig struct {
+	// ClockSkewTolerance is the maximum acceptable difference between the
+	// request timestamp (X-Amz-Date) and server time. Requests outside this
+	// window are rejected to prevent replay attacks.
+	// Default: 15 minutes (matching AWS SigV4 specification).
+	ClockSkewTolerance time.Duration `yaml:"clock_skew_tolerance" env:"AUTH_CLOCK_SKEW_TOLERANCE"`
+}
+
 // AdminConfig holds admin API configuration.
 //
 // The admin endpoint runs on a separate listener from the S3 data-plane,
@@ -620,6 +630,9 @@ func LoadConfig(path string) (*Config, error) {
 		Logging: LoggingConfig{
 			AccessLogFormat: "default",
 			RedactHeaders:   []string{"authorization", "x-amz-security-token", "x-amz-signature", "x-encryption-key", "x-encryption-password"},
+		},
+		Auth: AuthConfig{
+			ClockSkewTolerance: 15 * time.Minute,
 		},
 		Admin: AdminConfig{
 			Enabled: false,
@@ -1018,6 +1031,12 @@ func loadFromEnv(config *Config) {
 		config.PolicyFiles = strings.Split(v, ",")
 		for i := range config.PolicyFiles {
 			config.PolicyFiles[i] = strings.TrimSpace(config.PolicyFiles[i])
+		}
+	}
+	// Auth configuration
+	if v := os.Getenv("AUTH_CLOCK_SKEW_TOLERANCE"); v != "" {
+		if d, err := time.ParseDuration(v); err == nil {
+			config.Auth.ClockSkewTolerance = d
 		}
 	}
 	// Admin configuration

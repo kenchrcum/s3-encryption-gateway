@@ -561,7 +561,7 @@ func (h *Handler) getS3Client(r *http.Request) (s3.Client, error) {
 				if err == nil {
 					if creds.AccessKey == h.config.Backend.AccessKey {
 						// Validate signature using backend secret
-						if err := ValidateSignatureV4(r, h.config.Backend.SecretKey); err != nil {
+						if err := ValidateSignatureV4(r, h.config.Backend.SecretKey, h.config.Auth.ClockSkewTolerance); err != nil {
 							h.logger.WithError(err).Warn("Signature validation failed")
 							// Return a classified sentinel so response writers
 							// never serialise the underlying diagnostic (which

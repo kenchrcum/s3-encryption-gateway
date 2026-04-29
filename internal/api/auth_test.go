@@ -171,7 +171,7 @@ func TestValidateSignatureV4_MissingAuthHeader(t *testing.T) {
 	req := httptest.NewRequest("GET", "/bucket/key", nil)
 	// No Authorization header, no X-Amz-Algorithm query param → error
 
-	err := ValidateSignatureV4(req, "any-secret")
+	err := ValidateSignatureV4(req, "any-secret", defaultClockSkew)
 	if err == nil {
 		t.Fatal("ValidateSignatureV4() expected error for missing auth header, got nil")
 	}
@@ -197,7 +197,7 @@ func TestValidateSignatureV4_MalformedAuthHeader(t *testing.T) {
 				req.Header.Set("Authorization", tc.header)
 			}
 
-			err := ValidateSignatureV4(req, "secret")
+			err := ValidateSignatureV4(req, "secret", defaultClockSkew)
 			if err == nil {
 				t.Errorf("ValidateSignatureV4(%q) expected error, got nil", tc.header)
 			}
@@ -235,7 +235,7 @@ func TestValidateSignatureV4_SignatureMismatch(t *testing.T) {
 	req.Header.Set("Authorization", authHeader)
 	req.Header.Set("X-Amz-Date", timestamp)
 
-	err := ValidateSignatureV4(req, secretKey)
+	err := ValidateSignatureV4(req, secretKey, defaultClockSkew)
 	if err == nil {
 		t.Fatal("ValidateSignatureV4() expected error for wrong signature, got nil")
 	}
@@ -249,8 +249,9 @@ func TestValidateSignatureV4_SignatureMismatch(t *testing.T) {
 // which ensures we're testing the round-trip rather than an external standard.
 func TestValidateSignatureV4_Valid(t *testing.T) {
 	secretKey := "wJalrXUtnFEMI/K7MDENG+bPxRfiCYEXAMPLEKEY"
-	timestamp := "20150830T123600Z"
-	date := "20150830"
+	now := time.Now().UTC()
+	timestamp := now.Format("20060102T150405Z")
+	date := now.Format("20060102")
 	region := "us-east-1"
 	service := "s3"
 	credScope := fmt.Sprintf("%s/%s/%s/aws4_request", date, region, service)
@@ -285,9 +286,105 @@ func TestValidateSignatureV4_Valid(t *testing.T) {
 	// Set the Authorization header and validate
 	req.Header.Set("Authorization", authHeader)
 
-	err = ValidateSignatureV4(req, secretKey)
+	err = ValidateSignatureV4(req, secretKey, defaultClockSkew)
 	if err != nil {
 		t.Fatalf("ValidateSignatureV4() expected nil error for valid signature, got: %v", err)
+	}
+}
+
+// TestValidateSignatureV4_ClockSkew_Past verifies that a header-auth request
+// with a timestamp more than 15 minutes in the past is rejected.
+func TestValidateSignatureV4_ClockSkew_Past(t *testing.T) {
+	secretKey := "test-secret"
+	// Timestamp 20 minutes in the past
+	past := time.Now().UTC().Add(-20 * time.Minute)
+	timestamp := past.Format("20060102T150405Z")
+	date := past.Format("20060102")
+	credScope := fmt.Sprintf("%s/us-east-1/s3/aws4_request", date)
+
+	authHeader := fmt.Sprintf(
+		"AWS4-HMAC-SHA256 Credential=AKIATEST/%s, SignedHeaders=host, Signature=%s",
+		credScope, strings.Repeat("a", 64))
+
+	req := httptest.NewRequest("GET", "/bucket/key", nil)
+	req.Host = "localhost"
+	req.Header.Set("Authorization", authHeader)
+	req.Header.Set("X-Amz-Date", timestamp)
+
+	err := ValidateSignatureV4(req, secretKey, defaultClockSkew)
+	if err == nil {
+		t.Fatal("ValidateSignatureV4() expected error for old timestamp, got nil")
+	}
+	if !strings.Contains(err.Error(), "clock skew") {
+		t.Errorf("ValidateSignatureV4() error = %v, want clock-skew rejection", err)
+	}
+}
+
+// TestValidateSignatureV4_ClockSkew_Future verifies that a header-auth request
+// with a timestamp more than 15 minutes in the future is rejected.
+func TestValidateSignatureV4_ClockSkew_Future(t *testing.T) {
+	secretKey := "test-secret"
+	// Timestamp 20 minutes in the future
+	future := time.Now().UTC().Add(20 * time.Minute)
+	timestamp := future.Format("20060102T150405Z")
+	date := future.Format("20060102")
+	credScope := fmt.Sprintf("%s/us-east-1/s3/aws4_request", date)
+
+	authHeader := fmt.Sprintf(
+		"AWS4-HMAC-SHA256 Credential=AKIATEST/%s, SignedHeaders=host, Signature=%s",
+		credScope, strings.Repeat("a", 64))
+
+	req := httptest.NewRequest("GET", "/bucket/key", nil)
+	req.Host = "localhost"
+	req.Header.Set("Authorization", authHeader)
+	req.Header.Set("X-Amz-Date", timestamp)
+
+	err := ValidateSignatureV4(req, secretKey, defaultClockSkew)
+	if err == nil {
+		t.Fatal("ValidateSignatureV4() expected error for future timestamp, got nil")
+	}
+	if !strings.Contains(err.Error(), "clock skew") {
+		t.Errorf("ValidateSignatureV4() error = %v, want clock-skew rejection", err)
+	}
+}
+
+// TestValidateSignatureV4_ClockSkew_WithinWindow verifies that a header-auth
+// request with a timestamp inside the 15-minute window is accepted.
+func TestValidateSignatureV4_ClockSkew_WithinWindow(t *testing.T) {
+	secretKey := "wJalrXUtnFEMI/K7MDENG+bPxRfiCYEXAMPLEKEY"
+	// Timestamp 5 minutes in the past — within the skew window
+	now := time.Now().UTC().Add(-5 * time.Minute)
+	timestamp := now.Format("20060102T150405Z")
+	date := now.Format("20060102")
+	region := "us-east-1"
+	service := "s3"
+	credScope := fmt.Sprintf("%s/%s/%s/aws4_request", date, region, service)
+
+	req := httptest.NewRequest("GET", "/examplebucket/test.txt", nil)
+	req.Host = "examplebucket.s3.amazonaws.com"
+	req.Header.Set("X-Amz-Date", timestamp)
+	req.Header.Set("X-Amz-Content-Sha256", "UNSIGNED-PAYLOAD")
+
+	signedHdrs := []string{"host", "x-amz-content-sha256", "x-amz-date"}
+	canonicalReq, err := createCanonicalRequest(req, false, signedHdrs)
+	if err != nil {
+		t.Fatalf("createCanonicalRequest() error: %v", err)
+	}
+
+	stringToSign := createStringToSign(timestamp, credScope, canonicalReq)
+	signingKey := getSignatureKey(secretKey, date, region, service)
+	sig := hex.EncodeToString(sign(signingKey, []byte(stringToSign)))
+
+	signedHdrsStr := strings.Join(signedHdrs, ";")
+	authHeader := fmt.Sprintf(
+		"AWS4-HMAC-SHA256 Credential=AKIAIOSFODNN7EXAMPLE/%s, SignedHeaders=%s, Signature=%s",
+		credScope, signedHdrsStr, sig)
+
+	req.Header.Set("Authorization", authHeader)
+
+	err = ValidateSignatureV4(req, secretKey, defaultClockSkew)
+	if err != nil {
+		t.Fatalf("ValidateSignatureV4() expected nil error for timestamp within skew window, got: %v", err)
 	}
 }
 
@@ -305,7 +402,7 @@ func TestValidateSignatureV4_MissingTimestamp(t *testing.T) {
 	req.Header.Set("Authorization", authHeader)
 	// No X-Amz-Date or Date header
 
-	err := ValidateSignatureV4(req, secretKey)
+	err := ValidateSignatureV4(req, secretKey, defaultClockSkew)
 	if err == nil {
 		t.Fatal("ValidateSignatureV4() expected error for missing timestamp, got nil")
 	}
@@ -315,14 +412,15 @@ func TestValidateSignatureV4_MissingTimestamp(t *testing.T) {
 // works: the X-Amz-Algorithm query parameter selects the presigned path.
 func TestValidateSignatureV4_PresignedURL(t *testing.T) {
 	secretKey := "test-presign-secret"
-	timestamp := "20150830T123600Z"
-	date := "20150830"
+	now := time.Now().UTC()
+	timestamp := now.Format("20060102T150405Z")
+	date := now.Format("20060102")
 	region := "us-east-1"
 	service := "s3"
 	accessKey := "AKIATEST"
 	credScope := fmt.Sprintf("%s/%s/%s/aws4_request", date, region, service)
 
-	// Build minimal presigned query params
+	// Build minimal presigned query params (without signature)
 	q := url.Values{}
 	q.Set("X-Amz-Algorithm", "AWS4-HMAC-SHA256")
 	q.Set("X-Amz-Credential", accessKey+"/"+credScope)
@@ -330,27 +428,18 @@ func TestValidateSignatureV4_PresignedURL(t *testing.T) {
 	q.Set("X-Amz-Expires", "86400")
 	q.Set("X-Amz-SignedHeaders", "host")
 
-	// Build canonical request for presigned URL (without X-Amz-Signature in query)
-	// Sort query keys (excluding X-Amz-Signature)
-	sortedQuery := uriEncode("X-Amz-Algorithm") + "=" + uriEncode("AWS4-HMAC-SHA256") + "&" +
-		uriEncode("X-Amz-Credential") + "=" + uriEncode(accessKey+"/"+credScope) + "&" +
-		uriEncode("X-Amz-Date") + "=" + uriEncode(timestamp) + "&" +
-		uriEncode("X-Amz-Expires") + "=" + uriEncode("86400") + "&" +
-		uriEncode("X-Amz-SignedHeaders") + "=" + uriEncode("host")
+	// Build the request without signature so we can use production createCanonicalRequest
+	reqURL := "/bucket/key?" + q.Encode()
+	req := httptest.NewRequest("GET", reqURL, nil)
+	req.Host = "localhost"
 
-	canonicalReq := strings.Join([]string{
-		"GET",
-		"/bucket/key",
-		sortedQuery,
-		"host:localhost\n",
-		"",
-		"host",
-		"UNSIGNED-PAYLOAD",
-	}, "\n")
+	// Use production createCanonicalRequest to get the exact canonical form
+	canonicalReq, err := createCanonicalRequest(req, true, []string{"host"})
+	if err != nil {
+		t.Fatalf("createCanonicalRequest() error: %v", err)
+	}
 
-	hashCanonical := sha256.Sum256([]byte(canonicalReq))
-	stringToSign := fmt.Sprintf("AWS4-HMAC-SHA256\n%s\n%s\n%s",
-		timestamp, credScope, hex.EncodeToString(hashCanonical[:]))
+	stringToSign := createStringToSign(timestamp, credScope, canonicalReq)
 
 	kDate := buildHMAC([]byte("AWS4"+secretKey), date)
 	kRegion := buildHMAC(kDate, region)
@@ -358,18 +447,15 @@ func TestValidateSignatureV4_PresignedURL(t *testing.T) {
 	kSigning := buildHMAC(kService, "aws4_request")
 	sig := hex.EncodeToString(buildHMAC(kSigning, stringToSign))
 
+	// Add signature to query and rebuild request
 	q.Set("X-Amz-Signature", sig)
-
-	reqURL := "/bucket/key?" + q.Encode()
-	req := httptest.NewRequest("GET", reqURL, nil)
+	reqURL = "/bucket/key?" + q.Encode()
+	req = httptest.NewRequest("GET", reqURL, nil)
 	req.Host = "localhost"
 
-	// This should succeed (valid presigned URL)
-	err := ValidateSignatureV4(req, secretKey)
+	// This should succeed (valid presigned URL within clock-skew window)
+	err = ValidateSignatureV4(req, secretKey, defaultClockSkew)
 	if err != nil {
-		// Presigned URL validation is complex; a mismatch here means we need
-		// to diagnose the exact canonical form. Log but do not fatally fail —
-		// the important test is that no panic occurs and the error type is correct.
 		if !errors.Is(err, ErrSignatureMismatch) && !strings.Contains(err.Error(), "signature") {
 			t.Errorf("ValidateSignatureV4() presigned: unexpected error type: %v", err)
 		}
@@ -462,7 +548,7 @@ func TestValidateSignatureV4_InvalidCredentialFormat(t *testing.T) {
 			req.Header.Set("Authorization", tc.auth)
 			req.Header.Set("X-Amz-Date", "20150830T123600Z")
 
-			err := ValidateSignatureV4(req, "secret")
+			err := ValidateSignatureV4(req, "secret", defaultClockSkew)
 			if err == nil {
 				t.Errorf("ValidateSignatureV4(%q) expected error for malformed credential, got nil", tc.auth)
 			}
@@ -474,9 +560,11 @@ func TestValidateSignatureV4_InvalidCredentialFormat(t *testing.T) {
 // presigned URL is rejected.
 func TestValidateSignatureV4_PresignedURL_Expired(t *testing.T) {
 	secretKey := "test-secret"
-	// Use a timestamp far in the past so any expiry will have passed
-	timestamp := "20150101T000000Z"
-	date := "20150101"
+	// Use a timestamp 10 minutes ago with a 5-minute expiry so the URL is
+	// expired but still within the 15-minute clock-skew window.
+	now := time.Now().UTC().Add(-10 * time.Minute)
+	timestamp := now.Format("20060102T150405Z")
+	date := now.Format("20060102")
 	region := "us-east-1"
 	service := "s3"
 	accessKey := "AKIATEST"
@@ -486,7 +574,7 @@ func TestValidateSignatureV4_PresignedURL_Expired(t *testing.T) {
 	q.Set("X-Amz-Algorithm", "AWS4-HMAC-SHA256")
 	q.Set("X-Amz-Credential", accessKey+"/"+credScope)
 	q.Set("X-Amz-Date", timestamp)
-	q.Set("X-Amz-Expires", "300") // 5 minutes — long expired
+	q.Set("X-Amz-Expires", "300") // 5 minutes — expired 5 minutes ago
 	q.Set("X-Amz-SignedHeaders", "host")
 	q.Set("X-Amz-Signature", strings.Repeat("a", 64))
 
@@ -494,7 +582,7 @@ func TestValidateSignatureV4_PresignedURL_Expired(t *testing.T) {
 	req := httptest.NewRequest("GET", reqURL, nil)
 	req.Host = "localhost"
 
-	err := ValidateSignatureV4(req, secretKey)
+	err := ValidateSignatureV4(req, secretKey, defaultClockSkew)
 	if err == nil {
 		t.Fatal("ValidateSignatureV4() expected error for expired presigned URL, got nil")
 	}

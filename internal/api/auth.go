@@ -37,10 +37,18 @@ var (
 	ErrSigV4NotSupportedWithPassthrough = errors.New("signature v4 not supported with credential passthrough")
 )
 
+const defaultClockSkew = 15 * time.Minute
+
 // ValidateSignatureV4 validates the AWS Signature V4 in the request.
 // It supports both Authorization header and Presigned URL (query param).
 // secretKey is the shared secret used to sign the request.
-func ValidateSignatureV4(r *http.Request, secretKey string) error {
+// clockSkew is the maximum acceptable difference between the request
+// timestamp and server time; zero or negative values fall back to
+// defaultClockSkew (15 minutes).
+func ValidateSignatureV4(r *http.Request, secretKey string, clockSkew time.Duration) error {
+	if clockSkew <= 0 {
+		clockSkew = defaultClockSkew
+	}
 	// Determine if it's a Presigned URL or Header Auth
 	query := r.URL.Query()
 	isPresigned := query.Get("X-Amz-Algorithm") == "AWS4-HMAC-SHA256"
@@ -97,6 +105,18 @@ func ValidateSignatureV4(r *http.Request, secretKey string) error {
 		return fmt.Errorf("missing timestamp")
 	}
 
+	// Clock-skew validation: reject requests whose timestamp is outside the
+	// configured skew window. This applies to both header-auth and presigned
+	// requests and prevents indefinite replay of captured signatures.
+	t, err := time.Parse("20060102T150405Z", timestamp)
+	if err != nil {
+		return fmt.Errorf("invalid timestamp format")
+	}
+	skew := time.Since(t).Abs()
+	if skew > clockSkew {
+		return fmt.Errorf("request timestamp outside clock skew window")
+	}
+
 	// 1. Create Canonical Request
 	canonicalRequest, err := createCanonicalRequest(r, isPresigned, signedHeaders)
 	if err != nil {
@@ -128,17 +148,12 @@ func ValidateSignatureV4(r *http.Request, secretKey string) error {
 	if isPresigned {
 		expiresStr := query.Get("X-Amz-Expires")
 		if expiresStr != "" {
-			// Parse timestamp
-			t, err := time.Parse("20060102T150405Z", timestamp)
-			if err != nil {
-				return fmt.Errorf("invalid timestamp format")
-			}
 			// Parse expires duration
 			var expires int
 			if _, err := fmt.Sscanf(expiresStr, "%d", &expires); err != nil {
 				return fmt.Errorf("invalid expires format")
 			}
-			// Check if expired
+			// Check if expired (t was already parsed during clock-skew validation)
 			if time.Now().UTC().After(t.Add(time.Duration(expires) * time.Second)) {
 				return fmt.Errorf("presigned url expired")
 			}
