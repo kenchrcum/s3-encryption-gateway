@@ -94,8 +94,14 @@ func newRangeDecryptReader(
 	}, nil
 }
 
-// deriveChunkIV derives an IV for a specific chunk (same as encryption).
+// deriveChunkIV derives an IV for a specific chunk.
+// If the manifest was written with the HKDF flag, HKDF derivation is used.
+// Otherwise, the legacy XOR path is used for backward compatibility.
 func (r *rangeDecryptReader) deriveChunkIV(chunkIndex int) []byte {
+	if r.manifest.IVDerivation == "hkdf-sha256" {
+		return deriveChunkIVHKDF(r.baseIV, chunkIndex)
+	}
+	// Deprecated: used for objects without MetaIVDerivation flag. Remove no earlier than v3.0.
 	iv := make([]byte, len(r.baseIV))
 	copy(iv, r.baseIV)
 

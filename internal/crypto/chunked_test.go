@@ -2,6 +2,12 @@ package crypto
 
 import (
 	"bytes"
+	"crypto/aes"
+	"crypto/cipher"
+	"crypto/pbkdf2"
+	"crypto/rand"
+	"crypto/sha256"
+	"encoding/binary"
 	"fmt"
 	"io"
 	"testing"
@@ -508,5 +514,284 @@ func TestChunkedEncryptFallback_NoDoubleBuffer(t *testing.T) {
 	}
 	if len(encryptedData) == 0 {
 		t.Fatal("Encrypted data is empty")
+	}
+}
+
+// TestDeriveChunkIVHKDF_KAT verifies that deriveChunkIVHKDF produces stable,
+// distinct, and deterministically reproducible IVs for a given baseIV and chunk
+// index (V1.0-SEC-2).
+func TestDeriveChunkIVHKDF_KAT(t *testing.T) {
+	baseIV := make([]byte, 12)
+	if _, err := rand.Read(baseIV); err != nil {
+		t.Fatalf("failed to read random baseIV: %v", err)
+	}
+
+	iv0 := deriveChunkIVHKDF(baseIV, 0)
+	iv1 := deriveChunkIVHKDF(baseIV, 1)
+
+	if len(iv0) != len(baseIV) {
+		t.Errorf("iv0 length mismatch: got %d, want %d", len(iv0), len(baseIV))
+	}
+	if len(iv1) != len(baseIV) {
+		t.Errorf("iv1 length mismatch: got %d, want %d", len(iv1), len(baseIV))
+	}
+	if bytes.Equal(iv0, iv1) {
+		t.Error("iv0 and iv1 must be distinct")
+	}
+	if bytes.Equal(iv0, baseIV) {
+		t.Error("iv0 must differ from baseIV")
+	}
+
+	// Deterministic: same inputs must yield same output.
+	iv0Again := deriveChunkIVHKDF(baseIV, 0)
+	if !bytes.Equal(iv0, iv0Again) {
+		t.Error("deriveChunkIVHKDF is not deterministic for same inputs")
+	}
+}
+
+// TestChunkedDecrypt_LegacyXOR verifies that objects encrypted with the legacy
+// XOR IV derivation (no IVDerivation flag) can still be decrypted by the new
+// code path (V1.0-SEC-2 dual-read window).
+func TestChunkedDecrypt_LegacyXOR(t *testing.T) {
+	key := make([]byte, 32)
+	if _, err := rand.Read(key); err != nil {
+		t.Fatalf("failed to generate key: %v", err)
+	}
+	block, err := aes.NewCipher(key)
+	if err != nil {
+		t.Fatalf("failed to create AES cipher: %v", err)
+	}
+	aead, err := cipher.NewGCM(block)
+	if err != nil {
+		t.Fatalf("failed to create GCM: %v", err)
+	}
+
+	baseIV := make([]byte, 12)
+	if _, err := rand.Read(baseIV); err != nil {
+		t.Fatalf("failed to generate baseIV: %v", err)
+	}
+
+	plaintext := []byte("Hello, legacy XOR world!")
+
+	// Encrypt using legacy XOR-derived IV (no IVDerivation flag).
+	iv := make([]byte, len(baseIV))
+	copy(iv, baseIV)
+	indexBytes := make([]byte, 4)
+	binary.BigEndian.PutUint32(indexBytes, 0)
+	for i := 0; i < 4 && i < len(iv); i++ {
+		iv[len(iv)-1-i] ^= indexBytes[3-i]
+	}
+	ciphertext := aead.Seal(nil, iv, plaintext, nil)
+
+	// Manifest without IVDerivation simulates a pre-v1.0 object.
+	manifest := &ChunkManifest{
+		Version:    1,
+		ChunkSize:  len(plaintext),
+		ChunkCount: 1,
+		BaseIV:     encodeBase64(baseIV),
+	}
+
+	reader, err := newChunkedDecryptReader(bytes.NewReader(ciphertext), aead, manifest, nil)
+	if err != nil {
+		t.Fatalf("failed to create chunked decrypt reader: %v", err)
+	}
+
+	decrypted, err := io.ReadAll(reader)
+	if err != nil {
+		t.Fatalf("legacy XOR decryption failed: %v", err)
+	}
+
+	if !bytes.Equal(decrypted, plaintext) {
+		t.Errorf("legacy XOR round-trip failed: got %q, want %q", decrypted, plaintext)
+	}
+}
+
+// TestChunkedDecrypt_HKDFFlagCannotUseXOR verifies that an object encrypted
+// with HKDF-derived IVs cannot be decrypted when the reader is forced down the
+// legacy XOR path (negative cross-version test for V1.0-SEC-2).
+func TestChunkedDecrypt_HKDFFlagCannotUseXOR(t *testing.T) {
+	key := make([]byte, 32)
+	if _, err := rand.Read(key); err != nil {
+		t.Fatalf("failed to generate key: %v", err)
+	}
+	block, err := aes.NewCipher(key)
+	if err != nil {
+		t.Fatalf("failed to create AES cipher: %v", err)
+	}
+	aead, err := cipher.NewGCM(block)
+	if err != nil {
+		t.Fatalf("failed to create GCM: %v", err)
+	}
+
+	baseIV := make([]byte, 12)
+	if _, err := rand.Read(baseIV); err != nil {
+		t.Fatalf("failed to generate baseIV: %v", err)
+	}
+
+	plaintext := []byte("HKDF-only payload")
+
+	// Encrypt using HKDF-derived IV.
+	chunkIV := deriveChunkIVHKDF(baseIV, 0)
+	ciphertext := aead.Seal(nil, chunkIV, plaintext, nil)
+
+	// Manifest WITHOUT the HKDF flag forces the decrypt reader to use XOR.
+	manifest := &ChunkManifest{
+		Version:      1,
+		ChunkSize:    len(plaintext),
+		ChunkCount:   1,
+		BaseIV:       encodeBase64(baseIV),
+		IVDerivation: "", // forces legacy XOR path
+	}
+
+	reader, err := newChunkedDecryptReader(bytes.NewReader(ciphertext), aead, manifest, nil)
+	if err != nil {
+		t.Fatalf("failed to create chunked decrypt reader: %v", err)
+	}
+
+	_, err = io.ReadAll(reader)
+	if err == nil {
+		t.Fatal("expected decryption to fail when HKDF ciphertext is decrypted with XOR path")
+	}
+}
+
+// TestChunkedEncrypt_MetadataHasIVDerivationFlag verifies that the encrypt
+// path sets both the manifest IVDerivation field and the outer metadata flag
+// (V1.0-SEC-2).
+func TestChunkedEncrypt_MetadataHasIVDerivationFlag(t *testing.T) {
+	engine, err := NewEngineWithChunking([]byte("test-password-12345"), nil, "", nil, true, DefaultChunkSize)
+	if err != nil {
+		t.Fatalf("Failed to create engine: %v", err)
+	}
+
+	originalData := []byte("Hello, HKDF!")
+	reader := bytes.NewReader(originalData)
+	encryptedReader, metadata, err := engine.Encrypt(reader, nil)
+	if err != nil {
+		t.Fatalf("Failed to encrypt: %v", err)
+	}
+
+	encryptedData, err := io.ReadAll(encryptedReader)
+	if err != nil {
+		t.Fatalf("Failed to read encrypted data: %v", err)
+	}
+	if len(encryptedData) == 0 {
+		t.Fatal("Encrypted data is empty")
+	}
+
+	if metadata[MetaIVDerivation] != "hkdf-sha256" {
+		t.Errorf("expected metadata[%s] = 'hkdf-sha256', got %q", MetaIVDerivation, metadata[MetaIVDerivation])
+	}
+
+	// Verify round-trip succeeds with the HKDF flag present.
+	decryptedReader, _, err := engine.Decrypt(bytes.NewReader(encryptedData), metadata)
+	if err != nil {
+		t.Fatalf("Failed to decrypt: %v", err)
+	}
+	decryptedData, err := io.ReadAll(decryptedReader)
+	if err != nil {
+		t.Fatalf("Failed to read decrypted data: %v", err)
+	}
+	if !bytes.Equal(originalData, decryptedData) {
+		t.Error("Decrypted data does not match original")
+	}
+}
+
+// TestChunkedEngineDecrypt_LegacyObject verifies that objects encrypted before
+// V1.0-SEC-2 (without IVDerivation in manifest and without MetaIVDerivation in
+// metadata) still decrypt correctly via the full engine path (dual-read window).
+func TestChunkedEngineDecrypt_LegacyObject(t *testing.T) {
+	engine, err := NewEngineWithChunking([]byte("test-password-12345"), nil, "", nil, true, 64*1024)
+	if err != nil {
+		t.Fatalf("Failed to create engine: %v", err)
+	}
+
+	plaintext := make([]byte, 200*1024) // 200KB spans multiple chunks
+	for i := range plaintext {
+		plaintext[i] = byte(i % 256)
+	}
+
+	// Manually create a legacy (pre-v1.0) XOR-encrypted object.
+	salt := make([]byte, 32)
+	if _, err := rand.Read(salt); err != nil {
+		t.Fatalf("failed to generate salt: %v", err)
+	}
+	baseIV := make([]byte, 12)
+	if _, err := rand.Read(baseIV); err != nil {
+		t.Fatalf("failed to generate baseIV: %v", err)
+	}
+
+	// Derive the same key the engine would use.
+	key, err := pbkdf2.Key(sha256.New, "test-password-12345", salt, 100000, 32)
+	if err != nil {
+		t.Fatalf("failed to derive key: %v", err)
+	}
+	block, err := aes.NewCipher(key)
+	if err != nil {
+		t.Fatalf("failed to create AES cipher: %v", err)
+	}
+	aead, err := cipher.NewGCM(block)
+	if err != nil {
+		t.Fatalf("failed to create GCM: %v", err)
+	}
+
+	// Encrypt with legacy XOR-derived IVs.
+	chunkSize := 64 * 1024
+	var encryptedData []byte
+	chunkCount := 0
+	for offset := 0; offset < len(plaintext); offset += chunkSize {
+		end := offset + chunkSize
+		if end > len(plaintext) {
+			end = len(plaintext)
+		}
+		chunk := plaintext[offset:end]
+
+		iv := make([]byte, len(baseIV))
+		copy(iv, baseIV)
+		indexBytes := make([]byte, 4)
+		binary.BigEndian.PutUint32(indexBytes, uint32(chunkCount))
+		for i := 0; i < 4 && i < len(iv); i++ {
+			iv[len(iv)-1-i] ^= indexBytes[3-i]
+		}
+
+		encryptedData = append(encryptedData, aead.Seal(nil, iv, chunk, nil)...)
+		chunkCount++
+	}
+
+	// Build legacy manifest WITHOUT IVDerivation.
+	manifest := &ChunkManifest{
+		Version:    1,
+		ChunkSize:  chunkSize,
+		ChunkCount: chunkCount,
+		BaseIV:     encodeBase64(baseIV),
+	}
+	manifestEncoded, err := encodeManifest(manifest)
+	if err != nil {
+		t.Fatalf("failed to encode manifest: %v", err)
+	}
+
+	// Build metadata WITHOUT MetaIVDerivation.
+	metadata := map[string]string{
+		MetaEncrypted:     "true",
+		MetaChunkedFormat: "true",
+		MetaAlgorithm:     AlgorithmAES256GCM,
+		MetaKeySalt:       encodeBase64(salt),
+		MetaIV:            encodeBase64(baseIV),
+		MetaChunkSize:     fmt.Sprintf("%d", chunkSize),
+		MetaManifest:      manifestEncoded,
+		MetaOriginalSize:  fmt.Sprintf("%d", len(plaintext)),
+	}
+
+	// Decrypt through the full engine path.
+	decryptedReader, _, err := engine.Decrypt(bytes.NewReader(encryptedData), metadata)
+	if err != nil {
+		t.Fatalf("Failed to decrypt legacy object: %v", err)
+	}
+	decryptedData, err := io.ReadAll(decryptedReader)
+	if err != nil {
+		t.Fatalf("Failed to read decrypted data: %v", err)
+	}
+
+	if !bytes.Equal(plaintext, decryptedData) {
+		t.Errorf("Full-engine legacy-object round-trip failed: lengths %d vs %d", len(plaintext), len(decryptedData))
 	}
 }

@@ -1780,6 +1780,8 @@ func isEncryptionMetadata(key string) bool {
 		"x-amz-meta-encryption-chunk-size",
 		"x-amz-meta-encryption-chunk-count",
 		"x-amz-meta-encryption-manifest",
+		"x-amz-meta-enc-iv-deriv",
+		"x-amz-meta-enc-legacy-no-aad",
 		// Original content length (set by gateway)
 		"x-amz-meta-original-content-length",
 	}

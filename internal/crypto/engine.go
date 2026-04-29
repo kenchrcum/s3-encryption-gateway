@@ -942,6 +942,7 @@ func (e *engine) encryptChunked(ctx context.Context, reader io.Reader, metadata 
 	encMetadata[MetaIV] = encodeBase64(baseIV)
 	encMetadata[MetaChunkSize] = fmt.Sprintf("%d", e.chunkSize)
 	encMetadata[MetaManifest] = manifestEncoded
+	encMetadata[MetaIVDerivation] = "hkdf-sha256"
 	if originalETag != "" {
 		encMetadata[MetaOriginalETag] = originalETag
 	}
@@ -1066,6 +1067,7 @@ func (e *engine) encryptChunkedWithMetadataFallback(ctx context.Context, reader 
 	fullMetadata[MetaIV] = encodeBase64(baseIV)
 	fullMetadata[MetaChunkSize] = fmt.Sprintf("%d", e.chunkSize)
 	fullMetadata[MetaManifest] = manifestEncoded
+	fullMetadata[MetaIVDerivation] = "hkdf-sha256"
 	if originalETag != "" {
 		fullMetadata[MetaOriginalETag] = originalETag
 	}
@@ -1728,7 +1730,9 @@ func isEncryptionMetadata(key string) bool {
 		key == MetaKMSKeyID ||
 		key == MetaKMSProvider ||
 		key == MetaFallbackMode ||
-		key == MetaFallbackPointer
+		key == MetaFallbackPointer ||
+		key == MetaIVDerivation ||
+		key == MetaLegacyNoAAD
 }
 
 // isCompressionMetadata checks if a metadata key is related to compression.

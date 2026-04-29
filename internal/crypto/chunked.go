@@ -3,12 +3,15 @@ package crypto
 import (
 	"context"
 	"crypto/cipher"
+	"crypto/sha256"
 	"encoding/binary"
 	"encoding/json"
 	"fmt"
 	"io"
 	"runtime"
 	"sync"
+
+	"golang.org/x/crypto/hkdf"
 )
 
 const (
@@ -27,17 +30,19 @@ const (
 	MetaChunkSize     = "x-amz-meta-encryption-chunk-size"
 	MetaChunkCount    = "x-amz-meta-encryption-chunk-count"
 	MetaManifest      = "x-amz-meta-encryption-manifest"
+	MetaIVDerivation  = "x-amz-meta-enc-iv-deriv"
 )
 
 // ChunkManifest represents the encryption manifest for chunked objects.
 // It stores the IV for each chunk, allowing decryption without reading
 // the entire object first.
 type ChunkManifest struct {
-	Version    int      `json:"v"` // Format version (currently 1)
-	ChunkSize  int      `json:"cs"` // Size of each chunk in bytes
-	ChunkCount int      `json:"cc"` // Number of chunks
-	BaseIV     string   `json:"iv"` // Base64-encoded base IV (for IV derivation)
-	IVs        []string `json:"ivs,omitempty"` // Optional: explicit IVs per chunk (if baseIV not used)
+	Version      int      `json:"v"` // Format version (currently 1)
+	ChunkSize    int      `json:"cs"` // Size of each chunk in bytes
+	ChunkCount   int      `json:"cc"` // Number of chunks
+	BaseIV       string   `json:"iv"` // Base64-encoded base IV (for IV derivation)
+	IVs          []string `json:"ivs,omitempty"` // Optional: explicit IVs per chunk (if baseIV not used)
+	IVDerivation string   `json:"ivd,omitempty"` // IV derivation method: "hkdf-sha256" or "" (legacy XOR)
 }
 
 // chunkedEncryptReader implements streaming encryption in chunks.
@@ -92,9 +97,10 @@ func newChunkedEncryptReaderWithContext(ctx context.Context, source io.Reader, a
 	}
 
 	manifest := &ChunkManifest{
-		Version:   1,
-		ChunkSize: chunkSize,
-		BaseIV:    encodeBase64(baseIV),
+		Version:      1,
+		ChunkSize:    chunkSize,
+		BaseIV:       encodeBase64(baseIV),
+		IVDerivation: "hkdf-sha256",
 	}
 
 	return &chunkedEncryptReader{
@@ -112,23 +118,20 @@ func newChunkedEncryptReaderWithContext(ctx context.Context, source io.Reader, a
 	}, manifest
 }
 
-// deriveChunkIV derives an IV for a specific chunk index.
-// We use a simple counter-based approach: XOR the base IV with chunk index.
-// This ensures uniqueness while maintaining determinism.
-func (r *chunkedEncryptReader) deriveChunkIV(chunkIndex int) []byte {
-	iv := make([]byte, len(r.baseIV))
-	copy(iv, r.baseIV)
-
-	// XOR the last 4 bytes with chunk index to derive unique IV per chunk
-	// This maintains security while allowing streaming
-	indexBytes := make([]byte, 4)
-	binary.BigEndian.PutUint32(indexBytes, uint32(chunkIndex))
-
-	for i := 0; i < 4 && i < len(iv); i++ {
-		iv[len(iv)-1-i] ^= indexBytes[3-i]
-	}
-
+// deriveChunkIVHKDF derives a per-chunk IV using HKDF-Expand(SHA-256).
+// This is the recommended derivation method for all objects created from v1.0 onward.
+func deriveChunkIVHKDF(baseIV []byte, chunkIndex int) []byte {
+	info := make([]byte, 8+4)
+	copy(info, "chunk-iv")
+	binary.BigEndian.PutUint32(info[8:], uint32(chunkIndex))
+	r := hkdf.Expand(sha256.New, baseIV, info)
+	iv := make([]byte, len(baseIV))
+	io.ReadFull(r, iv)
 	return iv
+}
+
+func (r *chunkedEncryptReader) deriveChunkIV(chunkIndex int) []byte {
+	return deriveChunkIVHKDF(r.baseIV, chunkIndex)
 }
 
 // Read implements io.Reader for chunked encryption.
@@ -396,8 +399,14 @@ func newChunkedDecryptReaderWithContext(ctx context.Context, source io.Reader, a
 	}, nil
 }
 
-// deriveChunkIV derives an IV for a specific chunk (same as encryption).
+// deriveChunkIV derives an IV for a specific chunk.
+// If the manifest was written with the HKDF flag, HKDF derivation is used.
+// Otherwise, the legacy XOR path is used for backward compatibility.
 func (r *chunkedDecryptReader) deriveChunkIV(chunkIndex int) []byte {
+	if r.manifest.IVDerivation == "hkdf-sha256" {
+		return deriveChunkIVHKDF(r.baseIV, chunkIndex)
+	}
+	// Deprecated: used for objects without MetaIVDerivation flag. Remove no earlier than v3.0.
 	iv := make([]byte, len(r.baseIV))
 	copy(iv, r.baseIV)
 
