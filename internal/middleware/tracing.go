@@ -23,6 +23,9 @@ func TracingMiddleware(redactSensitive bool, extractor *util.IPExtractor) func(h
 			// Extract bucket and key from URL path for S3 operations
 			bucket, key := extractBucketAndKey(r.URL.Path)
 
+			// Build a sanitised URL for the span — never include query string in HTTPURL.
+			sanitisedURL := r.URL.Scheme + "://" + r.Host + r.URL.Path
+
 			// Create span with appropriate name and attributes
 			spanName := getSpanName(r.Method, bucket, key)
 			ctx, span := tracer.Start(ctx, spanName,
@@ -31,7 +34,7 @@ func TracingMiddleware(redactSensitive bool, extractor *util.IPExtractor) func(h
 			semconv.HTTPMethod(r.Method),
 			semconv.HTTPScheme(r.URL.Scheme),
 			semconv.HTTPTarget(r.URL.Path),
-			semconv.HTTPURL(r.URL.String()),
+			semconv.HTTPURL(sanitisedURL),
 			semconv.HTTPRoute(r.URL.Path),
 			attribute.String("http.host", r.Host),
 			attribute.String("http.user_agent", r.UserAgent()),

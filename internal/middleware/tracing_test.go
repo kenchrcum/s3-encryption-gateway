@@ -74,6 +74,82 @@ func TestTracingMiddleware_NoRedaction(t *testing.T) {
 	assert.Equal(t, http.StatusOK, w.Code)
 }
 
+func TestTracingMiddleware_HTTPURL_NoQueryString(t *testing.T) {
+	_, sr := setupTestTracer(t)
+
+	middleware := TracingMiddleware(true, nil)
+	handler := middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	// Simulate a presigned URL with sensitive query parameters
+	req := httptest.NewRequest("GET", "/bucket/object?X-Amz-Signature=abc123&X-Amz-Credential=secret", nil)
+	req.URL.Scheme = "https"
+	req.Host = "s3.example.com"
+
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	ended := sr.Ended()
+	assert.Len(t, ended, 1)
+
+	httpURL := findSpanAttribute(ended, "http.url")
+	assert.Equal(t, "https://s3.example.com/bucket/object", httpURL)
+	assert.NotContains(t, httpURL, "X-Amz-Signature")
+	assert.NotContains(t, httpURL, "X-Amz-Credential")
+	assert.NotContains(t, httpURL, "?")
+}
+
+func TestTracingMiddleware_HTTPURL_RedactedQuery(t *testing.T) {
+	_, sr := setupTestTracer(t)
+
+	middleware := TracingMiddleware(true, nil)
+	handler := middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	req := httptest.NewRequest("GET", "/bucket/object?versionId=123", nil)
+	req.URL.Scheme = "http"
+	req.Host = "localhost:8080"
+
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	ended := sr.Ended()
+	assert.Len(t, ended, 1)
+
+	httpURL := findSpanAttribute(ended, "http.url")
+	assert.Equal(t, "http://localhost:8080/bucket/object", httpURL)
+
+	httpQuery := findSpanAttribute(ended, "http.query")
+	assert.Equal(t, "[REDACTED]", httpQuery)
+}
+
+func TestTracingMiddleware_HTTPURL_NoRedaction_QueryVisible(t *testing.T) {
+	_, sr := setupTestTracer(t)
+
+	middleware := TracingMiddleware(false, nil)
+	handler := middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	req := httptest.NewRequest("GET", "/bucket/object?versionId=123", nil)
+	req.URL.Scheme = "http"
+	req.Host = "localhost:8080"
+
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	ended := sr.Ended()
+	assert.Len(t, ended, 1)
+
+	httpURL := findSpanAttribute(ended, "http.url")
+	assert.Equal(t, "http://localhost:8080/bucket/object", httpURL)
+
+	httpQuery := findSpanAttribute(ended, "http.query")
+	assert.Equal(t, "versionId=123", httpQuery)
+}
+
 func TestExtractBucketAndKey(t *testing.T) {
 	tests := []struct {
 		name     string
