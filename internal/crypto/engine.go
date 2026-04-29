@@ -49,6 +49,10 @@ const (
 	// Fallback metadata storage keys
 	MetaFallbackMode    = "x-amz-meta-encryption-fallback"
 	MetaFallbackPointer = "x-amz-meta-encryption-fallback-ptr"
+
+	// Legacy marker for objects encrypted before AAD was introduced.
+	// The no-AAD fallback in Decrypt is only permitted when this flag is "true".
+	MetaLegacyNoAAD = "x-amz-meta-enc-legacy-no-aad"
 )
 
 // EncryptionEngine provides encryption and decryption functionality.
@@ -709,10 +713,15 @@ func (e *engine) Decrypt(reader io.Reader, metadata map[string]string) (io.Reade
 	// Attempt decrypt with current key and AAD
 	plaintext, openErr := gcm.Open(nil, iv, ciphertext, aad)
 	if openErr != nil {
-		// Backward compatibility: try without AAD
-		if pt, err2 := gcm.Open(nil, iv, ciphertext, nil); err2 == nil {
-			plaintext = pt
-			openErr = nil
+		// Backward compatibility: try without AAD only for explicitly
+		// marked legacy objects. This prevents an attacker with backend
+		// write access from bypassing the AAD integrity check by
+		// tampering with metadata.
+		if expandedMetadata[MetaLegacyNoAAD] == "true" {
+			if pt, err2 := gcm.Open(nil, iv, ciphertext, nil); err2 == nil {
+				plaintext = pt
+				openErr = nil
+			}
 		}
 	}
 
@@ -734,9 +743,11 @@ func (e *engine) Decrypt(reader io.Reader, metadata map[string]string) (io.Reade
 							if pt, err3 := altGCM.Open(nil, iv, ciphertext, aad); err3 == nil {
 								plaintext = pt
 								openErr = nil
-							} else if pt2, err4 := altGCM.Open(nil, iv, ciphertext, nil); err4 == nil {
-								plaintext = pt2
-								openErr = nil
+							} else if expandedMetadata[MetaLegacyNoAAD] == "true" {
+								if pt2, err4 := altGCM.Open(nil, iv, ciphertext, nil); err4 == nil {
+									plaintext = pt2
+									openErr = nil
+								}
 							}
 						}
 					}
