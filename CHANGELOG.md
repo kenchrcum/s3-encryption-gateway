@@ -37,8 +37,6 @@ configuration changes are required unless noted.
 - **Streaming chunked encryption** (V1.0-SEC-14):
   `encryptChunked` no longer calls `io.ReadAll` on the entire plaintext.
   Memory usage is now bounded by the chunk pipeline regardless of object size.
-  The metadata-fallback path was also fixed to avoid holding plaintext and
-  ciphertext simultaneously (V1.0-SEC-27).
 
 - **Trusted-proxy-aware tracing middleware** (V1.0-SEC-16):
   `TracingMiddleware` now uses the existing `TrustedProxies` configuration
@@ -54,6 +52,11 @@ configuration changes are required unless noted.
   All `debug.Enabled()` blocks in `internal/s3/client.go` now use
   `slog.Debug(..., "len", len(v))` instead of `fmt.Printf` with 30-character
   value previews. No raw metadata (salt, IV, wrapped key) is ever logged.
+
+- **Remove double-buffering in metadata fallback encrypt** (V1.0-SEC-27):
+  `encryptWithMetadataFallback` no longer holds both plaintext and ciphertext
+  in memory simultaneously. Peak heap is now `objectSize + overhead` instead
+  of `2× objectSize` for large objects.
 
 - **Password loaded as `[]byte` from the start** (V1.0-SEC-19):
   `cmd/server/main.go` now loads the encryption password directly into a
