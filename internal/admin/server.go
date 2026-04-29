@@ -48,19 +48,31 @@ type Server struct {
 	cfg        config.AdminConfig
 	logger     *logrus.Logger
 	mux        *http.ServeMux
+
+	// tokenCache holds the in-memory cached bearer token so that the token
+	// file is not re-read on every authenticated request (V1.0-SEC-22).
+	tokenCache []byte
+	tokenMu    sync.RWMutex
+
+	// stopRefresh signals the periodic token refresh goroutine to exit.
+	stopRefresh     chan struct{}
+	stopRefreshOnce sync.Once
 }
+
 
 // NewServer creates a new admin Server. The caller must call RegisterRoutes
 // before Start to mount handlers on the admin mux.
 func NewServer(cfg config.AdminConfig, logger *logrus.Logger) *Server {
 	mux := http.NewServeMux()
 	s := &Server{
-		cfg:    cfg,
-		logger: logger,
-		mux:    mux,
+		cfg:         cfg,
+		logger:      logger,
+		mux:         mux,
+		stopRefresh: make(chan struct{}),
 	}
 	return s
 }
+
 
 // Mux returns the underlying ServeMux so callers can register routes.
 func (s *Server) Mux() *http.ServeMux {
@@ -72,6 +84,13 @@ func (s *Server) Mux() *http.ServeMux {
 func (s *Server) Start(ctx context.Context) error {
 	// Build the handler chain: admin-context → bearer auth → rate limit → mux
 	tokenSource := s.buildTokenSource()
+
+	// Launch periodic token refresh so that runtime rotation is supported
+	// without re-reading the file on every request (V1.0-SEC-22).
+	if s.cfg.Auth.TokenFile != "" {
+		go s.tokenRefreshLoop(s.cfg.Auth.TokenFile)
+	}
+
 	handler := http.Handler(s.mux)
 
 	// Apply rate limiting
@@ -145,6 +164,9 @@ func (s *Server) Start(ctx context.Context) error {
 // Shutdown returns nil and the subsequent Start will see the listener close
 // and exit cleanly.
 func (s *Server) Shutdown(ctx context.Context) error {
+	// Signal the background refresh goroutine to exit.
+	s.stopRefreshOnce.Do(func() { close(s.stopRefresh) })
+
 	s.mu.Lock()
 	hs := s.httpServer
 	s.mu.Unlock()
@@ -153,6 +175,7 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	}
 	return hs.Shutdown(ctx)
 }
+
 
 // BoundAddr returns the address the server is listening on.
 // Returns empty string if not yet started.
@@ -165,19 +188,28 @@ func (s *Server) BoundAddr() string {
 	return s.listener.Addr().String()
 }
 
-// buildTokenSource returns a function that reads the bearer token. For
-// token_file mode it re-reads the file on every call so that token rotation
-// is supported at runtime.
+// buildTokenSource returns a function that reads the bearer token.
+// For token_file mode the file is read once at construction time and
+// cached in memory; a periodic refresh goroutine (started in Start)
+// updates the cache at runtime so that token rotation is still supported
+// without performing disk I/O on every request (V1.0-SEC-22).
 func (s *Server) buildTokenSource() func() []byte {
 	if s.cfg.Auth.TokenFile != "" {
 		path := s.cfg.Auth.TokenFile
+
+		// Initial read: cache the token immediately.
+		data, err := os.ReadFile(path)
+		if err != nil {
+			s.logger.WithError(err).Error("admin: failed to read token file")
+			s.tokenCache = nil
+		} else {
+			s.tokenCache = []byte(strings.TrimSpace(string(data)))
+		}
+
 		return func() []byte {
-			data, err := os.ReadFile(path)
-			if err != nil {
-				s.logger.WithError(err).Error("admin: failed to read token file")
-				return nil
-			}
-			return []byte(strings.TrimSpace(string(data)))
+			s.tokenMu.RLock()
+			defer s.tokenMu.RUnlock()
+			return s.tokenCache
 		}
 	}
 	// Inline token (dev only)
@@ -186,6 +218,47 @@ func (s *Server) buildTokenSource() func() []byte {
 		return token
 	}
 }
+
+// refreshToken re-reads the token file, validates its permissions, and
+// updates the in-memory cache. It is called by the periodic refresh loop.
+func (s *Server) refreshToken(path string) {
+	info, err := os.Stat(path)
+	if err != nil {
+		s.logger.WithError(err).Warn("admin: failed to stat token file during refresh")
+		return
+	}
+	if info.Mode().Perm()&0077 != 0 {
+		s.logger.WithFields(logrus.Fields{
+			"path": path,
+			"mode": info.Mode().Perm(),
+		}).Warn("admin: token file permissions have been relaxed")
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		s.logger.WithError(err).Warn("admin: failed to re-read token file")
+		return
+	}
+	trimmed := []byte(strings.TrimSpace(string(data)))
+	s.tokenMu.Lock()
+	s.tokenCache = trimmed
+	s.tokenMu.Unlock()
+}
+
+// tokenRefreshLoop runs a ticker that refreshes the cached token every
+// 30 seconds. It exits when stopRefresh is closed.
+func (s *Server) tokenRefreshLoop(path string) {
+	ticker := time.NewTicker(30 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ticker.C:
+			s.refreshToken(path)
+		case <-s.stopRefresh:
+			return
+		}
+	}
+}
+
 
 // adminContextMiddleware sets the admin context flag on every request.
 func adminContextMiddleware(next http.Handler) http.Handler {

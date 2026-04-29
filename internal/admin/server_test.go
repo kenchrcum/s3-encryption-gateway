@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -813,6 +814,141 @@ func TestBuildTokenSource_TokenFile_Missing(t *testing.T) {
 	got := source()
 	if got != nil {
 		t.Errorf("buildTokenSource() with missing file should return nil, got: %q", string(got))
+	}
+}
+
+// testHook is a logrus hook that captures warning messages for tests.
+type testHook struct {
+	mu       sync.Mutex
+	warnings []string
+}
+
+func (h *testHook) Levels() []logrus.Level { return logrus.AllLevels }
+func (h *testHook) Fire(entry *logrus.Entry) error {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if entry.Level == logrus.WarnLevel {
+		h.warnings = append(h.warnings, entry.Message)
+	}
+	return nil
+}
+
+// TestBuildTokenSource_TokenFile_Cached verifies that the token file is read
+// once at construction time and subsequent calls return the cached value
+// without re-reading the disk (V1.0-SEC-22).
+func TestBuildTokenSource_TokenFile_Cached(t *testing.T) {
+	tmpFile, err := os.CreateTemp(t.TempDir(), "admin-token-*.txt")
+	if err != nil {
+		t.Fatalf("failed to create temp file: %v", err)
+	}
+	token := "initial-token"
+	if _, err := tmpFile.WriteString(token + "\n"); err != nil {
+		t.Fatal(err)
+	}
+	tmpFile.Close()
+
+	cfg := config.AdminConfig{
+		Auth: config.AdminAuthConfig{
+			TokenFile: tmpFile.Name(),
+		},
+	}
+	s := NewServer(cfg, testLogger())
+	source := s.buildTokenSource()
+
+	if got := string(source()); got != token {
+		t.Fatalf("initial token = %q, want %q", got, token)
+	}
+
+	// Overwrite file with a new token; the cached source must still return
+	// the old value because it does not re-read on every call.
+	if err := os.WriteFile(tmpFile.Name(), []byte("new-token\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	if got := string(source()); got != token {
+		t.Fatalf("cached token should remain %q after file change, got %q", token, got)
+	}
+}
+
+// TestRefreshToken_UpdatesCache verifies that calling refreshToken explicitly
+// updates the cached token value.
+func TestRefreshToken_UpdatesCache(t *testing.T) {
+	tmpFile, err := os.CreateTemp(t.TempDir(), "admin-token-*.txt")
+	if err != nil {
+		t.Fatalf("failed to create temp file: %v", err)
+	}
+	if err := os.WriteFile(tmpFile.Name(), []byte("old-token\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := config.AdminConfig{
+		Auth: config.AdminAuthConfig{
+			TokenFile: tmpFile.Name(),
+		},
+	}
+	s := NewServer(cfg, testLogger())
+	source := s.buildTokenSource()
+
+	if got := string(source()); got != "old-token" {
+		t.Fatalf("initial token = %q, want old-token", got)
+	}
+
+	if err := os.WriteFile(tmpFile.Name(), []byte("refreshed-token\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	s.refreshToken(tmpFile.Name())
+
+	if got := string(source()); got != "refreshed-token" {
+		t.Fatalf("refreshed token = %q, want refreshed-token", got)
+	}
+}
+
+// TestRefreshToken_PermissionWarning verifies that when the token file
+// permissions are relaxed (group/other readable) a warning is emitted.
+func TestRefreshToken_PermissionWarning(t *testing.T) {
+	tmpFile, err := os.CreateTemp(t.TempDir(), "admin-token-*.txt")
+	if err != nil {
+		t.Fatalf("failed to create temp file: %v", err)
+	}
+	if err := os.WriteFile(tmpFile.Name(), []byte("token\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	hook := &testHook{}
+	logger := testLogger()
+	logger.AddHook(hook)
+
+	cfg := config.AdminConfig{
+		Auth: config.AdminAuthConfig{
+			TokenFile: tmpFile.Name(),
+		},
+	}
+	s := NewServer(cfg, logger)
+	// Initial buildTokenSource read with 0600 should not produce a warning.
+	s.buildTokenSource()
+
+	// Relax permissions to 0644 (group/other read).
+	if err := os.Chmod(tmpFile.Name(), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	s.refreshToken(tmpFile.Name())
+
+	hook.mu.Lock()
+	defer hook.mu.Unlock()
+	if len(hook.warnings) == 0 {
+		t.Fatal("expected warning for relaxed token file permissions, got none")
+	}
+	found := false
+	for _, w := range hook.warnings {
+		if strings.Contains(w, "relaxed") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("expected warning containing 'relaxed', got: %v", hook.warnings)
 	}
 }
 
