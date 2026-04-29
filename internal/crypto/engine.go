@@ -451,6 +451,47 @@ func (e *engine) Encrypt(reader io.Reader, metadata map[string]string) (io.Reade
 	}
 	defer zeroBytes(key)
 
+	// Prepare encryption metadata early so we can detect fallback before
+	// allocating the ciphertext buffer.  This avoids encrypting the payload
+	// twice when the metadata must be stored inside the object body.
+	encMetadata := make(map[string]string)
+	if metadata != nil {
+		for k, v := range metadata {
+			encMetadata[k] = v
+		}
+	}
+	if compressionMetadata != nil {
+		for k, v := range compressionMetadata {
+			encMetadata[k] = v
+		}
+	}
+	encMetadata[MetaEncrypted] = "true"
+	encMetadata[MetaAlgorithm] = algorithm
+	encMetadata[MetaKeySalt] = encodeBase64(salt)
+	encMetadata[MetaIV] = encodeBase64(nonce)
+	encMetadata[MetaOriginalSize] = fmt.Sprintf("%d", originalSize)
+	encMetadata[MetaOriginalETag] = originalETag
+	if contentType != "" {
+		encMetadata[MetaContentType] = contentType
+	}
+	if envelope != nil {
+		encMetadata[MetaKeyVersion] = fmt.Sprintf("%d", envelope.KeyVersion)
+		if envelope.KeyID != "" {
+			encMetadata[MetaKMSKeyID] = envelope.KeyID
+		}
+		if envelope.Provider != "" {
+			encMetadata[MetaKMSProvider] = envelope.Provider
+		}
+		encMetadata[MetaWrappedKeyCiphertext] = encodeBase64(envelope.Ciphertext)
+	} else if kv, ok := metadata[MetaKeyVersion]; ok && kv != "" {
+		encMetadata[MetaKeyVersion] = kv
+	}
+
+	// Check if we need fallback metadata storage before encrypting.
+	if e.needsMetadataFallback(encMetadata) {
+		return e.encryptWithMetadataFallback(plaintext, encMetadata, contentType, originalSize, originalETag)
+	}
+
 	// Create cipher using selected algorithm
 	aeadCipher, err := createAEADCipher(algorithm, key)
 	if err != nil {
@@ -498,53 +539,6 @@ func (e *engine) Encrypt(reader io.Reader, metadata map[string]string) (io.Reade
 
 	// Create encrypted reader from ciphertext
 	encryptedReader := bytes.NewReader(ciphertext)
-
-	// Prepare encryption metadata
-	encMetadata := make(map[string]string)
-	if metadata != nil {
-		// Copy original metadata
-		for k, v := range metadata {
-			encMetadata[k] = v
-		}
-	}
-
-	// Merge compression metadata if compression was applied
-	if compressionMetadata != nil {
-		for k, v := range compressionMetadata {
-			encMetadata[k] = v
-		}
-	}
-
-	// Add encryption markers
-	encMetadata[MetaEncrypted] = "true"
-	encMetadata[MetaAlgorithm] = algorithm
-	encMetadata[MetaKeySalt] = encodeBase64(salt)
-	encMetadata[MetaIV] = encodeBase64(nonce)
-	encMetadata[MetaOriginalSize] = fmt.Sprintf("%d", originalSize)
-	encMetadata[MetaOriginalETag] = originalETag
-	// Store Content-Type in encryption metadata so it survives S3 round-trip
-	if contentType != "" {
-		encMetadata[MetaContentType] = contentType
-	}
-	if envelope != nil {
-		encMetadata[MetaKeyVersion] = fmt.Sprintf("%d", envelope.KeyVersion)
-		if envelope.KeyID != "" {
-			encMetadata[MetaKMSKeyID] = envelope.KeyID
-		}
-		if envelope.Provider != "" {
-			encMetadata[MetaKMSProvider] = envelope.Provider
-		}
-		encMetadata[MetaWrappedKeyCiphertext] = encodeBase64(envelope.Ciphertext)
-	} else if kv, ok := metadata[MetaKeyVersion]; ok && kv != "" {
-		encMetadata[MetaKeyVersion] = kv
-	}
-
-	// Note: Authentication tag is included in the ciphertext by GCM.Seal
-
-	// Check if we need fallback metadata storage
-	if e.needsMetadataFallback(encMetadata) {
-		return e.encryptWithMetadataFallback(plaintext, encMetadata, contentType, originalSize, originalETag)
-	}
 
 	// Compact metadata according to provider profile
 	compactedMetadata, err := e.compactor.CompactMetadata(encMetadata)
@@ -1092,11 +1086,18 @@ func (e *engine) encryptChunkedWithMetadataFallback(ctx context.Context, reader 
 	metadataLenBytes[2] = byte(metadataLen >> 8)
 	metadataLenBytes[3] = byte(metadataLen)
 
-	// Prepare data to encrypt: metadata + chunked encrypted data
-	dataToEncrypt := make([]byte, 0, len(metadataLenBytes)+len(metadataJSON)+len(chunkedData))
-	dataToEncrypt = append(dataToEncrypt, metadataLenBytes...)
-	dataToEncrypt = append(dataToEncrypt, metadataJSON...)
-	dataToEncrypt = append(dataToEncrypt, chunkedData...)
+	// Build a single plaintext buffer for the outer AEAD Seal call to avoid
+	// holding an extra copy of the chunked ciphertext (chunkedBuf + dataToEncrypt).
+	totalLen := len(metadataLenBytes) + len(metadataJSON) + len(chunkedData)
+	dataToEncrypt := make([]byte, totalLen)
+	copy(dataToEncrypt, metadataLenBytes)
+	copy(dataToEncrypt[len(metadataLenBytes):], metadataJSON)
+	copy(dataToEncrypt[len(metadataLenBytes)+len(metadataJSON):], chunkedData)
+
+	// Explicitly drop references to the separate chunked ciphertext buffer so
+	// the GC can reclaim it before Seal allocates the final ciphertext.
+	chunkedData = nil
+	chunkedBuf = bytes.Buffer{}
 
 	// Build AAD for authentication
 	aadMap := map[string]string{
@@ -1424,8 +1425,11 @@ func (e *engine) needsMetadataFallback(metadata map[string]string) bool {
 
 // encryptWithMetadataFallback encrypts data with metadata stored in object body
 func (e *engine) encryptWithMetadataFallback(plaintext []byte, fullMetadata map[string]string, contentType string, originalSize int64, originalETag string) (io.Reader, map[string]string, error) {
-	// Apply compression if enabled (same logic as normal encryption)
-	var dataToEncrypt io.Reader = bytes.NewReader(plaintext)
+	// Apply compression if enabled (same logic as normal encryption).
+	// Read the (possibly compressed) payload into a single byte slice so we
+	// can build the AEAD plaintext in one allocation and avoid holding
+	// multiple full-size copies of the object.
+	data := plaintext
 	compressionMetadata := make(map[string]string)
 	if e.compressionEngine != nil {
 		compressedReader, compMeta, err := e.compressionEngine.Compress(bytes.NewReader(plaintext), contentType, originalSize)
@@ -1433,15 +1437,13 @@ func (e *engine) encryptWithMetadataFallback(plaintext []byte, fullMetadata map[
 			return nil, nil, fmt.Errorf("failed to compress data: %w", err)
 		}
 		if compMeta != nil {
-			// Compression was applied and was beneficial
+			// Compression was applied and was beneficial.
 			compressionMetadata = compMeta
-			dataToEncrypt = compressedReader
-			// Read compressed data
 			compressedData, err := io.ReadAll(compressedReader)
 			if err != nil {
 				return nil, nil, fmt.Errorf("failed to read compressed data: %w", err)
 			}
-			dataToEncrypt = bytes.NewReader(compressedData)
+			data = compressedData
 		}
 	}
 
@@ -1494,25 +1496,18 @@ func (e *engine) encryptWithMetadataFallback(plaintext []byte, fullMetadata map[
 		return nil, nil, fmt.Errorf("failed to encode metadata: %w", err)
 	}
 
-	// Create object format: [metadata_length][metadata_json][compressed_data]
+	// Build a single plaintext buffer for the AEAD Seal call to avoid holding
+	// intermediate copies (finalData + dataToEncryptFinal) on top of the
+	// caller's plaintext slice.
 	metadataLen := uint32(len(metadataJSON))
-	metadataLenBytes := make([]byte, 4) // 4 bytes for length
-	metadataLenBytes[0] = byte(metadataLen >> 24)
-	metadataLenBytes[1] = byte(metadataLen >> 16)
-	metadataLenBytes[2] = byte(metadataLen >> 8)
-	metadataLenBytes[3] = byte(metadataLen)
-
-	// Read the data to encrypt (may be compressed)
-	finalData, err := io.ReadAll(dataToEncrypt)
-	if err != nil {
-		return nil, nil, fmt.Errorf("failed to read data for encryption: %w", err)
-	}
-
-	// Prepare data to encrypt: metadata + final data (compressed or original)
-	dataToEncryptFinal := make([]byte, 0, len(metadataLenBytes)+len(metadataJSON)+len(finalData))
-	dataToEncryptFinal = append(dataToEncryptFinal, metadataLenBytes...)
-	dataToEncryptFinal = append(dataToEncryptFinal, metadataJSON...)
-	dataToEncryptFinal = append(dataToEncryptFinal, finalData...)
+	ptSize := 4 + len(metadataJSON) + len(data)
+	pt := make([]byte, ptSize)
+	pt[0] = byte(metadataLen >> 24)
+	pt[1] = byte(metadataLen >> 16)
+	pt[2] = byte(metadataLen >> 8)
+	pt[3] = byte(metadataLen)
+	copy(pt[4:], metadataJSON)
+	copy(pt[4+len(metadataJSON):], data)
 
 	// Build AAD for authentication
 	aad := buildAAD(algorithm, salt, nonce, map[string]string{
@@ -1521,7 +1516,10 @@ func (e *engine) encryptWithMetadataFallback(plaintext []byte, fullMetadata map[
 	})
 
 	// Encrypt the combined data
-	ciphertext := aeadCipher.Seal(nil, nonce, dataToEncryptFinal, aad)
+	ciphertext := aeadCipher.Seal(nil, nonce, pt, aad)
+
+	// Zeroize the intermediate plaintext buffer to minimise key material lifetime.
+	zeroBytes(pt)
 
 	// Create minimal header metadata
 	minimalMetadata := map[string]string{
