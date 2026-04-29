@@ -459,12 +459,13 @@ type AuthConfig struct {
 // gated by bearer-token authentication with constant-time comparison.
 // When enabled on a non-loopback address, TLS must be enabled.
 type AdminConfig struct {
-	Enabled   bool                 `yaml:"enabled" env:"ADMIN_ENABLED"`
-	Address   string               `yaml:"address" env:"ADMIN_ADDRESS"`
-	TLS       AdminTLSConfig       `yaml:"tls"`
-	Auth      AdminAuthConfig      `yaml:"auth"`
-	RateLimit AdminRateLimitConfig `yaml:"rate_limit"`
-	Profiling AdminProfilingConfig `yaml:"profiling"`
+	Enabled        bool                 `yaml:"enabled" env:"ADMIN_ENABLED"`
+	Address        string               `yaml:"address" env:"ADMIN_ADDRESS"`
+	MaxHeaderBytes int                  `yaml:"max_header_bytes" env:"ADMIN_MAX_HEADER_BYTES"`
+	TLS            AdminTLSConfig       `yaml:"tls"`
+	Auth           AdminAuthConfig      `yaml:"auth"`
+	RateLimit      AdminRateLimitConfig `yaml:"rate_limit"`
+	Profiling      AdminProfilingConfig `yaml:"profiling"`
 }
 
 // AdminProfilingConfig controls the /admin/debug/pprof/* routes.
@@ -639,8 +640,9 @@ func LoadConfig(path string) (*Config, error) {
 			ClockSkewTolerance: 15 * time.Minute,
 		},
 		Admin: AdminConfig{
-			Enabled: false,
-			Address: "127.0.0.1:8081",
+			Enabled:        false,
+			Address:        "127.0.0.1:8081",
+			MaxHeaderBytes: 64 * 1024, // 64 KB — admin API has no need for large headers
 			Auth: AdminAuthConfig{
 				Type: "bearer",
 			},

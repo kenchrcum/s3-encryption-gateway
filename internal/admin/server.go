@@ -86,12 +86,18 @@ func (s *Server) Start(ctx context.Context) error {
 	// Set admin context flag on every request
 	handler = adminContextMiddleware(handler)
 
+	maxHeaderBytes := s.cfg.MaxHeaderBytes
+	if maxHeaderBytes <= 0 {
+		maxHeaderBytes = 64 * 1024 // 64 KB default
+	}
+
 	httpServer := &http.Server{
 		Handler:           handler,
 		ReadTimeout:       15 * time.Second,
 		WriteTimeout:      15 * time.Second,
 		IdleTimeout:       60 * time.Second,
 		ReadHeaderTimeout: 10 * time.Second,
+		MaxHeaderBytes:    maxHeaderBytes,
 	}
 
 	listener, err := net.Listen("tcp", s.cfg.Address)

@@ -597,6 +597,122 @@ func TestServer_StartShutdown(t *testing.T) {
 	}
 }
 
+func TestServer_MaxHeaderBytes(t *testing.T) {
+	cfg := config.AdminConfig{
+		Address:        "127.0.0.1:0",
+		MaxHeaderBytes: 32 * 1024, // explicit 32 KB
+		Auth: config.AdminAuthConfig{
+			Token: randomToken(t),
+		},
+	}
+	s := NewServer(cfg, testLogger())
+
+	s.Mux().HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- s.Start(ctx)
+	}()
+
+	// Wait for binding
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if s.BoundAddr() != "" {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	if s.BoundAddr() == "" {
+		t.Fatal("Server did not bind within 3 seconds")
+	}
+
+	if s.httpServer == nil {
+		t.Fatal("httpServer not initialized")
+	}
+	if s.httpServer.MaxHeaderBytes != 32*1024 {
+		t.Errorf("MaxHeaderBytes = %d, want %d", s.httpServer.MaxHeaderBytes, 32*1024)
+	}
+
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer shutdownCancel()
+	if err := s.Shutdown(shutdownCtx); err != nil {
+		t.Errorf("Shutdown() error: %v", err)
+	}
+
+	select {
+	case err := <-errCh:
+		if err != nil && err != http.ErrServerClosed {
+			t.Errorf("Start() error: %v", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Error("Start() did not exit after Shutdown")
+	}
+}
+
+func TestServer_MaxHeaderBytes_Default(t *testing.T) {
+	cfg := config.AdminConfig{
+		Address: "127.0.0.1:0",
+		// MaxHeaderBytes left at zero → should default to 64 KB
+		Auth: config.AdminAuthConfig{
+			Token: randomToken(t),
+		},
+	}
+	s := NewServer(cfg, testLogger())
+
+	s.Mux().HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- s.Start(ctx)
+	}()
+
+	// Wait for binding
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if s.BoundAddr() != "" {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	if s.BoundAddr() == "" {
+		t.Fatal("Server did not bind within 3 seconds")
+	}
+
+	if s.httpServer == nil {
+		t.Fatal("httpServer not initialized")
+	}
+	if s.httpServer.MaxHeaderBytes != 64*1024 {
+		t.Errorf("MaxHeaderBytes = %d, want %d", s.httpServer.MaxHeaderBytes, 64*1024)
+	}
+
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer shutdownCancel()
+	if err := s.Shutdown(shutdownCtx); err != nil {
+		t.Errorf("Shutdown() error: %v", err)
+	}
+
+	select {
+	case err := <-errCh:
+		if err != nil && err != http.ErrServerClosed {
+			t.Errorf("Start() error: %v", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Error("Start() did not exit after Shutdown")
+	}
+}
+
 func TestServer_Shutdown_BeforeStart(t *testing.T) {
 	cfg := config.AdminConfig{
 		Address: "127.0.0.1:0",
