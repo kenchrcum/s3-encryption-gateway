@@ -7,6 +7,7 @@ import (
 	"encoding/xml"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"strings"
@@ -422,11 +423,7 @@ func (c *s3Client) PutObject(ctx context.Context, bucket, key string, reader io.
 		for name, keys := range keyMappings {
 			for _, ck := range keys {
 				if v, ok := convertedMeta[ck]; ok {
-					preview := v
-					if len(preview) > 30 {
-						preview = preview[:30] + "..."
-					}
-					fmt.Printf("DEBUG PutObject %s/%s %s[%s]: %s (len=%d)\n", bucket, key, name, ck, preview, len(v))
+					slog.Debug("s3.PutObject metadata", "bucket", bucket, "key", key, "field", name, "len", len(v))
 					break // Found it, move to next
 				}
 			}
@@ -500,11 +497,7 @@ func (c *s3Client) GetObject(ctx context.Context, bucket, key string, versionID 
 		for name, keys := range keyMappings {
 			for _, ck := range keys {
 				if v, ok := metadata[ck]; ok {
-					preview := v
-					if len(preview) > 30 {
-						preview = preview[:30] + "..."
-					}
-					fmt.Printf("DEBUG GetObject %s/%s %s[%s]: %s (len=%d)\n", bucket, key, name, ck, preview, len(v))
+					slog.Debug("s3.GetObject metadata", "bucket", bucket, "key", key, "field", name, "len", len(v))
 					break // Found it, move to next
 				}
 			}

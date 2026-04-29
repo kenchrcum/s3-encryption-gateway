@@ -48,6 +48,9 @@ jobs:
       - name: bench-lint (V0.6-QA-1 §5.4)
         run: bash scripts/bench-lint.sh
 
+      - name: debug-lint (V1.0-SEC-18)
+        run: bash scripts/debug-lint.sh
+
   # ── Isolation check — PR only ────────────────────────────────────────────────
   isolation-check:
     name: Test isolation check

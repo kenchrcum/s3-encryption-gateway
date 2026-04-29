@@ -242,6 +242,11 @@ lint:
 	@echo "Running linter..."
 	@golangci-lint run ./...
 
+# V1.0-SEC-18 — lint gate: no fmt.Printf in debug.Enabled blocks
+lint-debug-print:
+	@echo "Checking for forbidden fmt.Printf in debug blocks..."
+	@bash scripts/debug-lint.sh
+
 # Format code
 fmt:
 	@echo "Formatting code..."
