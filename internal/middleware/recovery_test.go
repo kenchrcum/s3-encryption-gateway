@@ -103,3 +103,43 @@ func TestRecoveryMiddleware_PreservesNormalHandling(t *testing.T) {
 		t.Errorf("expected body 'created', got %q", w.Body.String())
 	}
 }
+
+// panickingMiddleware simulates an outer middleware that panics.
+func panickingMiddleware(msg string) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			panic(msg)
+		})
+	}
+}
+
+// TestRecoveryMiddleware_OuterMiddlewarePanic verifies that when
+// RecoveryMiddleware is the outermost wrapper it catches panics that
+// originate in middleware layers outside the handler.
+func TestRecoveryMiddleware_OuterMiddlewarePanic(t *testing.T) {
+	logger := logrus.New()
+	logger.SetLevel(logrus.ErrorLevel)
+
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+
+	// Build chain: Recovery(outer) -> Panic(inner) -> handler
+	inner := panickingMiddleware("outer middleware panic")(handler)
+	outer := RecoveryMiddleware(logger)(inner)
+
+	req := httptest.NewRequest("GET", "/test", nil)
+	w := httptest.NewRecorder()
+
+	// Should not propagate panic; must return 500.
+	outer.ServeHTTP(w, req)
+
+	if w.Code != http.StatusInternalServerError {
+		t.Errorf("expected status %d, got %d", http.StatusInternalServerError, w.Code)
+	}
+
+	body := w.Body.String()
+	if body != "Internal Server Error\n" {
+		t.Errorf("expected error message, got %q", body)
+	}
+}

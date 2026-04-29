@@ -630,8 +630,11 @@ func main() {
 	middleware.SetIPExtractor(ipExtractor)
 
 	// Apply middleware
-	httpHandler := middleware.RecoveryMiddleware(logger)(router)
-	httpHandler = middleware.LoggingMiddleware(logger, &cfg.Logging)(httpHandler)
+	// RecoveryMiddleware is intentionally applied LAST so it wraps all other
+	// layers. If it were innermost, panics in outer middleware (logging,
+	// security headers, tracing, bucket validation, rate limiting) would
+	// bypass recovery and crash the server goroutine.
+	httpHandler := middleware.LoggingMiddleware(logger, &cfg.Logging)(router)
 	httpHandler = middleware.SecurityHeadersMiddleware()(httpHandler)
 
 	// Apply tracing middleware if tracing is enabled
@@ -665,6 +668,9 @@ func main() {
 			"window": cfg.RateLimit.Window,
 		}).Info("Rate limiting enabled")
 	}
+
+	// RecoveryMiddleware wraps the ENTIRE chain so panics in any layer are caught.
+	httpHandler = middleware.RecoveryMiddleware(logger)(httpHandler)
 
 	// Create HTTP server
 	server := &http.Server{
