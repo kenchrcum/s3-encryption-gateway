@@ -138,10 +138,7 @@ func (s *Server) Start(ctx context.Context) error {
 			listener.Close()
 			return fmt.Errorf("admin: failed to load TLS certificate: %w", certErr)
 		}
-		tlsCfg := &tls.Config{
-			Certificates: []tls.Certificate{tlsCert},
-			MinVersion:   tls.VersionTLS12,
-		}
+		tlsCfg := buildAdminTLSConfig(tlsCert)
 		listener = tls.NewListener(listener, tlsCfg)
 	}
 
@@ -186,6 +183,23 @@ func (s *Server) BoundAddr() string {
 		return ""
 	}
 	return s.listener.Addr().String()
+}
+
+// buildAdminTLSConfig returns a hardened tls.Config for the admin listener.
+// V1.0-SEC-23: restrict cipher suites and curve preferences to avoid
+// CBC-mode ciphers and weak curves.
+func buildAdminTLSConfig(cert tls.Certificate) *tls.Config {
+	return &tls.Config{
+		Certificates: []tls.Certificate{cert},
+		MinVersion:   tls.VersionTLS12,
+		CipherSuites: []uint16{
+			tls.TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384,
+			tls.TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384,
+			tls.TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256,
+			tls.TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256,
+		},
+		CurvePreferences: []tls.CurveID{tls.X25519, tls.CurveP256},
+	}
 }
 
 // buildTokenSource returns a function that reads the bearer token.

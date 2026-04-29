@@ -2,10 +2,19 @@ package api
 
 import (
 	"context"
+	"crypto/rand"
+	"crypto/rsa"
+	"crypto/tls"
+	"crypto/x509"
+	"crypto/x509/pkix"
+	"encoding/pem"
+	"math/big"
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/kenneth/s3-encryption-gateway/internal/config"
 	"github.com/sirupsen/logrus"
@@ -277,5 +286,175 @@ func TestBuildCosmianTLSConfig_NoInsecureSkipVerify_NoWarning(t *testing.T) {
 	logOutput := buf.String()
 	if strings.Contains(logOutput, "InsecureSkipVerify is ENABLED") {
 		t.Errorf("expected no warning when InsecureSkipVerify is false, but got: %s", logOutput)
+	}
+}
+
+// generateTestCert creates a self-signed RSA certificate for TLS tests.
+func generateTestCert(t *testing.T) tls.Certificate {
+	t.Helper()
+
+	priv, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("failed to generate RSA key: %v", err)
+	}
+
+	template := x509.Certificate{
+		SerialNumber: big.NewInt(1),
+		Subject: pkix.Name{
+			Organization: []string{"Test"},
+		},
+		NotBefore:   time.Now(),
+		NotAfter:    time.Now().Add(time.Hour),
+		KeyUsage:    x509.KeyUsageKeyEncipherment | x509.KeyUsageDigitalSignature,
+		ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+		IPAddresses: []net.IP{net.IPv4(127, 0, 0, 1)},
+	}
+
+	certDER, err := x509.CreateCertificate(rand.Reader, &template, &template, &priv.PublicKey, priv)
+	if err != nil {
+		t.Fatalf("failed to create certificate: %v", err)
+	}
+
+	certPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: certDER})
+	keyPEM := pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(priv)})
+
+	cert, err := tls.X509KeyPair(certPEM, keyPEM)
+	if err != nil {
+		t.Fatalf("failed to load key pair: %v", err)
+	}
+	return cert
+}
+
+// TestBuildCosmianTLSConfig_CipherSuites verifies that the Cosmian KMS TLS
+// config contains the expected cipher suites and curve preferences (V1.0-SEC-23).
+func TestBuildCosmianTLSConfig_CipherSuites(t *testing.T) {
+	cfg := config.CosmianConfig{
+		InsecureSkipVerify: false,
+	}
+
+	tlsCfg, err := buildCosmianTLSConfig(cfg)
+	if err != nil {
+		t.Fatalf("buildCosmianTLSConfig() error: %v", err)
+	}
+	if tlsCfg == nil {
+		t.Fatal("buildCosmianTLSConfig() returned nil config")
+	}
+	if len(tlsCfg.CipherSuites) == 0 {
+		t.Error("expected non-empty CipherSuites")
+	}
+	if len(tlsCfg.CurvePreferences) == 0 {
+		t.Error("expected non-empty CurvePreferences")
+	}
+
+	// Ensure no CBC-mode cipher suites are present.
+	cbcCiphers := map[uint16]bool{
+		tls.TLS_RSA_WITH_AES_128_CBC_SHA:          true,
+		tls.TLS_RSA_WITH_AES_256_CBC_SHA:          true,
+		tls.TLS_ECDHE_ECDSA_WITH_AES_128_CBC_SHA:  true,
+		tls.TLS_ECDHE_ECDSA_WITH_AES_256_CBC_SHA:  true,
+		tls.TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA:    true,
+		tls.TLS_ECDHE_RSA_WITH_AES_256_CBC_SHA:    true,
+		tls.TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA256: true,
+	}
+	for _, cs := range tlsCfg.CipherSuites {
+		if cbcCiphers[cs] {
+			t.Errorf("CBC cipher suite found in allowed list: 0x%04x", cs)
+		}
+	}
+
+	// Verify expected ciphers are present.
+	expected := []uint16{
+		tls.TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384,
+		tls.TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384,
+		tls.TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256,
+		tls.TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256,
+	}
+	for _, exp := range expected {
+		found := false
+		for _, cs := range tlsCfg.CipherSuites {
+			if cs == exp {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("expected cipher suite 0x%04x not found in config", exp)
+		}
+	}
+
+	// Verify curve preferences.
+	expectedCurves := []tls.CurveID{tls.X25519, tls.CurveP256}
+	for _, exp := range expectedCurves {
+		found := false
+		for _, c := range tlsCfg.CurvePreferences {
+			if c == exp {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("expected curve %v not found in CurvePreferences", exp)
+		}
+	}
+}
+
+// TestBuildCosmianTLSConfig_RejectCBC verifies that a client offering only
+// CBC-mode cipher suites is rejected by the Cosmian TLS config (V1.0-SEC-23).
+func TestBuildCosmianTLSConfig_RejectCBC(t *testing.T) {
+	cfg := config.CosmianConfig{
+		InsecureSkipVerify: false,
+	}
+
+	serverConfig, err := buildCosmianTLSConfig(cfg)
+	if err != nil {
+		t.Fatalf("buildCosmianTLSConfig() error: %v", err)
+	}
+
+	// Attach a server certificate so the handshake can proceed.
+	cert := generateTestCert(t)
+	serverConfig.Certificates = []tls.Certificate{cert}
+	serverConfig.MaxVersion = tls.VersionTLS12 // force TLS 1.2 for this test
+
+	listener, err := tls.Listen("tcp", "127.0.0.1:0", serverConfig)
+	if err != nil {
+		t.Fatalf("failed to create TLS listener: %v", err)
+	}
+	defer listener.Close()
+
+	// Accept goroutine — the handshake will fail, so we just wait for close.
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		conn, err := listener.Accept()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		// Force handshake attempt by reading.
+		buf := make([]byte, 1)
+		conn.Read(buf)
+	}()
+
+	clientConfig := &tls.Config{
+		MinVersion:   tls.VersionTLS12,
+		MaxVersion:   tls.VersionTLS12,
+		CipherSuites: []uint16{
+			tls.TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA256,
+		},
+		InsecureSkipVerify: true,
+	}
+
+	conn, err := tls.Dial("tcp", listener.Addr().String(), clientConfig)
+	if err == nil {
+		conn.Close()
+		t.Fatal("expected handshake to fail with CBC-only client, but it succeeded")
+	}
+
+	// Clean up the accept goroutine.
+	listener.Close()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Log("accept goroutine did not finish in time (non-fatal)")
 	}
 }
