@@ -32,34 +32,41 @@ type Sink interface {
 
 // BatchSink wraps an EventWriter and provides batching capability.
 type BatchSink struct {
-	wrapped       EventWriter
-	buffer        []*AuditEvent
-	bufferSize    int
-	flushInterval time.Duration
-	mu            sync.Mutex
-	closeChan     chan struct{}
-	wg            sync.WaitGroup
-	retryCount    int
-	retryBackoff  time.Duration
+	wrapped              EventWriter
+	buffer               []*AuditEvent
+	bufferSize           int
+	flushInterval        time.Duration
+	mu                   sync.Mutex
+	closeChan            chan struct{}
+	wg                   sync.WaitGroup
+	retryCount           int
+	retryBackoff         time.Duration
+	maxConcurrentFlushes int
+	flushSem             chan struct{}
 }
 
 // NewBatchSink creates a new batched sink.
-func NewBatchSink(wrapped EventWriter, size int, interval time.Duration, retryCount int, retryBackoff time.Duration) *BatchSink {
+func NewBatchSink(wrapped EventWriter, size int, interval time.Duration, retryCount int, retryBackoff time.Duration, maxConcurrentFlushes int) *BatchSink {
 	if size <= 0 {
 		size = 100
 	}
 	if interval <= 0 {
 		interval = 5 * time.Second
 	}
+	if maxConcurrentFlushes <= 0 {
+		maxConcurrentFlushes = 4
+	}
 
 	s := &BatchSink{
-		wrapped:       wrapped,
-		buffer:        make([]*AuditEvent, 0, size),
-		bufferSize:    size,
-		flushInterval: interval,
-		closeChan:     make(chan struct{}),
-		retryCount:    retryCount,
-		retryBackoff:  retryBackoff,
+		wrapped:              wrapped,
+		buffer:               make([]*AuditEvent, 0, size),
+		bufferSize:           size,
+		flushInterval:        interval,
+		closeChan:            make(chan struct{}),
+		retryCount:           retryCount,
+		retryBackoff:         retryBackoff,
+		maxConcurrentFlushes: maxConcurrentFlushes,
+		flushSem:             make(chan struct{}, maxConcurrentFlushes),
 	}
 
 	s.wg.Add(1)
@@ -69,19 +76,31 @@ func NewBatchSink(wrapped EventWriter, size int, interval time.Duration, retryCo
 }
 
 // WriteEvent adds an event to the batch.
+// V1.0-SEC-13 — bounded semaphore: at most maxConcurrentFlushes goroutines
+// may execute writeWithRetry concurrently. When the semaphore is saturated,
+// events are dropped and counted via droppedAuditEventsTotal.
 func (s *BatchSink) WriteEvent(event *AuditEvent) error {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 
 	s.buffer = append(s.buffer, event)
 	if len(s.buffer) >= s.bufferSize {
 		// Buffer full, take all events and flush async
 		events := s.drainBufferLocked()
-		
-		// Write asynchronously to avoid blocking the caller
-		go s.writeWithRetry(events)
-	}
 
+		select {
+		case s.flushSem <- struct{}{}:
+			s.mu.Unlock()
+			go func() {
+				defer func() { <-s.flushSem }()
+				s.writeWithRetry(events)
+			}()
+		default:
+			s.mu.Unlock()
+			droppedAuditEventsTotal.Add(float64(len(events)))
+		}
+		return nil
+	}
+	s.mu.Unlock()
 	return nil
 }
 

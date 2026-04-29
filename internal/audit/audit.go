@@ -146,7 +146,7 @@ func NewLoggerFromConfig(cfg config.AuditConfig) (Logger, error) {
 	// Wrap with batch sink if configured
 	if cfg.Sink.BatchSize > 0 || cfg.Sink.FlushInterval > 0 {
 		// Default values handled in NewBatchSink if 0
-		writer = NewBatchSink(writer, cfg.Sink.BatchSize, cfg.Sink.FlushInterval, cfg.Sink.RetryCount, cfg.Sink.RetryBackoff)
+		writer = NewBatchSink(writer, cfg.Sink.BatchSize, cfg.Sink.FlushInterval, cfg.Sink.RetryCount, cfg.Sink.RetryBackoff, cfg.Sink.MaxConcurrentFlushes)
 	}
 
 	return NewLoggerWithRedaction(cfg.MaxEvents, writer, cfg.RedactMetadataKeys), nil

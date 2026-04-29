@@ -384,8 +384,12 @@ type SinkConfig struct {
 	Headers       map[string]string `yaml:"headers"` // Custom headers for HTTP sink
 	BatchSize     int               `yaml:"batch_size" env:"AUDIT_SINK_BATCH_SIZE"`
 	FlushInterval time.Duration     `yaml:"flush_interval" env:"AUDIT_SINK_FLUSH_INTERVAL"`
-	RetryCount    int               `yaml:"retry_count" env:"AUDIT_SINK_RETRY_COUNT"`
-	RetryBackoff  time.Duration     `yaml:"retry_backoff" env:"AUDIT_SINK_RETRY_BACKOFF"`
+	RetryCount           int               `yaml:"retry_count" env:"AUDIT_SINK_RETRY_COUNT"`
+	RetryBackoff         time.Duration     `yaml:"retry_backoff" env:"AUDIT_SINK_RETRY_BACKOFF"`
+	// MaxConcurrentFlushes bounds the number of concurrent async flush
+	// goroutines spawned by BatchSink.WriteEvent. V1.0-SEC-13.
+	// Default: 4
+	MaxConcurrentFlushes int `yaml:"max_concurrent_flushes" env:"AUDIT_SINK_MAX_CONCURRENT_FLUSHES"`
 	// HTTP transport configuration for HTTP sink (V1.0-SEC-8)
 	HTTP HTTPTransportConfig `yaml:"http"`
 }

@@ -38,7 +38,7 @@ func (w *mockWriter) WriteBatch(events []*AuditEvent) error {
 
 func TestBatchSink(t *testing.T) {
 	mock := &mockWriter{}
-	sink := NewBatchSink(mock, 5, 100*time.Millisecond, 0, 0)
+	sink := NewBatchSink(mock, 5, 100*time.Millisecond, 0, 0, 0)
 
 	// Send 3 events (less than batch size)
 	for i := 0; i < 3; i++ {
@@ -163,7 +163,7 @@ func TestBatchSink_WriteWithRetry_FailingWriter(t *testing.T) {
 	errWriter := &errorWriter{err: fmt.Errorf("write failed")}
 
 	// Create a BatchSink with 1 retry and no delay.
-	bs := NewBatchSink(errWriter, 5, 100*time.Millisecond, 1, time.Nanosecond)
+	bs := NewBatchSink(errWriter, 5, 100*time.Millisecond, 1, time.Nanosecond, 0)
 	defer bs.Close()
 
 	// Call writeWithRetry directly since we're in the same package.
@@ -386,6 +386,84 @@ func TestHTTPSink_StructuredLogging(t *testing.T) {
 	if err != nil {
 		t.Errorf("unexpected error: %v", err)
 	}
+}
+
+// blockingWriter blocks all WriteBatch calls until unblock is closed,
+// allowing precise counting of concurrent flush operations.
+type blockingWriter struct {
+	mu      sync.Mutex
+	started int
+	unblock chan struct{}
+}
+
+func (w *blockingWriter) WriteBatch(events []*AuditEvent) error {
+	w.mu.Lock()
+	w.started++
+	w.mu.Unlock()
+	<-w.unblock
+	return nil
+}
+
+func (w *blockingWriter) WriteEvent(event *AuditEvent) error {
+	return w.WriteBatch([]*AuditEvent{event})
+}
+
+// TestBatchSink_BoundedConcurrentFlushes verifies that at most
+// maxConcurrentFlushes goroutines run writeWithRetry concurrently.
+// V1.0-SEC-13.
+func TestBatchSink_BoundedConcurrentFlushes(t *testing.T) {
+	unblock := make(chan struct{})
+	bw := &blockingWriter{unblock: unblock}
+	// maxConcurrentFlushes=2, bufferSize=1 so every event triggers a flush attempt
+	sink := NewBatchSink(bw, 1, 100*time.Millisecond, 0, 0, 2)
+
+	// Send 5 events rapidly; semaphore only has 2 slots
+	for i := 0; i < 5; i++ {
+		sink.WriteEvent(&AuditEvent{Operation: fmt.Sprintf("op-%d", i)})
+	}
+
+	// Give goroutines time to start
+	time.Sleep(50 * time.Millisecond)
+
+	bw.mu.Lock()
+	started := bw.started
+	bw.mu.Unlock()
+
+	if started > 2 {
+		t.Errorf("expected at most 2 concurrent flushes, got %d", started)
+	}
+
+	close(unblock)
+	sink.Close()
+}
+
+// TestBatchSink_SemaphoreSaturationDropsEvents verifies that when the
+// semaphore is full, excess flushes are dropped and counted.
+// V1.0-SEC-13.
+func TestBatchSink_SemaphoreSaturationDropsEvents(t *testing.T) {
+	unblock := make(chan struct{})
+	bw := &blockingWriter{unblock: unblock}
+	// maxConcurrentFlushes=1, bufferSize=1
+	sink := NewBatchSink(bw, 1, 100*time.Millisecond, 0, 0, 1)
+
+	// Send 3 events rapidly; 1 starts flushing, 2 are dropped
+	for i := 0; i < 3; i++ {
+		sink.WriteEvent(&AuditEvent{Operation: fmt.Sprintf("op-%d", i)})
+	}
+
+	// Give goroutines time to start
+	time.Sleep(50 * time.Millisecond)
+
+	bw.mu.Lock()
+	started := bw.started
+	bw.mu.Unlock()
+
+	if started != 1 {
+		t.Errorf("expected exactly 1 flush to start, got %d", started)
+	}
+
+	close(unblock)
+	sink.Close()
 }
 
 // TestHTTPSinkWithConfig_DefaultLogger uses default logger when not set
