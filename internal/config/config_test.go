@@ -749,6 +749,78 @@ func TestValidateAdminTokenLength(t *testing.T) {
 	}
 }
 
+// ---- admin token file permission tests (V1.0-SEC-28) -----------------------
+
+func TestValidate_AdminTokenFilePermissions(t *testing.T) {
+	t.Run("symlink rejected", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		tokenFile := tmpDir + "/token"
+		targetFile := tmpDir + "/real_token"
+		if err := os.WriteFile(targetFile, []byte(strings.Repeat("a", 64)), 0600); err != nil {
+			t.Fatalf("write target: %v", err)
+		}
+		if err := os.Symlink(targetFile, tokenFile); err != nil {
+			t.Fatalf("symlink: %v", err)
+		}
+
+		cfg := minValidConfig()
+		cfg.Admin.Enabled = true
+		cfg.Admin.Address = "127.0.0.1:8081"
+		cfg.Admin.Auth.TokenFile = tokenFile
+		cfg.Admin.RateLimit.RequestsPerMinute = 30
+
+		err := cfg.Validate()
+		if err == nil {
+			t.Fatal("expected error for symlink token file, got nil")
+		}
+		if !strings.Contains(err.Error(), "symbolic link") {
+			t.Errorf("expected 'symbolic link' error, got: %v", err)
+		}
+	})
+
+	t.Run("regular file with correct permissions passes", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		tokenFile := tmpDir + "/token"
+		if err := os.WriteFile(tokenFile, []byte(strings.Repeat("a", 64)), 0600); err != nil {
+			t.Fatalf("write token: %v", err)
+		}
+
+		cfg := minValidConfig()
+		cfg.Admin.Enabled = true
+		cfg.Admin.Address = "127.0.0.1:8081"
+		cfg.Admin.Auth.TokenFile = tokenFile
+		cfg.Admin.Auth.Type = "bearer"
+		cfg.Admin.RateLimit.RequestsPerMinute = 30
+
+		err := cfg.Validate()
+		if err != nil {
+			t.Errorf("expected no error for 0600 token file, got: %v", err)
+		}
+	})
+
+	t.Run("regular file with 0644 permissions rejected", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		tokenFile := tmpDir + "/token"
+		if err := os.WriteFile(tokenFile, []byte(strings.Repeat("a", 64)), 0644); err != nil {
+			t.Fatalf("write token: %v", err)
+		}
+
+		cfg := minValidConfig()
+		cfg.Admin.Enabled = true
+		cfg.Admin.Address = "127.0.0.1:8081"
+		cfg.Admin.Auth.TokenFile = tokenFile
+		cfg.Admin.RateLimit.RequestsPerMinute = 30
+
+		err := cfg.Validate()
+		if err == nil {
+			t.Fatal("expected error for 0644 token file, got nil")
+		}
+		if !strings.Contains(err.Error(), "too permissive") {
+			t.Errorf("expected 'too permissive' error, got: %v", err)
+		}
+	})
+}
+
 // ---- isLoopbackAddress tests -----------------------------------------------
 
 func TestIsLoopbackAddress(t *testing.T) {

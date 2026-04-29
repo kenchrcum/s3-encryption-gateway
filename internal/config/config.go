@@ -4,6 +4,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"fmt"
+	"io/fs"
 	"net"
 	"os"
 	"os/signal"
@@ -381,6 +382,10 @@ type SinkConfig struct {
 	Type          string            `yaml:"type" env:"AUDIT_SINK_TYPE"` // stdout, file, http
 	Endpoint      string            `yaml:"endpoint" env:"AUDIT_SINK_ENDPOINT"`
 	FilePath      string            `yaml:"file_path" env:"AUDIT_SINK_FILE_PATH"`
+	// FileMode sets the Unix permission bits for the audit log file.
+	// Default 0 means use the secure default (0600). Operators may set e.g. 0640.
+	// V1.0-SEC-26.
+	FileMode      fs.FileMode       `yaml:"file_mode" env:"AUDIT_SINK_FILE_MODE"`
 	Headers       map[string]string `yaml:"headers"` // Custom headers for HTTP sink
 	BatchSize     int               `yaml:"batch_size" env:"AUDIT_SINK_BATCH_SIZE"`
 	FlushInterval time.Duration     `yaml:"flush_interval" env:"AUDIT_SINK_FLUSH_INTERVAL"`
@@ -925,6 +930,12 @@ func loadFromEnv(config *Config) {
 	if v := os.Getenv("AUDIT_SINK_FILE_PATH"); v != "" {
 		config.Audit.Sink.FilePath = v
 	}
+	// V1.0-SEC-26 — parse octal file-mode for audit log (e.g. "0640")
+	if v := os.Getenv("AUDIT_SINK_FILE_MODE"); v != "" {
+		if n, err := strconv.ParseUint(v, 8, 32); err == nil {
+			config.Audit.Sink.FileMode = fs.FileMode(n)
+		}
+	}
 	if v := os.Getenv("AUDIT_SINK_BATCH_SIZE"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n > 0 {
 			config.Audit.Sink.BatchSize = n
@@ -1366,10 +1377,13 @@ func (c *Config) Validate() error {
 
 		// Validate token minimum length (32 bytes decoded)
 		if hasTokenFile {
-			// Check file permissions
-			info, err := os.Stat(c.Admin.Auth.TokenFile)
+			// Check file permissions — use Lstat to avoid following symlinks (TOCTOU).
+			info, err := os.Lstat(c.Admin.Auth.TokenFile)
 			if err != nil {
 				return fmt.Errorf("admin.auth.token_file: %w", err)
+			}
+			if info.Mode()&os.ModeSymlink != 0 {
+				return fmt.Errorf("admin.auth.token_file must not be a symbolic link")
 			}
 			mode := info.Mode().Perm()
 			if mode&0077 != 0 {
