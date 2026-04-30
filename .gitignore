@@ -6,7 +6,8 @@ bin/
 *.dll
 *.so
 *.dylib
-server
+/server
+/migrate
 
 # Test binary
 *.test
