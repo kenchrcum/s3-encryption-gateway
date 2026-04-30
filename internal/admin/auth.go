@@ -22,12 +22,17 @@ func BearerAuthMiddleware(tokenSource func() []byte, logger *logrus.Logger) func
 			}
 
 			// Expect "Bearer <token>"
+			// Use constant-time comparison for the scheme prefix to
+			// eliminate any timing distinguisher between "wrong scheme" and
+			// "correct scheme, wrong token". The prefix "Bearer " is a public
+			// constant so the practical risk is negligible, but defense-in-depth
+			// requires the entire auth header to be handled in constant time.
 			const prefix = "Bearer "
 			if len(authHeader) <= len(prefix) {
 				writeAdminError(w, http.StatusUnauthorized, "Unauthorized", "malformed Authorization header")
 				return
 			}
-			if authHeader[:len(prefix)] != prefix {
+			if subtle.ConstantTimeCompare([]byte(authHeader[:len(prefix)]), []byte(prefix)) != 1 {
 				writeAdminError(w, http.StatusUnauthorized, "Unauthorized", "only Bearer authentication is supported")
 				return
 			}
