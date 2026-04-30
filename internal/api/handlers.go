@@ -286,6 +286,17 @@ func (h *Handler) writeS3ClientError(w http.ResponseWriter, r *http.Request, err
 // client-facing S3Error. It is deliberately total: every input produces a
 // response without consulting err.Error(). Pure function, no I/O — kept
 // separate so it can be unit-tested.
+//
+// This function intentionally returns three distinct S3
+// error codes rather than collapsing all auth failures into a single opaque
+// response. The distinct codes (SignatureDoesNotMatch, InvalidAccessKeyId,
+// AccessDenied) are required by the S3 specification and are relied upon by AWS
+// SDK clients for retry logic and user-facing diagnostics. The enumeration
+// risk is mitigated by ensuring that err.Error() — which may contain computed
+// HMAC signatures or other sensitive diagnostic detail — is NEVER included in
+// the response body; only the fixed per-class message string is written to the
+// wire. Regression coverage is provided by TestClassifyAuthError_Table and
+// TestWriteS3ClientError_NoLeakRegression in auth_error_test.go.
 func classifyAuthError(err error, resource string) *S3Error {
 	switch {
 	case errors.Is(err, ErrSignatureMismatch):

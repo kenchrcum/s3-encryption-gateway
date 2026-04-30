@@ -20,6 +20,18 @@ import (
 // response writers can use errors.Is to select the appropriate client-facing
 // response without ever reading err.Error() (which may contain sensitive
 // diagnostic detail intended only for logs).
+//
+// classifyAuthError maps these three sentinels to three
+// distinct S3 error codes (SignatureDoesNotMatch, InvalidAccessKeyId,
+// AccessDenied). This is intentional S3 specification compliance — AWS S3
+// itself returns these same distinct codes, and many AWS SDK clients use the
+// code to distinguish misconfigured credentials (InvalidAccessKeyId) from a
+// signing error (SignatureDoesNotMatch). Collapsing all auth failures into a
+// single opaque error would break legitimate SDK retry/diagnostic behaviour.
+// The mitigation against enumeration is that err.Error() (which may contain
+// computed HMAC signatures or internal detail) is NEVER included in the
+// response body; only the fixed per-class message string is returned. This is
+// enforced and regression-tested in auth_error_test.go.
 var (
 	// ErrSignatureMismatch indicates SigV4 validation failed (bad signature).
 	ErrSignatureMismatch = errors.New("signature validation failed")
