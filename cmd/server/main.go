@@ -480,6 +480,20 @@ func main() {
 		chunkedMode = true
 	}
 
+	// NEW-01: Emit a prominent startup warning when legacy (non-chunked) mode is
+	// active. In this mode Encrypt and Decrypt each call io.ReadAll on the
+	// entire object body, so a single large upload allocates roughly the object
+	// size as heap. This is a remote memory-exhaustion risk for large objects.
+	// Chunked mode streams data in fixed-size chunks and is the recommended
+	// default for all production deployments.
+	if !chunkedMode {
+		logger.Warn("SECURITY WARNING: chunked_mode is disabled. " +
+			"Encrypt and Decrypt buffer entire objects in heap memory (io.ReadAll). " +
+			"A large upload or download will allocate the full object size on the heap, " +
+			"enabling a trivial remote memory-exhaustion DoS. " +
+			"Enable encryption.chunked_mode: true in your configuration for production workloads.")
+	}
+
 	chunkSize := cfg.Encryption.ChunkSize
 	if chunkSize == 0 {
 		chunkSize = crypto.DefaultChunkSize
