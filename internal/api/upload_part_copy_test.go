@@ -6,6 +6,7 @@ import (
 	"encoding/xml"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -16,6 +17,7 @@ import (
 	"github.com/gorilla/mux"
 	"github.com/kenneth/s3-encryption-gateway/internal/config"
 	"github.com/kenneth/s3-encryption-gateway/internal/crypto"
+	"github.com/kenneth/s3-encryption-gateway/internal/s3"
 	"github.com/sirupsen/logrus"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -601,4 +603,135 @@ require_encryption: true
 		t.Fatalf("load policies: %v", err)
 	}
 	return pm
+}
+
+// infiniteReader produces an endless stream of zero bytes.
+// Used to simulate a DecryptRange output that exceeds maxCopyPartRangeBytes
+// without allocating real memory.
+type infiniteReader struct{ remaining int64 }
+
+func (r *infiniteReader) Read(p []byte) (int, error) {
+	if r.remaining <= 0 {
+		return 0, io.EOF
+	}
+	n := int64(len(p))
+	if n > r.remaining {
+		n = r.remaining
+	}
+	for i := int64(0); i < n; i++ {
+		p[i] = 0
+	}
+	r.remaining -= n
+	return int(n), nil
+}
+
+// oversizedDecryptEngine wraps a real EncryptionEngine but overrides
+// DecryptRange to return an infiniteReader that exceeds maxCopyPartRangeBytes.
+// This lets us test the V1.0-SEC-29 LimitReader guards without actually allocating
+// 5 GiB of heap.
+type oversizedDecryptEngine struct {
+	crypto.EncryptionEngine
+	returnBytes int64
+}
+
+func (e *oversizedDecryptEngine) DecryptRange(reader io.Reader, metadata map[string]string, start, end int64) (io.Reader, map[string]string, error) {
+	return &infiniteReader{remaining: e.returnBytes}, metadata, nil
+}
+
+// TestSEC29_ChunkedSourceBufferCap_uploadPartCopyChunked verifies that
+// uploadPartCopyChunked refuses to buffer a DecryptRange output larger than
+// maxCopyPartRangeBytes (5 GiB). Prior to the V1.0-SEC-29 fix, io.ReadAll was
+// called without a LimitReader, allowing an attacker-controlled source to
+// exhaust heap memory.
+func TestSEC29_ChunkedSourceBufferCap_uploadPartCopyChunked(t *testing.T) {
+	logger := logrus.New()
+	logger.SetLevel(logrus.ErrorLevel)
+
+	mockClient := newMockS3Client()
+
+	// Seed a chunked-encrypted source with a plaintext size that fits within
+	// the per-part range cap, but whose DecryptRange output is injected to
+	// exceed it via oversizedDecryptEngine.
+	srcMeta := map[string]string{
+		crypto.MetaChunkedFormat: "true",
+		crypto.MetaEncrypted:     "true",
+		crypto.MetaOriginalSize:  "1024",
+	}
+	mockClient.objects["src-bucket/chunked-key"] = make([]byte, 64)
+	mockClient.metadata["src-bucket/chunked-key"] = srcMeta
+
+	// The oversized engine returns maxCopyPartRangeBytes+1 bytes from
+	// DecryptRange, triggering the V1.0-SEC-29 limit guard.
+	realEngine, _ := crypto.NewEngine([]byte("test-password-123456"))
+	engine := &oversizedDecryptEngine{
+		EncryptionEngine: realEngine,
+		returnBytes:      maxCopyPartRangeBytes + 1,
+	}
+
+	handler := &Handler{
+		encryptionEngine: engine,
+		logger:           logger,
+		metrics:          getTestMetrics(),
+	}
+
+	_, _, err := handler.uploadPartCopyChunked(
+		context.Background(), mockClient,
+		"dst-bucket", "dst-key", "upload-id", 1,
+		"src-bucket", "chunked-key", nil,
+		&s3.CopyPartRange{First: 0, Last: 1023},
+	)
+
+	require.Error(t, err, "expected error when DecryptRange output exceeds cap")
+	assert.Contains(t, err.Error(), "exceeds maximum copy-part size",
+		"error message should identify the cap violation")
+}
+
+// TestSEC29_ChunkedSourceBufferCap_ReencryptMPU verifies that the
+// SourceClassChunked arm of uploadPartCopyReencryptMPU applies the same
+// maxCopyPartRangeBytes LimitReader guard added by V1.0-SEC-29.
+func TestSEC29_ChunkedSourceBufferCap_ReencryptMPU(t *testing.T) {
+	logger := logrus.New()
+	logger.SetLevel(logrus.ErrorLevel)
+
+	mockClient := newMockS3Client()
+
+	srcMeta := map[string]string{
+		crypto.MetaChunkedFormat: "true",
+		crypto.MetaEncrypted:     "true",
+		crypto.MetaOriginalSize:  "1024",
+	}
+	mockClient.objects["src-bucket/chunked-key"] = make([]byte, 64)
+	mockClient.metadata["src-bucket/chunked-key"] = srcMeta
+
+	realEngine, _ := crypto.NewEngine([]byte("test-password-123456"))
+	engine := &oversizedDecryptEngine{
+		EncryptionEngine: realEngine,
+		returnBytes:      maxCopyPartRangeBytes + 1,
+	}
+
+	handler := &Handler{
+		encryptionEngine: engine,
+		logger:           logger,
+		metrics:          getTestMetrics(),
+	}
+
+	sourceClass := &CopySourceMetadata{
+		Class:       SourceClassChunked,
+		IsChunked:   true,
+		IsEncrypted: true,
+		Size:        1024,
+	}
+
+	_, _, err := handler.uploadPartCopyReencryptMPU(
+		context.Background(), mockClient,
+		"dst-bucket", "dst-key", "upload-id", 1,
+		"src-bucket", "chunked-key", nil,
+		&s3.CopyPartRange{First: 0, Last: 1023},
+		sourceClass,
+		config.DefaultMaxLegacyCopySourceBytes,
+	)
+
+	require.Error(t, err, "expected error when DecryptRange output exceeds cap")
+	assert.Contains(t, err.Error(), "exceeds maximum copy-part size",
+		"error message should identify the cap violation")
 }

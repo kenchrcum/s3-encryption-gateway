@@ -527,12 +527,16 @@ func (h *Handler) uploadPartCopyChunked(ctx context.Context, s3Client s3.Client,
 
 	// Buffer into a seekable reader. Required because the backend SDK's SigV4
 	// signer must seek the body to compute the payload hash over plaintext HTTP.
-	// The memory budget is bounded by the S3 5 GiB per-part cap, and in practice
-	// by the 5 MiB – 5 GiB mainstream-client range that UploadPart already
-	// implies. See ADR 0006 §UploadPart contract.
-	decryptedBytes, err := io.ReadAll(decryptedReader)
+	// V1.0-SEC-29: bound the read to maxCopyPartRangeBytes (5 GiB, the S3 per-part
+	// maximum). DecryptRange already clips the output to the requested plaintext
+	// slice, so a well-formed request will never hit this limit; the guard
+	// prevents a crafted or corrupt source from exhausting heap memory.
+	decryptedBytes, err := io.ReadAll(io.LimitReader(decryptedReader, maxCopyPartRangeBytes+1))
 	if err != nil {
 		return nil, 0, fmt.Errorf("failed to read decrypted range: %w", err)
+	}
+	if int64(len(decryptedBytes)) > maxCopyPartRangeBytes {
+		return nil, 0, fmt.Errorf("decrypted range exceeds maximum copy-part size (%d bytes)", maxCopyPartRangeBytes)
 	}
 	bytesCopied := int64(len(decryptedBytes))
 	etag, err := s3Client.UploadPart(ctx, dstBucket, dstKey, uploadID, partNumber, bytes.NewReader(decryptedBytes), &bytesCopied)
@@ -579,11 +583,13 @@ func (h *Handler) uploadPartCopyLegacy(ctx context.Context, s3Client s3.Client,
 		return nil, 0, fmt.Errorf("failed to decrypt source object: %w", err)
 	}
 
-	// V0.6-PERF-1: intentionally buffered — legacy AEAD is a single-nonce
-	// envelope that cannot be authenticated before reading the whole ciphertext
-	// (RFC 5116 / *Serious Cryptography, 2nd Ed.* §8.4 commit-before-release
-	// rule). Streaming is non-trivially incorrect here. The cap
-	// (Server.MaxLegacyCopySourceBytes, default 256 MiB) bounds the allocation.
+	// V0.6-PERF-1 / V1.0-SEC-29: intentionally buffered — legacy AEAD is a
+	// single-nonce envelope that cannot be authenticated before reading the
+	// whole ciphertext (RFC 5116 / *Serious Cryptography, 2nd Ed.* §8.4
+	// commit-before-release rule). Streaming is non-trivially incorrect here.
+	// The LimitReader caps the allocation at maxLegacyCap+1
+	// (Server.MaxLegacyCopySourceBytes, default 256 MiB); reading one byte
+	// past the cap lets us distinguish "exactly at limit" from "over limit".
 	limited := io.LimitReader(decryptedReader, maxLegacyCap+1)
 	plaintextData, err := io.ReadAll(limited)
 	if err != nil {
@@ -728,6 +734,8 @@ func (h *Handler) uploadPartCopyReencryptMPU(
 			return nil, 0, fmt.Errorf("uploadPartCopyReencryptMPU: get plaintext source: %w", err)
 		}
 		defer r.Close()
+		// V1.0-SEC-29: LimitReader caps at maxLegacyCap+1 so we can detect over-limit
+		// objects and return errLegacySourceTooLarge rather than exhausting heap.
 		plaintextData, err = io.ReadAll(io.LimitReader(r, maxLegacyCap+1))
 		if err != nil {
 			return nil, 0, fmt.Errorf("uploadPartCopyReencryptMPU: read plaintext source: %w", err)
@@ -769,9 +777,15 @@ func (h *Handler) uploadPartCopyReencryptMPU(
 		if err != nil {
 			return nil, 0, fmt.Errorf("uploadPartCopyReencryptMPU: decrypt chunked source: %w", err)
 		}
-		plaintextData, err = io.ReadAll(decR)
+		// V1.0-SEC-29: bound to maxCopyPartRangeBytes (5 GiB). DecryptRange already
+		// clips output to the requested plaintext slice; this guard prevents a
+		// crafted/corrupt source from exhausting heap memory.
+		plaintextData, err = io.ReadAll(io.LimitReader(decR, maxCopyPartRangeBytes+1))
 		if err != nil {
 			return nil, 0, fmt.Errorf("uploadPartCopyReencryptMPU: read decrypted chunked source: %w", err)
+		}
+		if int64(len(plaintextData)) > maxCopyPartRangeBytes {
+			return nil, 0, fmt.Errorf("uploadPartCopyReencryptMPU: decrypted chunked range exceeds maximum copy-part size (%d bytes)", maxCopyPartRangeBytes)
 		}
 
 	case SourceClassLegacy:
@@ -788,6 +802,8 @@ func (h *Handler) uploadPartCopyReencryptMPU(
 		if err != nil {
 			return nil, 0, fmt.Errorf("uploadPartCopyReencryptMPU: decrypt legacy source: %w", err)
 		}
+		// V1.0-SEC-29: same rationale as SourceClassPlaintext above — LimitReader
+		// ensures the legacy buffering cap is enforced even after decryption.
 		plaintextData, err = io.ReadAll(io.LimitReader(decR, maxLegacyCap+1))
 		if err != nil {
 			return nil, 0, fmt.Errorf("uploadPartCopyReencryptMPU: read decrypted legacy: %w", err)
