@@ -49,6 +49,11 @@ const (
 	// Fallback metadata storage keys
 	MetaFallbackMode    = "x-amz-meta-encryption-fallback"
 	MetaFallbackPointer = "x-amz-meta-encryption-fallback-ptr"
+	// MetaFallbackVersion distinguishes on-disk formats for the metadata fallback path.
+	// "1" (or absent): legacy format — chunked ciphertext wrapped in a second outer AEAD Seal.
+	// "2": streaming format — raw [4-byte-BE metadata_length][metadata_json][chunked_stream],
+	//      no outer AEAD wrapper (per-chunk AEAD from the chunked layer is sufficient).
+	MetaFallbackVersion = "x-amz-meta-encryption-fallback-version"
 
 	// Legacy marker for objects encrypted before AAD was introduced.
 	// The no-AAD fallback in Decrypt is only permitted when this flag is "true".
@@ -1044,15 +1049,12 @@ func (e *engine) encryptChunkedWithMetadataFallback(ctx context.Context, reader 
 	}
 	aead := aeadCipher.(cipher.AEAD)
 
-	// Stream the source through chunked encryption directly.
-	// No plaintext buffer is held — only the encrypted output is accumulated.
+	// Build the per-chunk streaming reader. This is the only encryption layer
+	// for the fallback-v2 format; the outer AEAD Seal used by the legacy
+	// fallback-v1 format is eliminated here. Each chunk is already authenticated
+	// by the chunked AEAD, so a second full-object Seal is both redundant and
+	// forces 2× peak memory allocation (chunkedBuf + Seal output).
 	chunkedReader, manifest := newChunkedEncryptReader(reader, aead, baseIV, e.chunkSize, e.bufferPool)
-
-	var chunkedBuf bytes.Buffer
-	if _, err := io.Copy(&chunkedBuf, chunkedReader); err != nil {
-		return nil, nil, fmt.Errorf("failed to read chunked encrypted data: %w", err)
-	}
-	chunkedData := chunkedBuf.Bytes()
 
 	// Encode manifest
 	manifestEncoded, err := encodeManifest(manifest)
@@ -1060,7 +1062,7 @@ func (e *engine) encryptChunkedWithMetadataFallback(ctx context.Context, reader 
 		return nil, nil, fmt.Errorf("failed to encode manifest: %w", err)
 	}
 
-	// Update metadata with chunked encryption info
+	// Update full metadata with chunked encryption info (stored in the object body)
 	fullMetadata[MetaChunkedFormat] = "true"
 	fullMetadata[MetaAlgorithm] = algorithm
 	fullMetadata[MetaKeySalt] = encodeBase64(salt)
@@ -1085,52 +1087,39 @@ func (e *engine) encryptChunkedWithMetadataFallback(ctx context.Context, reader 
 		fullMetadata[MetaWrappedKeyCiphertext] = encodeBase64(envelope.Ciphertext)
 	}
 
-	// Serialize full metadata to JSON
+	// Serialize full metadata to JSON (stored in the object body as a prefix)
 	metadataJSON, err := encodeMetadataToJSON(fullMetadata)
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to encode metadata: %w", err)
 	}
 
-	// Create object format: [metadata_length][metadata_json][chunked_encrypted_data]
+	// Build the 4-byte big-endian metadata-length header.
+	// This is the only allocation in the encrypt hot path; it is O(1) regardless
+	// of object size, as opposed to the legacy path which allocated O(objectSize).
 	metadataLen := uint32(len(metadataJSON))
-	metadataLenBytes := make([]byte, 4)
-	metadataLenBytes[0] = byte(metadataLen >> 24)
-	metadataLenBytes[1] = byte(metadataLen >> 16)
-	metadataLenBytes[2] = byte(metadataLen >> 8)
-	metadataLenBytes[3] = byte(metadataLen)
-
-	// Build a single plaintext buffer for the outer AEAD Seal call to avoid
-	// holding an extra copy of the chunked ciphertext (chunkedBuf + dataToEncrypt).
-	totalLen := len(metadataLenBytes) + len(metadataJSON) + len(chunkedData)
-	dataToEncrypt := make([]byte, totalLen)
-	copy(dataToEncrypt, metadataLenBytes)
-	copy(dataToEncrypt[len(metadataLenBytes):], metadataJSON)
-	copy(dataToEncrypt[len(metadataLenBytes)+len(metadataJSON):], chunkedData)
-
-	// Explicitly drop references to the separate chunked ciphertext buffer so
-	// the GC can reclaim it before Seal allocates the final ciphertext.
-	chunkedData = nil
-	chunkedBuf = bytes.Buffer{}
-
-	// Build AAD for authentication
-	aadMap := map[string]string{
-		"Content-Type": contentType,
+	headerBuf := []byte{
+		byte(metadataLen >> 24),
+		byte(metadataLen >> 16),
+		byte(metadataLen >> 8),
+		byte(metadataLen),
 	}
-	if originalSize > 0 {
-		aadMap[MetaOriginalSize] = fmt.Sprintf("%d", originalSize)
-	}
-	aad := buildAAD(algorithm, salt, baseIV, aadMap)
 
-	// Encrypt the combined data
-	ciphertext := aead.Seal(nil, baseIV, dataToEncrypt, aad)
+	// Stream: [4-byte header][metadata JSON][chunked ciphertext stream]
+	// Peak memory ≈ len(headerBuf) + len(metadataJSON) — bounded by metadata, not by object size.
+	streamingReader := io.MultiReader(
+		bytes.NewReader(headerBuf),
+		bytes.NewReader(metadataJSON),
+		chunkedReader,
+	)
 
-	// Create minimal header metadata
+	// Create minimal header metadata (what goes into S3 object metadata headers)
 	minimalMetadata := map[string]string{
-		MetaEncrypted:    "true",
-		MetaFallbackMode: "true",
-		MetaAlgorithm:    algorithm,
-		MetaKeySalt:      encodeBase64(salt),
-		MetaIV:           encodeBase64(baseIV),
+		MetaEncrypted:       "true",
+		MetaFallbackMode:    "true",
+		MetaFallbackVersion: "2", // streaming chunked format; no outer AEAD wrapper
+		MetaAlgorithm:       algorithm,
+		MetaKeySalt:         encodeBase64(salt),
+		MetaIV:              encodeBase64(baseIV),
 	}
 	if originalSize > 0 {
 		minimalMetadata[MetaOriginalSize] = fmt.Sprintf("%d", originalSize)
@@ -1149,14 +1138,14 @@ func (e *engine) encryptChunkedWithMetadataFallback(ctx context.Context, reader 
 		minimalMetadata[MetaWrappedKeyCiphertext] = encodeBase64(envelope.Ciphertext)
 	}
 
-	// Copy original user metadata
+	// Copy original user metadata (non-encryption, non-compression keys)
 	for k, v := range fullMetadata {
 		if !isEncryptionMetadata(k) && !isCompressionMetadata(k) {
 			minimalMetadata[k] = v
 		}
 	}
 
-	return bytes.NewReader(ciphertext), minimalMetadata, nil
+	return streamingReader, minimalMetadata, nil
 }
 
 // decryptChunked implements streaming chunked decryption.
@@ -1563,6 +1552,69 @@ func (e *engine) isFallbackMode(metadata map[string]string) bool {
 
 // decryptWithMetadataFallback decrypts data with metadata stored in object body
 func (e *engine) decryptWithMetadataFallback(reader io.Reader, metadata map[string]string) (io.Reader, map[string]string, error) {
+	// V1.0-SEC-27: dispatch on the on-disk format version stored in header metadata.
+	//
+	// Version "2" (MetaFallbackVersion == "2"): streaming format written by the
+	// fixed encryptChunkedWithMetadataFallback. The object body is:
+	//   [4-byte BE metadata_length][metadata_json][chunked_ciphertext_stream]
+	// There is no outer AEAD wrapper; per-chunk AEAD integrity is provided by
+	// the chunked layer. Decryption delegates to decryptChunked after parsing
+	// the in-body metadata prefix, which is fully streaming — no io.ReadAll.
+	//
+	// Legacy / absent version: the object was encrypted by the old code which
+	// wrapped the chunked ciphertext in a second outer AEAD Seal. Handled by
+	// decryptFallbackV1 for backward compatibility.
+	if metadata[MetaFallbackVersion] == "2" {
+		return e.decryptFallbackV2(reader, metadata)
+	}
+	return e.decryptFallbackV1(reader, metadata)
+}
+
+// decryptFallbackV2 decrypts objects written by the fixed (V1.0-SEC-27) fallback
+// encrypt path. Format: [4-byte BE metadata_length][metadata_json][chunked_stream].
+// No outer AEAD — integrity comes from the per-chunk AEAD in the chunked layer.
+func (e *engine) decryptFallbackV2(reader io.Reader, headerMetadata map[string]string) (io.Reader, map[string]string, error) {
+	ctx := context.Background()
+
+	// Read the 4-byte big-endian metadata length prefix.
+	var lenBuf [4]byte
+	if _, err := io.ReadFull(reader, lenBuf[:]); err != nil {
+		return nil, nil, fmt.Errorf("fallback-v2: failed to read metadata length prefix: %w", err)
+	}
+	metadataLen := uint32(lenBuf[0])<<24 | uint32(lenBuf[1])<<16 | uint32(lenBuf[2])<<8 | uint32(lenBuf[3])
+
+	// Guard against malformed/truncated objects. The metadata JSON is small
+	// (headers < 8 KiB in practice); cap at 1 MiB to prevent heap abuse.
+	const maxFallbackMetadataBytes = 1 << 20 // 1 MiB
+	if metadataLen > maxFallbackMetadataBytes {
+		return nil, nil, fmt.Errorf("fallback-v2: metadata length %d exceeds sanity limit %d", metadataLen, maxFallbackMetadataBytes)
+	}
+
+	// Read the metadata JSON (bounded by metadataLen).
+	metadataJSON := make([]byte, metadataLen)
+	if _, err := io.ReadFull(reader, metadataJSON); err != nil {
+		return nil, nil, fmt.Errorf("fallback-v2: failed to read metadata JSON (%d bytes): %w", metadataLen, err)
+	}
+
+	// Parse the full metadata that was embedded in the object body.
+	fullMetadata, err := decodeMetadataFromJSON(metadataJSON)
+	if err != nil {
+		return nil, nil, fmt.Errorf("fallback-v2: failed to decode in-body metadata: %w", err)
+	}
+
+	// The remainder of reader is the raw chunked ciphertext stream. Delegate
+	// to decryptChunked which is fully streaming — no io.ReadAll required.
+	return e.decryptChunked(ctx, reader, fullMetadata)
+}
+
+// decryptFallbackV1 decrypts objects written by the legacy fallback encrypt path
+// (before V1.0-SEC-27). The object body is the output of aead.Seal applied over
+// [4-byte metadata_length][metadata_json][chunked_ciphertext]. This path is kept
+// for backward compatibility with objects already stored in S3.
+//
+// Deprecated: new objects are written using the streaming v2 format.
+// This path may be removed no earlier than v3.0.
+func (e *engine) decryptFallbackV1(reader io.Reader, metadata map[string]string) (io.Reader, map[string]string, error) {
 	// Extract encryption parameters from header metadata
 	salt, err := decodeBase64(metadata[MetaKeySalt])
 	if err != nil {
@@ -1609,7 +1661,7 @@ func (e *engine) decryptWithMetadataFallback(reader io.Reader, metadata map[stri
 		return nil, nil, fmt.Errorf("failed to create cipher: %w", err)
 	}
 
-	// Read all encrypted data
+	// Read all encrypted data (legacy path requires full materialization due to outer AEAD Seal)
 	ciphertext, err := io.ReadAll(reader)
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to read encrypted data: %w", err)
@@ -1731,6 +1783,7 @@ func isEncryptionMetadata(key string) bool {
 		key == MetaKMSProvider ||
 		key == MetaFallbackMode ||
 		key == MetaFallbackPointer ||
+		key == MetaFallbackVersion ||
 		key == MetaIVDerivation ||
 		key == MetaLegacyNoAAD
 }

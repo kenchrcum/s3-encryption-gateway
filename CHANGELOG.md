@@ -6,6 +6,63 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Security
+
+- **Restrict AAD fallback to explicitly marked legacy objects** (V1.0-SEC-4):
+  The blind `gcm.Open(..., nil)` fallback in `engine.Decrypt` is now gated
+  behind the metadata flag `x-amz-meta-enc-legacy-no-aad="true"`. New
+  objects never receive this flag. Objects encrypted without AAD that do
+  not carry the flag will fail to decrypt. This is a **breaking change**
+  for very old objects; a migration tool or admin API endpoint for
+  back-tagging is recommended.
+
+- **Proper fix for streaming chunked metadata-fallback format** (V1.0-SEC-27 — supersedes the 0.6.4 partial fix):
+  The 0.6.4 entry for V1.0-SEC-27 was only a partial fix. The root cause was
+  not identified at the time: `encryptChunkedWithMetadataFallback` still
+  accumulated the entire chunked ciphertext into a `bytes.Buffer` and then
+  passed it to a second outer `aead.Seal`, keeping peak heap at ≈ 2× object
+  size. The outer AEAD wrap was entirely redundant — per-chunk AEAD already
+  provides integrity — and was the structural reason full buffering could not
+  be avoided.
+
+  This fix eliminates the outer `aead.Seal` entirely. The fallback object body
+  is now emitted as a streaming
+  `[4-byte BE metadata_length][metadata_json][chunked_stream]` via
+  `io.MultiReader`. Peak allocation during encryption is now
+  O(chunkSize + metadataSize) regardless of object size.
+
+  A new header `x-amz-meta-encryption-fallback-version: "2"` is written on
+  all newly encrypted chunked-fallback objects to identify the format at
+  decrypt time. Objects written before this fix carry no version header and
+  are routed to the preserved legacy decoder (`decryptFallbackV1`) — they
+  remain fully readable.
+
+  > ⚠️ **Potential breaking change — three conditions must all be true.**
+  >
+  > This only affects deployments where **all three** of the following hold
+  > simultaneously:
+  >
+  > 1. `chunked_mode: true` is set (opt-in, not the default), **and**
+  > 2. The S3 provider enforces a tight total metadata header size limit
+  >    (`provider.total_header_limit > 0`), so objects with large user
+  >    metadata are written through the fallback path, **and**
+  > 3. An object written by the **upgraded** gateway (version header `"2"`)
+  >    is later read by a **downgraded** instance running code from 0.6.4 or
+  >    earlier that does not understand the v2 format.
+  >
+  > In that scenario the old instance will attempt to outer-AEAD-decrypt a
+  > raw chunked stream, which will fail with a decryption error. Objects
+  > written before the upgrade (no version header) are unaffected and decode
+  > correctly on both old and new instances.
+  >
+  > **Mitigation:** rolling upgrades are safe provided you do not roll back
+  > after new objects have been written via the fallback path. If a rollback
+  > is required, quiesce writes before downgrading, or temporarily set
+  > `provider.total_header_limit: 0` to bypass the fallback path for the
+  > duration of the rollback window. Deployments on standard AWS S3 or any
+  > provider with `total_header_limit: 0` (unlimited headers) are **not
+  > affected** — the fallback path is never reached for those providers.
+
 ---
 
 ## [0.6.4] — 2026-04-29
