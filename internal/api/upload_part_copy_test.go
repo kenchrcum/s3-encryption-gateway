@@ -660,12 +660,15 @@ func TestSEC29_ChunkedSourceBufferCap_uploadPartCopyChunked(t *testing.T) {
 	mockClient.objects["src-bucket/chunked-key"] = make([]byte, 64)
 	mockClient.metadata["src-bucket/chunked-key"] = srcMeta
 
-	// The oversized engine returns maxCopyPartRangeBytes+1 bytes from
+	// Use a small cap for the test so we don't allocate 5 GiB under -race.
+	const testCap int64 = 1024
+
+	// The oversized engine returns testCap+1 bytes from
 	// DecryptRange, triggering the V1.0-SEC-29 limit guard.
 	realEngine, _ := crypto.NewEngine([]byte("test-password-123456"))
 	engine := &oversizedDecryptEngine{
 		EncryptionEngine: realEngine,
-		returnBytes:      maxCopyPartRangeBytes + 1,
+		returnBytes:      testCap + 1,
 	}
 
 	handler := &Handler{
@@ -679,6 +682,7 @@ func TestSEC29_ChunkedSourceBufferCap_uploadPartCopyChunked(t *testing.T) {
 		"dst-bucket", "dst-key", "upload-id", 1,
 		"src-bucket", "chunked-key", nil,
 		&s3.CopyPartRange{First: 0, Last: 1023},
+		testCap,
 	)
 
 	require.Error(t, err, "expected error when DecryptRange output exceeds cap")
@@ -703,10 +707,13 @@ func TestSEC29_ChunkedSourceBufferCap_ReencryptMPU(t *testing.T) {
 	mockClient.objects["src-bucket/chunked-key"] = make([]byte, 64)
 	mockClient.metadata["src-bucket/chunked-key"] = srcMeta
 
+	// Use a small cap for the test so we don't allocate 5 GiB under -race.
+	const testCap int64 = 1024
+
 	realEngine, _ := crypto.NewEngine([]byte("test-password-123456"))
 	engine := &oversizedDecryptEngine{
 		EncryptionEngine: realEngine,
-		returnBytes:      maxCopyPartRangeBytes + 1,
+		returnBytes:      testCap + 1,
 	}
 
 	handler := &Handler{
@@ -729,6 +736,7 @@ func TestSEC29_ChunkedSourceBufferCap_ReencryptMPU(t *testing.T) {
 		&s3.CopyPartRange{First: 0, Last: 1023},
 		sourceClass,
 		config.DefaultMaxLegacyCopySourceBytes,
+		testCap,
 	)
 
 	require.Error(t, err, "expected error when DecryptRange output exceeds cap")

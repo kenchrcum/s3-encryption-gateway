@@ -302,7 +302,7 @@ func (h *Handler) handleUploadPartCopy(w http.ResponseWriter, r *http.Request) {
 	// through the destination's per-upload DEK schedule (ADR 0009 §Consequences).
 	if h.bucketEncryptsMPU(bucket) {
 		copyResult, bytesCopied, strategyErr = h.uploadPartCopyReencryptMPU(ctx, s3Client, bucket, key, uploadID,
-			int32(partNumber), srcBucket, srcKey, srcVersionID, srcRange, sourceClass, maxLegacyCap)
+			int32(partNumber), srcBucket, srcKey, srcVersionID, srcRange, sourceClass, maxLegacyCap, maxCopyPartRangeBytes)
 	} else {
 		switch sourceClass.Class {
 		case SourceClassPlaintext:
@@ -314,7 +314,7 @@ func (h *Handler) handleUploadPartCopy(w http.ResponseWriter, r *http.Request) {
 
 		case SourceClassChunked:
 			copyResult, bytesCopied, strategyErr = h.uploadPartCopyChunked(ctx, s3Client, bucket, key, uploadID, int32(partNumber),
-				srcBucket, srcKey, srcVersionID, srcRange)
+				srcBucket, srcKey, srcVersionID, srcRange, maxCopyPartRangeBytes)
 
 		case SourceClassLegacy:
 			copyResult, bytesCopied, strategyErr = h.uploadPartCopyLegacy(ctx, s3Client, bucket, key, uploadID, int32(partNumber),
@@ -471,6 +471,7 @@ func (h *Handler) classifyCopySource(ctx context.Context, s3Client s3.Client, bu
 func (h *Handler) uploadPartCopyChunked(ctx context.Context, s3Client s3.Client,
 	dstBucket, dstKey, uploadID string, partNumber int32,
 	srcBucket, srcKey string, srcVersionID *string, srcRange *s3.CopyPartRange,
+	maxChunkedCap int64,
 ) (*s3.CopyPartResult, int64, error) {
 
 	srcEngine, err := h.getEncryptionEngine(srcBucket)
@@ -531,12 +532,12 @@ func (h *Handler) uploadPartCopyChunked(ctx context.Context, s3Client s3.Client,
 	// maximum). DecryptRange already clips the output to the requested plaintext
 	// slice, so a well-formed request will never hit this limit; the guard
 	// prevents a crafted or corrupt source from exhausting heap memory.
-	decryptedBytes, err := io.ReadAll(io.LimitReader(decryptedReader, maxCopyPartRangeBytes+1))
+	decryptedBytes, err := io.ReadAll(io.LimitReader(decryptedReader, maxChunkedCap+1))
 	if err != nil {
 		return nil, 0, fmt.Errorf("failed to read decrypted range: %w", err)
 	}
-	if int64(len(decryptedBytes)) > maxCopyPartRangeBytes {
-		return nil, 0, fmt.Errorf("decrypted range exceeds maximum copy-part size (%d bytes)", maxCopyPartRangeBytes)
+	if int64(len(decryptedBytes)) > maxChunkedCap {
+		return nil, 0, fmt.Errorf("decrypted range exceeds maximum copy-part size (%d bytes)", maxChunkedCap)
 	}
 	bytesCopied := int64(len(decryptedBytes))
 	etag, err := s3Client.UploadPart(ctx, dstBucket, dstKey, uploadID, partNumber, bytes.NewReader(decryptedBytes), &bytesCopied)
@@ -717,6 +718,7 @@ func (h *Handler) uploadPartCopyReencryptMPU(
 	srcRange *s3.CopyPartRange,
 	sourceClass *CopySourceMetadata,
 	maxLegacyCap int64,
+	maxChunkedCap int64,
 ) (*s3.CopyPartResult, int64, error) {
 	// Step 1: Obtain the plaintext bytes from the source using the per-class decrypt strategy.
 	var plaintextData []byte
@@ -780,12 +782,12 @@ func (h *Handler) uploadPartCopyReencryptMPU(
 		// V1.0-SEC-29: bound to maxCopyPartRangeBytes (5 GiB). DecryptRange already
 		// clips output to the requested plaintext slice; this guard prevents a
 		// crafted/corrupt source from exhausting heap memory.
-		plaintextData, err = io.ReadAll(io.LimitReader(decR, maxCopyPartRangeBytes+1))
+		plaintextData, err = io.ReadAll(io.LimitReader(decR, maxChunkedCap+1))
 		if err != nil {
 			return nil, 0, fmt.Errorf("uploadPartCopyReencryptMPU: read decrypted chunked source: %w", err)
 		}
-		if int64(len(plaintextData)) > maxCopyPartRangeBytes {
-			return nil, 0, fmt.Errorf("uploadPartCopyReencryptMPU: decrypted chunked range exceeds maximum copy-part size (%d bytes)", maxCopyPartRangeBytes)
+		if int64(len(plaintextData)) > maxChunkedCap {
+			return nil, 0, fmt.Errorf("uploadPartCopyReencryptMPU: decrypted chunked range exceeds maximum copy-part size (%d bytes)", maxChunkedCap)
 		}
 
 	case SourceClassLegacy:
