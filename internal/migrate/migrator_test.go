@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"sync"
 	"testing"
 
 	"github.com/kenneth/s3-encryption-gateway/internal/crypto"
@@ -13,12 +14,13 @@ import (
 
 // mockS3ForMigrate is a full-featured mock S3 client for migration tests.
 type mockS3ForMigrate struct {
-	objects       map[string][]byte
-	metadata      map[string]map[string]string
-	errors        map[string]error
-	listPage      int
-	getObjectCalls int // incremented on every GetObject call
-	copyObjectCalls int // incremented on every CopyObject call
+	mu              sync.RWMutex
+	objects         map[string][]byte
+	metadata        map[string]map[string]string
+	errors          map[string]error
+	listPage        int
+	getObjectCalls  int
+	copyObjectCalls int
 }
 
 func newMockS3ForMigrate() *mockS3ForMigrate {
@@ -30,6 +32,8 @@ func newMockS3ForMigrate() *mockS3ForMigrate {
 }
 
 func (m *mockS3ForMigrate) PutObject(ctx context.Context, bucket, key string, reader io.Reader, metadata map[string]string, contentLength *int64, tags string, lock *s3.ObjectLockInput) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	if err := m.errors[bucket+"/"+key+"/put"]; err != nil {
 		return err
 	}
@@ -40,15 +44,19 @@ func (m *mockS3ForMigrate) PutObject(ctx context.Context, bucket, key string, re
 }
 
 func (m *mockS3ForMigrate) GetObject(ctx context.Context, bucket, key string, versionID *string, rangeHeader *string) (io.ReadCloser, map[string]string, error) {
+	m.mu.RLock()
 	m.getObjectCalls++
 	if err := m.errors[bucket+"/"+key+"/get"]; err != nil {
+		m.mu.RUnlock()
 		return nil, nil, err
 	}
 	data, ok := m.objects[bucket+"/"+key]
 	if !ok {
+		m.mu.RUnlock()
 		return nil, nil, fmt.Errorf("not found")
 	}
 	meta := m.metadata[bucket+"/"+key]
+	m.mu.RUnlock()
 	if meta == nil {
 		meta = make(map[string]string)
 	}
@@ -56,6 +64,8 @@ func (m *mockS3ForMigrate) GetObject(ctx context.Context, bucket, key string, ve
 }
 
 func (m *mockS3ForMigrate) HeadObject(ctx context.Context, bucket, key string, versionID *string) (map[string]string, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
 	if err := m.errors[bucket+"/"+key+"/head"]; err != nil {
 		return nil, err
 	}
@@ -67,6 +77,8 @@ func (m *mockS3ForMigrate) HeadObject(ctx context.Context, bucket, key string, v
 }
 
 func (m *mockS3ForMigrate) DeleteObject(ctx context.Context, bucket, key string, versionID *string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	if err := m.errors[bucket+"/"+key+"/delete"]; err != nil {
 		return err
 	}
@@ -76,6 +88,8 @@ func (m *mockS3ForMigrate) DeleteObject(ctx context.Context, bucket, key string,
 }
 
 func (m *mockS3ForMigrate) ListObjects(ctx context.Context, bucket, prefix string, opts s3.ListOptions) (s3.ListResult, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
 	if err := m.errors[bucket+"/list"]; err != nil {
 		return s3.ListResult{}, err
 	}
@@ -94,6 +108,8 @@ func (m *mockS3ForMigrate) ListObjects(ctx context.Context, bucket, prefix strin
 }
 
 func (m *mockS3ForMigrate) CopyObject(ctx context.Context, dstBucket, dstKey string, srcBucket, srcKey string, srcVersionID *string, metadata map[string]string, lock *s3.ObjectLockInput) (string, map[string]string, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	m.copyObjectCalls++
 	srcData, ok := m.objects[srcBucket+"/"+srcKey]
 	if !ok {
