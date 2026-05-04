@@ -49,3 +49,4 @@ logs/server
 
 .serena
 .claude
+*/__pycache__
