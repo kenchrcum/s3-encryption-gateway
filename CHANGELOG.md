@@ -62,7 +62,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Dependencies
 
-- Updated `github.com/fsnotify/fsnotify` to v1.10.0
+- Updated `github.com/fsnotify/fsnotify` to v1.10.1
 
 ---
 
