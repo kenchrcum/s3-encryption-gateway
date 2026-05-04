@@ -161,6 +161,20 @@ func TestConformance(t *testing.T) {
 			{"OBS1_InvalidSeconds400", 0, testOBS1_InvalidSecondsReturns400},
 			{"OBS1_DataPlaneNoPprofRoutes", 0, testOBS1_DataPlaneHasNoPprofRoutes},
 			{"OBS1_MetricEmitted", 0, testOBS1_MetricEmitted},
+
+			// V1.0-MAINT-1 offline migration tool — runs against every provider.
+			// These tests write objects directly to the S3 backend, run s3eg-migrate,
+			// and verify via HeadObject / GetObject.
+			{"MAINT1_SEC2_XOR_to_HKDF", 0, testMaint1_SEC2_XOR_to_HKDF},
+			{"MAINT1_Mixed_AllClasses", 0, testMaint1_Mixed_AllClasses},
+			{"MAINT1_DryRun_ReportsCorrectly", 0, testMaint1_DryRun_ReportsCorrectly},
+			{"MAINT1_Idempotency_E2E", 0, testMaint1_Idempotency_E2E},
+			{"MAINT1_Resume_E2E", 0, testMaint1_Resume_E2E},
+			{"MAINT1_GatewayVersion_Invalid", 0, testMaint1_GatewayVersion_Invalid},
+			{"MAINT1_StateFile_VersionMismatch", 0, testMaint1_StateFile_VersionMismatch},
+			{"MAINT1_GoldenPath_AllBreakingChanges", 0, testMaint1_GoldenPath_AllBreakingChanges},
+			{"MAINT1_DryRun_Scan", 0, testMaint1_DryRun_Scan},
+			{"MAINT1_VerifyAfterWrite", 0, testMaint1_VerifyAfterWrite},
 		}
 
 			for _, tc := range cases {

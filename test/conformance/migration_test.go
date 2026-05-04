@@ -1,17 +1,14 @@
 //go:build conformance
 
-// Package migration is the tier-2 integration test suite for the s3eg-migrate
-// offline migration tool.
+// Package conformance is the tier-2 multi-provider test suite.
 //
 // Build tag: conformance (never runs under default `go test ./...`).
 //
-// Run via:
-//
-//	make test-conformance-minio   # MinIO only (fastest signal)
-//
-// These tests start a MinIO container, write objects in legacy formats,
-// run the migration tool, and verify the results.
-package migration
+// These tests verify the s3eg-migrate offline migration tool against every
+// registered provider. Objects are written directly to the S3 backend,
+// the migration tool is run, and results are verified via HeadObject and
+// GetObject.
+package conformance
 
 import (
 	"bytes"
@@ -30,16 +27,6 @@ import (
 
 // testPassword is the deterministic test password used for all engines.
 var testPassword = []byte("test-migration-password-12345678")
-
-// setupMinIO starts a MinIO testcontainer and returns the provider instance.
-// It skips the test if Docker is unavailable.
-func setupMinIO(t *testing.T) provider.Instance {
-	t.Helper()
-	ctx := context.Background()
-	p := &minioProviderForMigration{}
-	inst := p.Start(ctx, t)
-	return inst
-}
 
 // newS3Client creates an internal/s3 client from a provider instance.
 func newS3Client(t *testing.T, inst provider.Instance) s3.Client {
@@ -150,24 +137,25 @@ func decryptObject(t *testing.T, client s3.Client, eng crypto.EncryptionEngine, 
 	return plaintext
 }
 
-// TestMAINT1_SEC2_XOR_to_HKDF verifies that legacy XOR-IV chunked objects are
+// testMaint1_SEC2_XOR_to_HKDF verifies that legacy XOR-IV chunked objects are
 // re-encrypted with HKDF derivation and remain decryptable.
-func TestMAINT1_SEC2_XOR_to_HKDF(t *testing.T) {
-	inst := setupMinIO(t)
+func testMaint1_SEC2_XOR_to_HKDF(t *testing.T, inst provider.Instance) {
+	t.Helper()
 	client := newS3Client(t, inst)
 	eng := newEngine(t)
 	bucket := inst.Bucket
+	suf := uniqueSuffix(t)
+	prefix := fmt.Sprintf("maint1/sec2/%s/", suf)
 
-	// Write 5 chunked objects and strip the HKDF flag to simulate legacy XOR.
 	wantPlain := []byte("hello sec2 migration world")
+	keys := make([]string, 5)
 	for i := 0; i < 5; i++ {
-		key := fmt.Sprintf("sec2/obj-%02d", i)
-		putEncryptedObject(t, client, eng, bucket, key, wantPlain, func(meta map[string]string) {
+		keys[i] = fmt.Sprintf("%sobj-%02d", prefix, i)
+		putEncryptedObject(t, client, eng, bucket, keys[i], wantPlain, func(meta map[string]string) {
 			delete(meta, crypto.MetaIVDerivation)
 		})
 	}
 
-	// Run migration targeting SEC-2 only.
 	m := &migrate.Migrator{
 		S3Client:       client,
 		SourceEngine:   eng,
@@ -181,13 +169,11 @@ func TestMAINT1_SEC2_XOR_to_HKDF(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	if err := m.Migrate(ctx, bucket, ""); err != nil {
+	if err := m.Migrate(ctx, bucket, prefix); err != nil {
 		t.Fatalf("Migrate failed: %v", err)
 	}
 
-	// Verify all objects now have the HKDF flag and decrypt correctly.
-	for i := 0; i < 5; i++ {
-		key := fmt.Sprintf("sec2/obj-%02d", i)
+	for _, key := range keys {
 		meta := headMeta(t, client, bucket, key)
 		if meta[crypto.MetaIVDerivation] != "hkdf-sha256" {
 			t.Errorf("%s: expected MetaIVDerivation=hkdf-sha256, got %q", key, meta[crypto.MetaIVDerivation])
@@ -199,38 +185,34 @@ func TestMAINT1_SEC2_XOR_to_HKDF(t *testing.T) {
 	}
 }
 
-// TestMAINT1_Mixed_AllClasses writes objects simulating multiple legacy
+// testMaint1_Mixed_AllClasses writes objects simulating multiple legacy
 // classes and migrates them all in one pass.
-func TestMAINT1_Mixed_AllClasses(t *testing.T) {
-	inst := setupMinIO(t)
+func testMaint1_Mixed_AllClasses(t *testing.T, inst provider.Instance) {
+	t.Helper()
 	client := newS3Client(t, inst)
 	eng := newEngine(t)
 	bucket := inst.Bucket
+	suf := uniqueSuffix(t)
+	prefix := fmt.Sprintf("maint1/mixed/%s/", suf)
 
 	wantPlain := []byte("mixed migration plaintext")
 
-	// Class A: XOR-IV (chunked, no MetaIVDerivation)
 	for i := 0; i < 3; i++ {
-		putEncryptedObject(t, client, eng, bucket, fmt.Sprintf("mixed/a-%d", i), wantPlain, func(meta map[string]string) {
+		putEncryptedObject(t, client, eng, bucket, fmt.Sprintf("%sa-%d", prefix, i), wantPlain, func(meta map[string]string) {
 			delete(meta, crypto.MetaIVDerivation)
 		})
 	}
 
-	// Class Modern: already up-to-date (should be skipped)
 	for i := 0; i < 2; i++ {
-		putEncryptedObject(t, client, eng, bucket, fmt.Sprintf("mixed/modern-%d", i), wantPlain, nil)
+		putEncryptedObject(t, client, eng, bucket, fmt.Sprintf("%smodern-%d", prefix, i), wantPlain, nil)
 	}
 
-	// Class B: legacy no-AAD (non-chunked, with flag)
-	// Create these with a NON-chunked engine so the ciphertext is genuine
-	// single-AEAD format.  Pass an explicit Content-Type to Encrypt so the
-	// AAD built during encryption matches what S3 returns on retrieval.
 	plainEng, err := crypto.NewEngineWithChunking(testPassword, nil, "", nil, false, 0)
 	if err != nil {
 		t.Fatalf("failed to create plain engine: %v", err)
 	}
 	for i := 0; i < 3; i++ {
-		putEncryptedObjectWithMeta(t, client, plainEng, bucket, fmt.Sprintf("mixed/b-%d", i), wantPlain,
+		putEncryptedObjectWithMeta(t, client, plainEng, bucket, fmt.Sprintf("%sb-%d", prefix, i), wantPlain,
 			map[string]string{"Content-Type": "application/octet-stream"},
 			func(meta map[string]string) {
 				meta[crypto.MetaLegacyNoAAD] = "true"
@@ -250,57 +232,55 @@ func TestMAINT1_Mixed_AllClasses(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	if err := m.Migrate(ctx, bucket, ""); err != nil {
+	if err := m.Migrate(ctx, bucket, prefix); err != nil {
 		t.Fatalf("Migrate failed: %v", err)
 	}
 
-	// Verify Class A objects now have HKDF.
 	for i := 0; i < 3; i++ {
-		meta := headMeta(t, client, bucket, fmt.Sprintf("mixed/a-%d", i))
+		meta := headMeta(t, client, bucket, fmt.Sprintf("%sa-%d", prefix, i))
 		if meta[crypto.MetaIVDerivation] != "hkdf-sha256" {
 			t.Errorf("mixed/a-%d: expected hkdf-sha256, got %q", i, meta[crypto.MetaIVDerivation])
 		}
 	}
 
-	// Verify Class B objects no longer have the legacy flag.
 	for i := 0; i < 3; i++ {
-		meta := headMeta(t, client, bucket, fmt.Sprintf("mixed/b-%d", i))
+		meta := headMeta(t, client, bucket, fmt.Sprintf("%sb-%d", prefix, i))
 		if meta[crypto.MetaLegacyNoAAD] == "true" {
 			t.Errorf("mixed/b-%d: MetaLegacyNoAAD should be absent after migration", i)
 		}
 	}
 
-	// Verify modern objects unchanged.
 	for i := 0; i < 2; i++ {
-		meta := headMeta(t, client, bucket, fmt.Sprintf("mixed/modern-%d", i))
+		meta := headMeta(t, client, bucket, fmt.Sprintf("%smodern-%d", prefix, i))
 		if meta[crypto.MetaIVDerivation] != "hkdf-sha256" {
 			t.Errorf("mixed/modern-%d: expected unchanged hkdf-sha256, got %q", i, meta[crypto.MetaIVDerivation])
 		}
-		got := decryptObject(t, client, eng, bucket, fmt.Sprintf("mixed/modern-%d", i))
+		got := decryptObject(t, client, eng, bucket, fmt.Sprintf("%smodern-%d", prefix, i))
 		if !bytes.Equal(got, wantPlain) {
 			t.Errorf("mixed/modern-%d: plaintext changed unexpectedly", i)
 		}
 	}
 }
 
-// TestMAINT1_DryRun_ReportsCorrectly verifies that dry-run mode classifies
+// testMaint1_DryRun_ReportsCorrectly verifies that dry-run mode classifies
 // objects correctly and makes no writes.
-func TestMAINT1_DryRun_ReportsCorrectly(t *testing.T) {
-	inst := setupMinIO(t)
+func testMaint1_DryRun_ReportsCorrectly(t *testing.T, inst provider.Instance) {
+	t.Helper()
 	client := newS3Client(t, inst)
 	eng := newEngine(t)
 	bucket := inst.Bucket
+	suf := uniqueSuffix(t)
+	prefix := fmt.Sprintf("maint1/dryrun/%s/", suf)
 
-	// Create a mix of objects.
-	putEncryptedObject(t, client, eng, bucket, "dryrun/modern", []byte("modern"), nil)
-	putEncryptedObject(t, client, eng, bucket, "dryrun/xor1", []byte("xor"), func(meta map[string]string) {
+	putEncryptedObject(t, client, eng, bucket, prefix+"modern", []byte("modern"), nil)
+	putEncryptedObject(t, client, eng, bucket, prefix+"xor1", []byte("xor"), func(meta map[string]string) {
 		delete(meta, crypto.MetaIVDerivation)
 	})
-	putEncryptedObject(t, client, eng, bucket, "dryrun/xor2", []byte("xor"), func(meta map[string]string) {
+	putEncryptedObject(t, client, eng, bucket, prefix+"xor2", []byte("xor"), func(meta map[string]string) {
 		delete(meta, crypto.MetaIVDerivation)
 	})
 
-	report, err := migrate.DryRunScan(context.Background(), client, bucket, "dryrun/", nil)
+	report, err := migrate.DryRunScan(context.Background(), client, bucket, prefix, nil)
 	if err != nil {
 		t.Fatalf("DryRunScan failed: %v", err)
 	}
@@ -315,23 +295,24 @@ func TestMAINT1_DryRun_ReportsCorrectly(t *testing.T) {
 		t.Errorf("ClassA = %d, want 2", report.ClassA)
 	}
 
-	// Verify no writes occurred by checking metadata unchanged.
-	meta := headMeta(t, client, bucket, "dryrun/xor1")
+	meta := headMeta(t, client, bucket, prefix+"xor1")
 	if meta[crypto.MetaIVDerivation] != "" {
 		t.Errorf("dry-run should not have mutated metadata")
 	}
 }
 
-// TestMAINT1_Idempotency_E2E runs a full migration twice and confirms the
+// testMaint1_Idempotency_E2E runs a full migration twice and confirms the
 // second run skips everything.
-func TestMAINT1_Idempotency_E2E(t *testing.T) {
-	inst := setupMinIO(t)
+func testMaint1_Idempotency_E2E(t *testing.T, inst provider.Instance) {
+	t.Helper()
 	client := newS3Client(t, inst)
 	eng := newEngine(t)
 	bucket := inst.Bucket
+	suf := uniqueSuffix(t)
+	prefix := fmt.Sprintf("maint1/idemp/%s/", suf)
 
 	for i := 0; i < 5; i++ {
-		putEncryptedObject(t, client, eng, bucket, fmt.Sprintf("idemp/obj-%d", i), []byte("data"), func(meta map[string]string) {
+		putEncryptedObject(t, client, eng, bucket, fmt.Sprintf("%sobj-%d", prefix, i), []byte("data"), func(meta map[string]string) {
 			delete(meta, crypto.MetaIVDerivation)
 		})
 	}
@@ -350,11 +331,10 @@ func TestMAINT1_Idempotency_E2E(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	if err := m1.Migrate(ctx, bucket, ""); err != nil {
+	if err := m1.Migrate(ctx, bucket, prefix); err != nil {
 		t.Fatalf("first Migrate failed: %v", err)
 	}
 
-	// Second run should skip all objects (already modern).
 	m2 := &migrate.Migrator{
 		S3Client:       client,
 		SourceEngine:   eng,
@@ -366,39 +346,38 @@ func TestMAINT1_Idempotency_E2E(t *testing.T) {
 		Verify:         false,
 		Filter:         migrate.FilterAll,
 	}
-	if err := m2.Migrate(ctx, bucket, ""); err != nil {
+	if err := m2.Migrate(ctx, bucket, prefix); err != nil {
 		t.Fatalf("second Migrate failed: %v", err)
 	}
 
-	// Load state and confirm zero additional migrations.
-	state, _, _ := migrate.LoadOrCreate(stateFile, "bucket", "")
+	state, _, _ := migrate.LoadOrCreate(stateFile, bucket, prefix)
 	if state.Stats.Migrated != 5 {
 		t.Errorf("first run migrated = %d, want 5; second run should have 0 new", state.Stats.Migrated)
 	}
 	if state.Stats.Skipped != 5 {
-		// On second run, all 5 objects are ClassModern and skipped.
 		t.Errorf("second run skipped = %d, want 5", state.Stats.Skipped)
 	}
 }
 
-// TestMAINT1_Resume_E2E verifies that a migration can be resumed from a state
+// testMaint1_Resume_E2E verifies that a migration can be resumed from a state
 // file after an interruption.
-func TestMAINT1_Resume_E2E(t *testing.T) {
-	inst := setupMinIO(t)
+func testMaint1_Resume_E2E(t *testing.T, inst provider.Instance) {
+	t.Helper()
 	client := newS3Client(t, inst)
 	eng := newEngine(t)
 	bucket := inst.Bucket
+	suf := uniqueSuffix(t)
+	prefix := fmt.Sprintf("maint1/resume/%s/", suf)
 
 	for i := 0; i < 5; i++ {
-		putEncryptedObject(t, client, eng, bucket, fmt.Sprintf("resume/obj-%02d", i), []byte("data"), func(meta map[string]string) {
+		putEncryptedObject(t, client, eng, bucket, fmt.Sprintf("%sobj-%02d", prefix, i), []byte("data"), func(meta map[string]string) {
 			delete(meta, crypto.MetaIVDerivation)
 		})
 	}
 
 	stateFile := t.TempDir() + "/state.json"
-	// Pre-seed state file to simulate interruption after obj-01.
-	state := migrate.NewState(bucket, "")
-	state.Checkpoint = "resume/obj-01"
+	state := migrate.NewState(bucket, prefix)
+	state.Checkpoint = fmt.Sprintf("%sobj-01", prefix)
 	state.GatewayVersion = "0.7.0"
 	state.Stats.Migrated = 2
 	if err := state.Save(stateFile); err != nil {
@@ -418,13 +397,11 @@ func TestMAINT1_Resume_E2E(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	if err := m.Migrate(ctx, bucket, ""); err != nil {
+	if err := m.Migrate(ctx, bucket, prefix); err != nil {
 		t.Fatalf("Migrate failed: %v", err)
 	}
 
-	// obj-00 and obj-01 should NOT be re-processed (<= checkpoint).
-	// obj-02, obj-03, obj-04 should be migrated.
-	finalState, _, err := migrate.LoadOrCreate(stateFile, bucket, "")
+	finalState, _, err := migrate.LoadOrCreate(stateFile, bucket, prefix)
 	if err != nil {
 		t.Fatalf("load state: %v", err)
 	}
@@ -433,16 +410,17 @@ func TestMAINT1_Resume_E2E(t *testing.T) {
 	}
 }
 
-// TestMAINT1_GatewayVersion_Invalid verifies that an unsupported gateway
+// testMaint1_GatewayVersion_Invalid verifies that an unsupported gateway
 // version causes the tool to fail immediately without making any writes.
-func TestMAINT1_GatewayVersion_Invalid(t *testing.T) {
-	inst := setupMinIO(t)
+func testMaint1_GatewayVersion_Invalid(t *testing.T, inst provider.Instance) {
+	t.Helper()
 	client := newS3Client(t, inst)
 	eng := newEngine(t)
 	bucket := inst.Bucket
+	suf := uniqueSuffix(t)
+	prefix := fmt.Sprintf("maint1/badver/%s/", suf)
 
-	// Write one object.
-	putEncryptedObject(t, client, eng, bucket, "badver/obj", []byte("data"), func(meta map[string]string) {
+	putEncryptedObject(t, client, eng, bucket, prefix+"obj", []byte("data"), func(meta map[string]string) {
 		delete(meta, crypto.MetaIVDerivation)
 	})
 
@@ -450,7 +428,7 @@ func TestMAINT1_GatewayVersion_Invalid(t *testing.T) {
 		S3Client:       client,
 		SourceEngine:   eng,
 		TargetEngine:   eng,
-		GatewayVersion: "0.5.0", // unsupported
+		GatewayVersion: "0.5.0",
 		Workers:        1,
 		StateFile:      t.TempDir() + "/state.json",
 		DryRun:         false,
@@ -459,29 +437,28 @@ func TestMAINT1_GatewayVersion_Invalid(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	if err := m.Migrate(ctx, bucket, ""); err == nil {
+	if err := m.Migrate(ctx, bucket, prefix); err == nil {
 		t.Fatal("expected error for invalid gateway version")
 	}
 
-	// Verify object was NOT migrated (metadata unchanged).
-	meta := headMeta(t, client, bucket, "badver/obj")
+	meta := headMeta(t, client, bucket, prefix+"obj")
 	if meta[crypto.MetaIVDerivation] != "" {
 		t.Errorf("object should not have been migrated with invalid gateway version")
 	}
 }
 
-// TestMAINT1_StateFile_VersionMismatch verifies that resuming with a different
+// testMaint1_StateFile_VersionMismatch verifies that resuming with a different
 // gateway version is rejected.
-func TestMAINT1_StateFile_VersionMismatch(t *testing.T) {
+func testMaint1_StateFile_VersionMismatch(t *testing.T, inst provider.Instance) {
+	t.Helper()
 	stateFile := t.TempDir() + "/state.json"
-	state := migrate.NewState("bucket", "")
+	state := migrate.NewState(inst.Bucket, "maint1/vs/")
 	state.GatewayVersion = "0.6.4"
 	state.Checkpoint = "obj-01"
 	if err := state.Save(stateFile); err != nil {
 		t.Fatalf("seed state: %v", err)
 	}
 
-	inst := setupMinIO(t)
 	client := newS3Client(t, inst)
 	eng := newEngine(t)
 
@@ -489,66 +466,58 @@ func TestMAINT1_StateFile_VersionMismatch(t *testing.T) {
 		S3Client:       client,
 		SourceEngine:   eng,
 		TargetEngine:   eng,
-		GatewayVersion: "0.7.0", // mismatched
+		GatewayVersion: "0.7.0",
 		Workers:        1,
 		StateFile:      stateFile,
 	}
 
-	if err := m.Migrate(context.Background(), inst.Bucket, ""); err == nil {
+	if err := m.Migrate(context.Background(), inst.Bucket, "maint1/vs/"); err == nil {
 		t.Fatal("expected error for state file gateway version mismatch")
 	}
 }
 
-// TestMAINT1_GoldenPath_AllBreakingChanges is the conformance-phase golden-path
-// test for V1.0-MAINT-1.  It creates objects combining every legacy breaking
-// change (SEC-2, SEC-4, SEC-27), runs the migration tool against a real MinIO
-// backend, and asserts that every object is migrated to ClassModern and remains
-// fully readable.
-func TestMAINT1_GoldenPath_AllBreakingChanges(t *testing.T) {
-	inst := setupMinIO(t)
+// testMaint1_GoldenPath_AllBreakingChanges is the conformance-phase golden-path
+// test for V1.0-MAINT-1. It creates objects combining every legacy breaking
+// change (SEC-2, SEC-4, SEC-27), runs the migration tool, and asserts that
+// every object is migrated to ClassModern and remains fully readable.
+func testMaint1_GoldenPath_AllBreakingChanges(t *testing.T, inst provider.Instance) {
+	t.Helper()
 	client := newS3Client(t, inst)
 	eng := newEngine(t)
 	bucket := inst.Bucket
+	suf := uniqueSuffix(t)
+	prefix := fmt.Sprintf("maint1/golden/%s/", suf)
 
 	wantPlain := []byte("golden-path-plaintext combining sec2 sec4 sec27")
 
-	// CLASS A (SEC-2): XOR-IV chunked objects.
-	putEncryptedObject(t, client, eng, bucket, "golden/a-1", wantPlain, func(meta map[string]string) {
+	putEncryptedObject(t, client, eng, bucket, prefix+"a-1", wantPlain, func(meta map[string]string) {
 		delete(meta, crypto.MetaIVDerivation)
 	})
-	putEncryptedObject(t, client, eng, bucket, "golden/a-2", wantPlain, func(meta map[string]string) {
+	putEncryptedObject(t, client, eng, bucket, prefix+"a-2", wantPlain, func(meta map[string]string) {
 		delete(meta, crypto.MetaIVDerivation)
 	})
 
-	// CLASS B (SEC-4): non-chunked objects with the legacy-no-AAD marker.
 	plainEng, err := crypto.NewEngineWithChunking(testPassword, nil, "", nil, false, 0)
 	if err != nil {
 		t.Fatalf("failed to create plain engine: %v", err)
 	}
-	putEncryptedObjectWithMeta(t, client, plainEng, bucket, "golden/b-1", wantPlain,
+	putEncryptedObjectWithMeta(t, client, plainEng, bucket, prefix+"b-1", wantPlain,
 		map[string]string{"Content-Type": "application/octet-stream"},
 		func(meta map[string]string) {
 			meta[crypto.MetaLegacyNoAAD] = "true"
 		})
 
-	// CLASS C_XOR (SEC-27 + SEC-2): fallback-v1 objects without HKDF marker.
-	// We use an engine with a tiny metadata limit so that even modest metadata
-	// triggers the fallback path, keeping S3 headers well within MinIO limits.
 	fallbackEng, err := crypto.NewTestEngineWithFallbackProfile(testPassword, false)
 	if err != nil {
 		t.Fatalf("failed to create fallback engine: %v", err)
 	}
-	putEncryptedObjectWithMeta(t, client, fallbackEng, bucket, "golden/c-1", wantPlain,
+	putEncryptedObjectWithMeta(t, client, fallbackEng, bucket, prefix+"c-1", wantPlain,
 		map[string]string{
 			"Content-Type":      "application/octet-stream",
 			"x-amz-meta-project": "s3-encryption-gateway",
 		},
 		nil)
-
-	// "Super-legacy" — combines ALL three breaking-change markers on one
-	// object: fallback-v1, XOR-IV, and legacy-no-AAD.  The classifier treats
-	// it as ClassC_Fallback_XOR because the fallback branch takes precedence.
-	putEncryptedObjectWithMeta(t, client, fallbackEng, bucket, "golden/c-2", wantPlain,
+	putEncryptedObjectWithMeta(t, client, fallbackEng, bucket, prefix+"c-2", wantPlain,
 		map[string]string{
 			"Content-Type":      "application/octet-stream",
 			"x-amz-meta-project": "s3-encryption-gateway",
@@ -557,19 +526,16 @@ func TestMAINT1_GoldenPath_AllBreakingChanges(t *testing.T) {
 			meta[crypto.MetaLegacyNoAAD] = "true"
 		})
 
-	// CLASS Modern: already fully up-to-date (should be skipped).
-	putEncryptedObject(t, client, eng, bucket, "golden/modern-1", wantPlain, nil)
-	putEncryptedObject(t, client, eng, bucket, "golden/modern-2", wantPlain, nil)
+	putEncryptedObject(t, client, eng, bucket, prefix+"modern-1", wantPlain, nil)
+	putEncryptedObject(t, client, eng, bucket, prefix+"modern-2", wantPlain, nil)
 
-	// CLASS Plaintext: not encrypted at all (should be skipped).
 	ctx := context.Background()
-	if err := client.PutObject(ctx, bucket, "golden/plain.txt", bytes.NewReader(wantPlain),
+	if err := client.PutObject(ctx, bucket, prefix+"plain.txt", bytes.NewReader(wantPlain),
 		map[string]string{"Content-Type": "text/plain"}, nil, "", nil); err != nil {
 		t.Fatalf("put plaintext: %v", err)
 	}
 
-	// --- Phase 1: Dry-run must correctly classify every object ---
-	report, err := migrate.DryRunScan(ctx, client, bucket, "golden/", nil)
+	report, err := migrate.DryRunScan(ctx, client, bucket, prefix, nil)
 	if err != nil {
 		t.Fatalf("DryRunScan failed: %v", err)
 	}
@@ -592,7 +558,6 @@ func TestMAINT1_GoldenPath_AllBreakingChanges(t *testing.T) {
 		t.Errorf("DryRun Plaintext = %d, want 1", report.Plaintext)
 	}
 
-	// --- Phase 2: Run full migration ---
 	stateFile := t.TempDir() + "/golden-state.json"
 	m := &migrate.Migrator{
 		S3Client:       client,
@@ -606,17 +571,16 @@ func TestMAINT1_GoldenPath_AllBreakingChanges(t *testing.T) {
 		VerifyDelay:    100 * time.Millisecond,
 		Filter:         migrate.FilterAll,
 	}
-	if err := m.Migrate(ctx, bucket, "golden/"); err != nil {
+	if err := m.Migrate(ctx, bucket, prefix); err != nil {
 		t.Fatalf("Migrate failed: %v", err)
 	}
 
-	// --- Phase 3: Verify every object migrated to modern and is readable ---
 	keys := []string{
-		"golden/a-1", "golden/a-2",
-		"golden/b-1",
-		"golden/c-1", "golden/c-2",
-		"golden/modern-1", "golden/modern-2",
-		"golden/plain.txt",
+		prefix + "a-1", prefix + "a-2",
+		prefix + "b-1",
+		prefix + "c-1", prefix + "c-2",
+		prefix + "modern-1", prefix + "modern-2",
+		prefix + "plain.txt",
 	}
 	for _, key := range keys {
 		meta := headMeta(t, client, bucket, key)
@@ -625,7 +589,6 @@ func TestMAINT1_GoldenPath_AllBreakingChanges(t *testing.T) {
 			t.Errorf("%s: expected ClassModern or ClassPlaintext after migration, got %s", key, migrate.ClassToString(class))
 		}
 		if class == migrate.ClassPlaintext {
-			// Plaintext has no decryption to verify.
 			continue
 		}
 		got := decryptObject(t, client, eng, bucket, key)
@@ -634,28 +597,23 @@ func TestMAINT1_GoldenPath_AllBreakingChanges(t *testing.T) {
 		}
 	}
 
-	// Specific post-migration metadata assertions.
-	for _, key := range []string{"golden/a-1", "golden/a-2"} {
+	for _, key := range []string{prefix + "a-1", prefix + "a-2"} {
 		meta := headMeta(t, client, bucket, key)
 		if meta[crypto.MetaIVDerivation] != "hkdf-sha256" {
 			t.Errorf("%s: expected MetaIVDerivation=hkdf-sha256, got %q", key, meta[crypto.MetaIVDerivation])
 		}
 	}
-	metaB := headMeta(t, client, bucket, "golden/b-1")
+	metaB := headMeta(t, client, bucket, prefix+"b-1")
 	if metaB[crypto.MetaLegacyNoAAD] == "true" {
 		t.Errorf("golden/b-1: MetaLegacyNoAAD should be absent after migration")
 	}
-	for _, key := range []string{"golden/c-1", "golden/c-2"} {
+	for _, key := range []string{prefix + "c-1", prefix + "c-2"} {
 		meta := headMeta(t, client, bucket, key)
-		// After migration the object may or may not still be in fallback mode
-		// depending on whether the metadata still exceeds the limit.  If it is
-		// fallback, the version must be "2".
 		if meta[crypto.MetaFallbackMode] == "true" && meta[crypto.MetaFallbackVersion] != "2" {
 			t.Errorf("%s: fallback object must have version '2' after migration, got %q", key, meta[crypto.MetaFallbackVersion])
 		}
 	}
 
-	// --- Phase 4: Idempotency — second run must skip everything ---
 	m2 := &migrate.Migrator{
 		S3Client:       client,
 		SourceEngine:   eng,
@@ -667,67 +625,46 @@ func TestMAINT1_GoldenPath_AllBreakingChanges(t *testing.T) {
 		Verify:         false,
 		Filter:         migrate.FilterAll,
 	}
-	if err := m2.Migrate(ctx, bucket, "golden/"); err != nil {
+	if err := m2.Migrate(ctx, bucket, prefix); err != nil {
 		t.Fatalf("second Migrate failed: %v", err)
 	}
-	state, _, err := migrate.LoadOrCreate(stateFile, bucket, "golden/")
+	state, _, err := migrate.LoadOrCreate(stateFile, bucket, prefix)
 	if err != nil {
 		t.Fatalf("load state: %v", err)
 	}
-	wantMigrated := int64(5) // a-1, a-2, b-1, c-1, c-2
+	wantMigrated := int64(5)
 	if state.Stats.Migrated != wantMigrated {
 		t.Errorf("total migrated = %d, want %d (should not increase on second run)", state.Stats.Migrated, wantMigrated)
 	}
-	// First run skipped 3 (modern-1, modern-2, plain.txt).
-	// Second run skipped all 8 (everything is now modern/plaintext).
 	wantSkipped := int64(11)
 	if state.Stats.Skipped != wantSkipped {
 		t.Errorf("total skipped = %d, want %d", state.Stats.Skipped, wantSkipped)
 	}
 }
 
-// minioProviderForMigration is a thin wrapper around the standard MinIO
-// provider so we can reuse its Start() logic without importing the unexported
-// type.
-
-type minioProviderForMigration struct{}
-
-func (p *minioProviderForMigration) Start(ctx context.Context, t *testing.T) provider.Instance {
+// testMaint1_DryRun_Scan confirms the classification and reporting logic
+// works end-to-end against a real backend.
+func testMaint1_DryRun_Scan(t *testing.T, inst provider.Instance) {
 	t.Helper()
-	// Use the standard provider registration.
-	providers := provider.All()
-	for _, prov := range providers {
-		if prov.Name() == "minio" {
-			return prov.Start(ctx, t)
-		}
-	}
-	t.Skip("minio provider not registered; ensure Docker is available and GATEWAY_TEST_SKIP_MINIO is not set")
-	return provider.Instance{}
-}
-
-// TestMAINT1_DryRun_MinIO runs a dry-run scan against a real MinIO backend to
-// confirm the classification and reporting logic works end-to-end.
-func TestMAINT1_DryRun_MinIO(t *testing.T) {
-	inst := setupMinIO(t)
 	client := newS3Client(t, inst)
 	eng := newEngine(t)
 	bucket := inst.Bucket
+	suf := uniqueSuffix(t)
+	prefix := fmt.Sprintf("maint1/dryscan/%s/", suf)
 
-	// Seed a bucket with a known mix.
-	putEncryptedObject(t, client, eng, bucket, "dryrun-minio/modern", []byte("modern"), nil)
-	putEncryptedObject(t, client, eng, bucket, "dryrun-minio/legacy1", []byte("legacy"), func(meta map[string]string) {
+	putEncryptedObject(t, client, eng, bucket, prefix+"modern", []byte("modern"), nil)
+	putEncryptedObject(t, client, eng, bucket, prefix+"legacy1", []byte("legacy"), func(meta map[string]string) {
 		delete(meta, crypto.MetaIVDerivation)
 	})
-	putEncryptedObject(t, client, eng, bucket, "dryrun-minio/plain.txt", []byte("plaintext"), func(meta map[string]string) {
+	putEncryptedObject(t, client, eng, bucket, prefix+"plain.txt", []byte("plaintext"), func(meta map[string]string) {
 		delete(meta, crypto.MetaEncrypted)
 		delete(meta, "x-amz-meta-e")
 	})
 
-	report, err := migrate.DryRunScan(context.Background(), client, bucket, "dryrun-minio/", nil)
+	report, err := migrate.DryRunScan(context.Background(), client, bucket, prefix, nil)
 	if err != nil {
 		t.Fatalf("DryRunScan failed: %v", err)
 	}
-
 	if report.Total != 3 {
 		t.Errorf("Total = %d, want 3", report.Total)
 	}
@@ -740,26 +677,25 @@ func TestMAINT1_DryRun_MinIO(t *testing.T) {
 	if report.Plaintext != 1 {
 		t.Errorf("Plaintext = %d, want 1", report.Plaintext)
 	}
-
-	// Ensure samples are collected.
 	if len(report.Samples["class_a_xor"]) != 1 {
 		t.Errorf("expected 1 sample for class_a_xor, got %d", len(report.Samples["class_a_xor"]))
 	}
 }
 
-// TestMAINT1_VerifyAfterWrite detects a 1-byte corruption after PutObject.
-func TestMAINT1_VerifyAfterWrite(t *testing.T) {
-	inst := setupMinIO(t)
+// testMaint1_VerifyAfterWrite detects a 1-byte corruption after PutObject.
+func testMaint1_VerifyAfterWrite(t *testing.T, inst provider.Instance) {
+	t.Helper()
 	client := newS3Client(t, inst)
 	eng := newEngine(t)
 	bucket := inst.Bucket
+	suf := uniqueSuffix(t)
+	prefix := fmt.Sprintf("maint1/verify/%s/", suf)
 
 	wantPlain := []byte("verify me please")
-	putEncryptedObject(t, client, eng, bucket, "verify/obj", wantPlain, func(meta map[string]string) {
+	putEncryptedObject(t, client, eng, bucket, prefix+"obj", wantPlain, func(meta map[string]string) {
 		delete(meta, crypto.MetaIVDerivation)
 	})
 
-	// Normal migration with verify should succeed.
 	m := &migrate.Migrator{
 		S3Client:       client,
 		SourceEngine:   eng,
@@ -774,12 +710,11 @@ func TestMAINT1_VerifyAfterWrite(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	if err := m.Migrate(ctx, bucket, ""); err != nil {
+	if err := m.Migrate(ctx, bucket, prefix); err != nil {
 		t.Fatalf("Migrate with verify failed: %v", err)
 	}
 
-	// Verify the object is now modern.
-	meta := headMeta(t, client, bucket, "verify/obj")
+	meta := headMeta(t, client, bucket, prefix+"obj")
 	if meta[crypto.MetaIVDerivation] != "hkdf-sha256" {
 		t.Errorf("expected hkdf-sha256 after migration, got %q", meta[crypto.MetaIVDerivation])
 	}
