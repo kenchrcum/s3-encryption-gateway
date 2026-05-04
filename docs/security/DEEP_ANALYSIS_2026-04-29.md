@@ -170,7 +170,7 @@ This string prefix comparison is not constant-time. While the actual token compa
 
 ---
 
-### 🟡 NEW-03: `upload_part_copy.go` Full-Buffering on Large Part Copies
+### 🟡 V1.0-SEC-29: `upload_part_copy.go` Full-Buffering on Large Part Copies
 
 **Severity:** Low-Medium (DoS / memory pressure)  
 **Location:** `internal/api/upload_part_copy.go` lines 532, 587, 730, 771, 790, 818  
