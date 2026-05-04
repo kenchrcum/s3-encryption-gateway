@@ -13,8 +13,8 @@ maintainers:
   - name: kenchrcum
     url: https://github.com/kenchrcum
 type: application
-version: 0.6.4
-appVersion: "0.6.4"
+version: 0.7.0
+appVersion: "0.7.0"
 dependencies:
   # Valkey subchart for encrypted multipart upload state (V0.6-SEC-3 / ADR-0009).
   # Enabled when `encryptMultipartUploads` is set on any bucket policy;
