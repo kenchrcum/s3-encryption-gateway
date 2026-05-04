@@ -273,6 +273,8 @@ func BenchmarkSEC27_ChunkedFallback_PeakHeap(b *testing.B) {
 	plaintext := bytes.Repeat([]byte{0xBB}, objectSize)
 	meta := largeMetadataMap()
 
+	b.ReportAllocs()
+	b.SetBytes(objectSize)
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		var before, after runtime.MemStats
