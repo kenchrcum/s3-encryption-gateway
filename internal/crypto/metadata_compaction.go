@@ -26,7 +26,7 @@ func (c *MetadataCompactor) CompactMetadata(metadata map[string]string) (map[str
 
 	// Copy non-encryption metadata as-is
 	for key, value := range metadata {
-		if !isEncryptionMetadata(key) && !isCompressionMetadata(key) {
+		if !IsEncryptionMetadata(key) && !IsCompressionMetadata(key) {
 			compacted[key] = value
 		}
 	}
@@ -139,7 +139,7 @@ func (c *MetadataCompactor) compactEncryptionMetadata(metadata map[string]string
 	} else {
 		// No compaction - copy as-is
 		for key, value := range metadata {
-			if isEncryptionMetadata(key) || isCompressionMetadata(key) {
+			if IsEncryptionMetadata(key) || IsCompressionMetadata(key) {
 				compacted[key] = value
 			}
 		}
@@ -211,7 +211,7 @@ func (c *MetadataCompactor) expandEncryptionMetadata(metadata map[string]string)
 	} else {
 		// No expansion needed - copy encryption metadata as-is
 		for key, value := range metadata {
-			if isEncryptionMetadata(key) || isCompressionMetadata(key) {
+			if IsEncryptionMetadata(key) || IsCompressionMetadata(key) {
 				expanded[key] = value
 			}
 		}

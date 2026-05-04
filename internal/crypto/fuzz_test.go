@@ -52,7 +52,7 @@ func FuzzMetadataCompaction(f *testing.F) {
 
 		// Verify round-trip for encryption metadata
 		for k, v := range metadata {
-			if isEncryptionMetadata(k) || isCompressionMetadata(k) {
+			if IsEncryptionMetadata(k) || IsCompressionMetadata(k) {
 				if gotV, ok := expanded[k]; !ok || gotV != v {
 					// Special case: some keys might be normalized or dropped if empty
 					if v == "" {

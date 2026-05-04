@@ -57,6 +57,7 @@ const (
 
 	// Legacy marker for objects encrypted before AAD was introduced.
 	// The no-AAD fallback in Decrypt is only permitted when this flag is "true".
+	// Deprecated: remove no-AAD fallback path in v3.0 (same policy as XOR-IV and fallback-v1).
 	MetaLegacyNoAAD = "x-amz-meta-enc-legacy-no-aad"
 )
 
@@ -782,7 +783,7 @@ func (e *engine) Decrypt(reader io.Reader, metadata map[string]string) (io.Reade
 	decMetadata := make(map[string]string)
 	for k, v := range expandedMetadata {
 		// Skip encryption-related and compression-related metadata
-		if isEncryptionMetadata(k) || isCompressionMetadata(k) {
+		if IsEncryptionMetadata(k) || IsCompressionMetadata(k) {
 			continue
 		}
 		decMetadata[k] = v
@@ -1140,7 +1141,7 @@ func (e *engine) encryptChunkedWithMetadataFallback(ctx context.Context, reader 
 
 	// Copy original user metadata (non-encryption, non-compression keys)
 	for k, v := range fullMetadata {
-		if !isEncryptionMetadata(k) && !isCompressionMetadata(k) {
+		if !IsEncryptionMetadata(k) && !IsCompressionMetadata(k) {
 			minimalMetadata[k] = v
 		}
 	}
@@ -1232,7 +1233,7 @@ func (e *engine) decryptChunked(ctx context.Context, reader io.Reader, metadata 
 	decMetadata := make(map[string]string)
 	for k, v := range metadata {
 		// Skip encryption-related metadata
-		if isEncryptionMetadata(k) {
+		if IsEncryptionMetadata(k) {
 			continue
 		}
 		// For chunked encryption, skip ETag and Content-Length from GetObject
@@ -1394,7 +1395,7 @@ func (e *engine) DecryptRange(reader io.Reader, metadata map[string]string, plai
 	// Prepare decrypted metadata
 	decMetadata := make(map[string]string)
 	for k, v := range expandedMetadata {
-		if isEncryptionMetadata(k) {
+		if IsEncryptionMetadata(k) {
 			continue
 		}
 		decMetadata[k] = v
@@ -1536,7 +1537,7 @@ func (e *engine) encryptWithMetadataFallback(plaintext []byte, fullMetadata map[
 
 	// Copy original user metadata
 	for k, v := range fullMetadata {
-		if !isEncryptionMetadata(k) && !isCompressionMetadata(k) {
+		if !IsEncryptionMetadata(k) && !IsCompressionMetadata(k) {
 			minimalMetadata[k] = v
 		}
 	}
@@ -1721,7 +1722,7 @@ func (e *engine) decryptFallbackV1(reader io.Reader, metadata map[string]string)
 	decMetadata := make(map[string]string)
 	for k, v := range fullMetadata {
 		// Skip encryption-related and compression-related metadata
-		if isEncryptionMetadata(k) || isCompressionMetadata(k) {
+		if IsEncryptionMetadata(k) || IsCompressionMetadata(k) {
 			continue
 		}
 		decMetadata[k] = v
@@ -1763,8 +1764,8 @@ func (e *engine) IsEncrypted(metadata map[string]string) bool {
 // S3 treats ETags as opaque identifiers; both MD5 and SHA-256 are functionally equivalent
 // for this gateway's purposes.
 
-// isEncryptionMetadata checks if a metadata key is related to encryption.
-func isEncryptionMetadata(key string) bool {
+// IsEncryptionMetadata checks if a metadata key is related to encryption.
+func IsEncryptionMetadata(key string) bool {
 	return key == MetaEncrypted ||
 		key == MetaAlgorithm ||
 		key == MetaKeySalt ||
@@ -1788,8 +1789,8 @@ func isEncryptionMetadata(key string) bool {
 		key == MetaLegacyNoAAD
 }
 
-// isCompressionMetadata checks if a metadata key is related to compression.
-func isCompressionMetadata(key string) bool {
+// IsCompressionMetadata checks if a metadata key is related to compression.
+func IsCompressionMetadata(key string) bool {
 	return key == MetaCompression ||
 		key == MetaCompressionEnabled ||
 		key == MetaCompressionAlgorithm ||
