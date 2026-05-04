@@ -89,8 +89,6 @@ type engine struct {
 	compressionEngine   CompressionEngine
 	preferredAlgorithm  string
 	supportedAlgorithms []string
-	// keyResolver resolves a password by key version for decryption of older objects
-	keyResolver func(version int) (string, bool)
 	// Chunked encryption settings
 	chunkedMode bool // Enable chunked/streaming encryption mode
 	chunkSize   int  // Size of each encryption chunk (default: DefaultChunkSize)
@@ -197,34 +195,6 @@ func NewEngineWithChunkingAndProvider(password []byte, compressionEngine Compres
 		bufferPool:          GetGlobalBufferPool(),
 		tracer:              otel.Tracer("s3-encryption-gateway.crypto"),
 	}, nil
-}
-
-// NewEngineWithResolver creates a new encryption engine with a key resolver for rotation support.
-func NewEngineWithResolver(password []byte, compressionEngine CompressionEngine, preferredAlgorithm string, supportedAlgorithms []string, resolver func(version int) (string, bool)) (EncryptionEngine, error) {
-	return NewEngineWithResolverAndProvider(password, compressionEngine, preferredAlgorithm, supportedAlgorithms, resolver, "default")
-}
-
-// NewEngineWithResolverAndProvider creates a new encryption engine with a key resolver and provider support.
-func NewEngineWithResolverAndProvider(password []byte, compressionEngine CompressionEngine, preferredAlgorithm string, supportedAlgorithms []string, resolver func(version int) (string, bool), provider string) (EncryptionEngine, error) {
-	eng, err := NewEngineWithProvider(password, compressionEngine, preferredAlgorithm, supportedAlgorithms, provider)
-	if err != nil {
-		return nil, err
-	}
-	if resolver != nil {
-		SetKeyResolver(eng, resolver)
-	}
-	return eng, nil
-}
-
-// SetKeyResolver sets a key resolver on an existing engine instance.
-// This allows decryption using older key versions without reconstructing the engine.
-//
-// Deprecated: Pass [WithKeyResolver] to [NewEngineWithOpts] instead. This function
-// will be removed in a future release.
-func SetKeyResolver(enc EncryptionEngine, resolver func(version int) (string, bool)) {
-	if e, ok := enc.(*engine); ok {
-		e.keyResolver = resolver
-	}
 }
 
 // SetKeyManager wires an external KeyManager into the engine for envelope encryption.
@@ -615,13 +585,9 @@ func (e *engine) Decrypt(ctx context.Context, reader io.Reader, metadata map[str
 		keySize = chacha20KeySize
 	}
 
-	var (
-		key      []byte
-		usingKMS bool
-	)
+	var key []byte
 
 	if e.kmsManager != nil && expandedMetadata[MetaWrappedKeyCiphertext] != "" {
-		usingKMS = true
 		wrappedKeyB64 := expandedMetadata[MetaWrappedKeyCiphertext]
 		ciphertext, err := decodeBase64(wrappedKeyB64)
 		if err != nil {
@@ -725,37 +691,6 @@ func (e *engine) Decrypt(ctx context.Context, reader io.Reader, metadata map[str
 			if pt, err2 := gcm.Open(nil, iv, ciphertext, nil); err2 == nil {
 				plaintext = pt
 				openErr = nil
-			}
-		}
-	}
-
-	// If still failing and keyResolver available with key version, try resolved password (pbkdf2 mode only)
-	if openErr != nil && !usingKMS && e.keyResolver != nil {
-		if kvStr, ok := expandedMetadata[MetaKeyVersion]; ok && kvStr != "" {
-			// parse version
-			var ver int
-			if _, perr := fmt.Sscanf(kvStr, "%d", &ver); perr == nil {
-				if altPass, ok := e.keyResolver(ver); ok {
-					// derive alt key
-					altKey, derr := pbkdf2.Key(sha256.New, altPass, salt, pbkdf2Iterations, keySize)
-					if derr == nil {
-						defer zeroBytes(altKey)
-						// create cipher
-						altCipher, cerr := createAEADCipher(algorithm, altKey)
-						if cerr == nil {
-							altGCM := altCipher.(cipher.AEAD)
-							if pt, err3 := altGCM.Open(nil, iv, ciphertext, aad); err3 == nil {
-								plaintext = pt
-								openErr = nil
-							} else if expandedMetadata[MetaLegacyNoAAD] == "true" {
-								if pt2, err4 := altGCM.Open(nil, iv, ciphertext, nil); err4 == nil {
-									plaintext = pt2
-									openErr = nil
-								}
-							}
-						}
-					}
-				}
 			}
 		}
 	}

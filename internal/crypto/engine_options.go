@@ -1,7 +1,7 @@
 package crypto
 
 // Option is a functional option for configuring an engine at construction time.
-// This pattern replaces the out-of-band SetKeyManager / SetKeyResolver mutators
+// This pattern replaces the out-of-band SetKeyManager mutators
 // for new callers (see [NewEngineWithOpts]).
 type Option func(*engine)
 
@@ -13,18 +13,6 @@ func WithKeyManager(km KeyManager) Option {
 	return func(e *engine) {
 		if km != nil {
 			e.kmsManager = km
-		}
-	}
-}
-
-// WithKeyResolver sets a key resolver used during decryption of objects that
-// were encrypted with an older password (pbkdf2 mode only).
-//
-// Using this option is the preferred alternative to the deprecated [SetKeyResolver].
-func WithKeyResolver(resolver func(version int) (string, bool)) Option {
-	return func(e *engine) {
-		if resolver != nil {
-			e.keyResolver = resolver
 		}
 	}
 }

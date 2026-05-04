@@ -203,3 +203,4 @@ func TestAADFallback_LegacyObjectWithoutFlagFails(t *testing.T) {
 		t.Fatalf("Decrypt() expected error for legacy object without flag, got nil")
 	}
 }
+

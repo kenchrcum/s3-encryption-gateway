@@ -49,53 +49,15 @@ func TestWithKeyManager_NilIsNoop(t *testing.T) {
 	}
 }
 
-// TestWithKeyResolver_SetsResolver verifies that the WithKeyResolver option
-// configures the key resolver on the engine.
-func TestWithKeyResolver_SetsResolver(t *testing.T) {
-	resolverCalled := false
-	resolver := func(version int) (string, bool) {
-		resolverCalled = true
-		return "resolver-password", true
-	}
-
-	eng, err := NewEngineWithOpts([]byte("test-password-resolver"), nil, WithKeyResolver(resolver))
-	if err != nil {
-		t.Fatalf("NewEngineWithOpts() with WithKeyResolver error: %v", err)
-	}
-	if eng == nil {
-		t.Fatal("NewEngineWithOpts() with WithKeyResolver returned nil engine")
-	}
-
-	// The resolver should be installed but not called yet (no decryption happened)
-	_ = resolverCalled // suppress unused warning; actual call happens during decrypt
-}
-
-// TestWithKeyResolver_NilIsNoop verifies that passing nil to WithKeyResolver
-// does not change the engine's keyResolver.
-func TestWithKeyResolver_NilIsNoop(t *testing.T) {
-	eng, err := NewEngineWithOpts([]byte("test-password-resolver-noop"), nil, WithKeyResolver(nil))
-	if err != nil {
-		t.Fatalf("NewEngineWithOpts() with nil resolver error: %v", err)
-	}
-	if eng == nil {
-		t.Fatal("NewEngineWithOpts() returned nil engine")
-	}
-}
-
 // TestNewEngineWithOpts_MultipleOptions verifies that multiple options are all
 // applied in order without any option overwriting a previous one.
 func TestNewEngineWithOpts_MultipleOptions(t *testing.T) {
 	km := NewInMemoryKeyManagerForTestDefault()
 
-	resolver := func(version int) (string, bool) {
-		return "v1-password", version == 1
-	}
-
 	eng, err := NewEngineWithOpts(
 		[]byte("test-password-multi-opts"),
 		nil,
 		WithKeyManager(km),
-		WithKeyResolver(resolver),
 	)
 	if err != nil {
 		t.Fatalf("NewEngineWithOpts() with multiple options error: %v", err)
