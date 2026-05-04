@@ -2,6 +2,7 @@ package crypto
 
 import (
 	"bytes"
+	"context"
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/pbkdf2"
@@ -21,10 +22,10 @@ func TestChunkedEncryptDecrypt_SmallData(t *testing.T) {
 
 	// Small data that fits in one chunk
 	originalData := []byte("Hello, World!")
-	
+
 	// Encrypt
 	reader := bytes.NewReader(originalData)
-	encryptedReader, metadata, err := engine.Encrypt(reader, nil)
+	encryptedReader, metadata, err := engine.Encrypt(context.Background(), reader, nil)
 	if err != nil {
 		t.Fatalf("Failed to encrypt: %v", err)
 	}
@@ -46,7 +47,7 @@ func TestChunkedEncryptDecrypt_SmallData(t *testing.T) {
 
 	// Decrypt
 	encryptedReader2 := bytes.NewReader(encryptedData)
-	decryptedReader, _, err := engine.Decrypt(encryptedReader2, metadata)
+	decryptedReader, _, err := engine.Decrypt(context.Background(), encryptedReader2, metadata)
 	if err != nil {
 		t.Fatalf("Failed to decrypt: %v", err)
 	}
@@ -76,7 +77,7 @@ func TestChunkedEncryptDecrypt_LargeData(t *testing.T) {
 
 	// Encrypt
 	reader := bytes.NewReader(originalData)
-	encryptedReader, metadata, err := engine.Encrypt(reader, nil)
+	encryptedReader, metadata, err := engine.Encrypt(context.Background(), reader, nil)
 	if err != nil {
 		t.Fatalf("Failed to encrypt: %v", err)
 	}
@@ -115,7 +116,7 @@ func TestChunkedEncryptDecrypt_LargeData(t *testing.T) {
 
 	// Decrypt in streaming fashion
 	encryptedReader2 := bytes.NewReader(encryptedData)
-	decryptedReader, _, err := engine.Decrypt(encryptedReader2, metadata)
+	decryptedReader, _, err := engine.Decrypt(context.Background(), encryptedReader2, metadata)
 	if err != nil {
 		t.Fatalf("Failed to decrypt: %v", err)
 	}
@@ -166,7 +167,7 @@ func TestChunkedEncryptDecrypt_ExactChunkSize(t *testing.T) {
 	}
 
 	reader := bytes.NewReader(originalData)
-	encryptedReader, metadata, err := engine.Encrypt(reader, nil)
+	encryptedReader, metadata, err := engine.Encrypt(context.Background(), reader, nil)
 	if err != nil {
 		t.Fatalf("Failed to encrypt: %v", err)
 	}
@@ -177,7 +178,7 @@ func TestChunkedEncryptDecrypt_ExactChunkSize(t *testing.T) {
 	}
 
 	encryptedReader2 := bytes.NewReader(encryptedData)
-	decryptedReader, _, err := engine.Decrypt(encryptedReader2, metadata)
+	decryptedReader, _, err := engine.Decrypt(context.Background(), encryptedReader2, metadata)
 	if err != nil {
 		t.Fatalf("Failed to decrypt: %v", err)
 	}
@@ -199,15 +200,15 @@ func TestChunkedEncryptDecrypt_MultipleSizes(t *testing.T) {
 	}
 
 	testSizes := []int{
-		1,                    // 1 byte
-		100,                  // 100 bytes
-		1024,                 // 1KB
-		64 * 1024,            // 64KB (exact chunk size)
-		65 * 1024,            // 65KB (slightly more than one chunk)
-		128 * 1024,           // 128KB (two chunks)
-		512 * 1024,           // 512KB
-		1024 * 1024,          // 1MB
-		5 * 1024 * 1024,      // 5MB
+		1,               // 1 byte
+		100,             // 100 bytes
+		1024,            // 1KB
+		64 * 1024,       // 64KB (exact chunk size)
+		65 * 1024,       // 65KB (slightly more than one chunk)
+		128 * 1024,      // 128KB (two chunks)
+		512 * 1024,      // 512KB
+		1024 * 1024,     // 1MB
+		5 * 1024 * 1024, // 5MB
 	}
 
 	for _, size := range testSizes {
@@ -218,7 +219,7 @@ func TestChunkedEncryptDecrypt_MultipleSizes(t *testing.T) {
 			}
 
 			reader := bytes.NewReader(originalData)
-			encryptedReader, metadata, err := engine.Encrypt(reader, nil)
+			encryptedReader, metadata, err := engine.Encrypt(context.Background(), reader, nil)
 			if err != nil {
 				t.Fatalf("Failed to encrypt: %v", err)
 			}
@@ -233,7 +234,7 @@ func TestChunkedEncryptDecrypt_MultipleSizes(t *testing.T) {
 			}
 
 			encryptedReader2 := bytes.NewReader(encryptedData)
-			decryptedReader, _, err := engine.Decrypt(encryptedReader2, metadata)
+			decryptedReader, _, err := engine.Decrypt(context.Background(), encryptedReader2, metadata)
 			if err != nil {
 				t.Fatalf("Failed to decrypt: %v", err)
 			}
@@ -269,7 +270,7 @@ func TestChunkedEncryptDecrypt_StreamingBehavior(t *testing.T) {
 
 	// Encrypt with streaming source
 	reader := bytes.NewReader(originalData)
-	encryptedReader, metadata, err := engine.Encrypt(reader, nil)
+	encryptedReader, metadata, err := engine.Encrypt(context.Background(), reader, nil)
 	if err != nil {
 		t.Fatalf("Failed to encrypt: %v", err)
 	}
@@ -305,7 +306,7 @@ func TestChunkedEncryptDecrypt_StreamingBehavior(t *testing.T) {
 
 	// Decrypt
 	encryptedReader2 := bytes.NewReader(encryptedData)
-	decryptedReader, _, err := engine.Decrypt(encryptedReader2, metadata)
+	decryptedReader, _, err := engine.Decrypt(context.Background(), encryptedReader2, metadata)
 	if err != nil {
 		t.Fatalf("Failed to decrypt: %v", err)
 	}
@@ -362,7 +363,7 @@ func TestChunkedEncryptDecrypt_BackwardCompatibility(t *testing.T) {
 
 	originalData := []byte("Test data")
 	reader := bytes.NewReader(originalData)
-	encryptedReader, metadata, err := engine.Encrypt(reader, nil)
+	encryptedReader, metadata, err := engine.Encrypt(context.Background(), reader, nil)
 	if err != nil {
 		t.Fatalf("Failed to encrypt: %v", err)
 	}
@@ -378,7 +379,7 @@ func TestChunkedEncryptDecrypt_BackwardCompatibility(t *testing.T) {
 	}
 
 	encryptedReader2 := bytes.NewReader(encryptedData)
-	decryptedReader, _, err := engine.Decrypt(encryptedReader2, metadata)
+	decryptedReader, _, err := engine.Decrypt(context.Background(), encryptedReader2, metadata)
 	if err != nil {
 		t.Fatalf("Failed to decrypt: %v", err)
 	}
@@ -423,7 +424,7 @@ func TestChunkedEncrypt_DoesNotPreRead(t *testing.T) {
 	}
 
 	tracker := &readTracker{r: bytes.NewReader(data)}
-	encReader, meta, err := engine.Encrypt(tracker, map[string]string{
+	encReader, meta, err := engine.Encrypt(context.Background(), tracker, map[string]string{
 		"Content-Length": fmt.Sprintf("%d", len(data)),
 	})
 	if err != nil {
@@ -455,7 +456,7 @@ func TestChunkedEncrypt_DoesNotPreRead(t *testing.T) {
 	}
 
 	// Round-trip decrypt.
-	decReader, _, err := engine.Decrypt(bytes.NewReader(encryptedData), meta)
+	decReader, _, err := engine.Decrypt(context.Background(), bytes.NewReader(encryptedData), meta)
 	if err != nil {
 		t.Fatalf("Decrypt failed: %v", err)
 	}
@@ -493,7 +494,7 @@ func TestChunkedEncryptFallback_NoDoubleBuffer(t *testing.T) {
 
 	data := []byte("Hello, fallback world! This is test data for V1.0-SEC-14.")
 
-	encReader, meta, err := encEngine.Encrypt(bytes.NewReader(data), map[string]string{
+	encReader, meta, err := encEngine.Encrypt(context.Background(), bytes.NewReader(data), map[string]string{
 		"Content-Length": fmt.Sprintf("%d", len(data)),
 		"Content-Type":   "text/plain",
 	})
@@ -665,7 +666,7 @@ func TestChunkedEncrypt_MetadataHasIVDerivationFlag(t *testing.T) {
 
 	originalData := []byte("Hello, HKDF!")
 	reader := bytes.NewReader(originalData)
-	encryptedReader, metadata, err := engine.Encrypt(reader, nil)
+	encryptedReader, metadata, err := engine.Encrypt(context.Background(), reader, nil)
 	if err != nil {
 		t.Fatalf("Failed to encrypt: %v", err)
 	}
@@ -683,7 +684,7 @@ func TestChunkedEncrypt_MetadataHasIVDerivationFlag(t *testing.T) {
 	}
 
 	// Verify round-trip succeeds with the HKDF flag present.
-	decryptedReader, _, err := engine.Decrypt(bytes.NewReader(encryptedData), metadata)
+	decryptedReader, _, err := engine.Decrypt(context.Background(), bytes.NewReader(encryptedData), metadata)
 	if err != nil {
 		t.Fatalf("Failed to decrypt: %v", err)
 	}
@@ -782,7 +783,7 @@ func TestChunkedEngineDecrypt_LegacyObject(t *testing.T) {
 	}
 
 	// Decrypt through the full engine path.
-	decryptedReader, _, err := engine.Decrypt(bytes.NewReader(encryptedData), metadata)
+	decryptedReader, _, err := engine.Decrypt(context.Background(), bytes.NewReader(encryptedData), metadata)
 	if err != nil {
 		t.Fatalf("Failed to decrypt legacy object: %v", err)
 	}

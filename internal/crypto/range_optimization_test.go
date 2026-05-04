@@ -2,6 +2,7 @@ package crypto
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"io"
 	"testing"
@@ -9,57 +10,57 @@ import (
 
 func TestCalculateChunkRangeFromPlaintext(t *testing.T) {
 	tests := []struct {
-		name            string
-		plaintextStart  int64
-		plaintextEnd    int64
-		chunkSize       int
-		totalChunks     int
-		expectedStartChunk int
-		expectedEndChunk   int
+		name                string
+		plaintextStart      int64
+		plaintextEnd        int64
+		chunkSize           int
+		totalChunks         int
+		expectedStartChunk  int
+		expectedEndChunk    int
 		expectedStartOffset int
 		expectedEndOffset   int
 	}{
 		{
-			name:               "single chunk",
-			plaintextStart:     100,
-			plaintextEnd:       200,
-			chunkSize:          1024,
-			totalChunks:        10,
-			expectedStartChunk: 0,
-			expectedEndChunk:   0,
+			name:                "single chunk",
+			plaintextStart:      100,
+			plaintextEnd:        200,
+			chunkSize:           1024,
+			totalChunks:         10,
+			expectedStartChunk:  0,
+			expectedEndChunk:    0,
 			expectedStartOffset: 100,
 			expectedEndOffset:   200,
 		},
 		{
-			name:               "span multiple chunks",
-			plaintextStart:     1024,
-			plaintextEnd:       3072,
-			chunkSize:          1024,
-			totalChunks:        10,
-			expectedStartChunk: 1, // chunk 1 (bytes 1024-2047)
-			expectedEndChunk:   3, // chunk 3 (bytes 3072-4095) - 3072 is start of chunk 3
+			name:                "span multiple chunks",
+			plaintextStart:      1024,
+			plaintextEnd:        3072,
+			chunkSize:           1024,
+			totalChunks:         10,
+			expectedStartChunk:  1, // chunk 1 (bytes 1024-2047)
+			expectedEndChunk:    3, // chunk 3 (bytes 3072-4095) - 3072 is start of chunk 3
 			expectedStartOffset: 0,
 			expectedEndOffset:   0,
 		},
 		{
-			name:               "exact chunk boundary",
-			plaintextStart:     2048,
-			plaintextEnd:       4095,
-			chunkSize:          1024,
-			totalChunks:        10,
-			expectedStartChunk: 2,
-			expectedEndChunk:   3,
+			name:                "exact chunk boundary",
+			plaintextStart:      2048,
+			plaintextEnd:        4095,
+			chunkSize:           1024,
+			totalChunks:         10,
+			expectedStartChunk:  2,
+			expectedEndChunk:    3,
 			expectedStartOffset: 0,
 			expectedEndOffset:   1023,
 		},
 		{
-			name:               "start at chunk boundary, end in middle",
-			plaintextStart:     2048,
-			plaintextEnd:       2500,
-			chunkSize:          1024,
-			totalChunks:        10,
-			expectedStartChunk: 2,
-			expectedEndChunk:   2,
+			name:                "start at chunk boundary, end in middle",
+			plaintextStart:      2048,
+			plaintextEnd:        2500,
+			chunkSize:           1024,
+			totalChunks:         10,
+			expectedStartChunk:  2,
+			expectedEndChunk:    2,
 			expectedStartOffset: 0,
 			expectedEndOffset:   452,
 		},
@@ -92,40 +93,40 @@ func TestCalculateChunkRangeFromPlaintext(t *testing.T) {
 
 func TestCalculateEncryptedByteRange(t *testing.T) {
 	tests := []struct {
-		name              string
-		startChunk         int
-		endChunk           int
-		chunkSize          int
+		name                   string
+		startChunk             int
+		endChunk               int
+		chunkSize              int
 		expectedEncryptedStart int64
 		expectedEncryptedEnd   int64
-		expectError        bool
+		expectError            bool
 	}{
 		{
-			name:                  "single chunk",
-			startChunk:            0,
-			endChunk:              0,
-			chunkSize:             65536, // 64KB
+			name:                   "single chunk",
+			startChunk:             0,
+			endChunk:               0,
+			chunkSize:              65536, // 64KB
 			expectedEncryptedStart: 0,
 			expectedEncryptedEnd:   65551, // 65536 + 16 - 1
-			expectError:           false,
+			expectError:            false,
 		},
 		{
-			name:                  "two chunks",
-			startChunk:            0,
-			endChunk:              1,
-			chunkSize:             65536,
+			name:                   "two chunks",
+			startChunk:             0,
+			endChunk:               1,
+			chunkSize:              65536,
 			expectedEncryptedStart: 0,
 			expectedEncryptedEnd:   131103, // 2 * (65536 + 16) - 1
-			expectError:           false,
+			expectError:            false,
 		},
 		{
-			name:                  "multiple chunks",
-			startChunk:            2,
-			endChunk:              5,
-			chunkSize:             65536,
+			name:                   "multiple chunks",
+			startChunk:             2,
+			endChunk:               5,
+			chunkSize:              65536,
 			expectedEncryptedStart: 131104, // 2 * (65536 + 16)
 			expectedEncryptedEnd:   393311, // (5+1) * (65536 + 16) - 1 = 6 * 65552 - 1
-			expectError:           false,
+			expectError:            false,
 		},
 		{
 			name:        "endChunk negative",
@@ -281,16 +282,16 @@ func TestParseHTTPRangeHeader(t *testing.T) {
 			expectedErr:   false,
 		},
 		{
-			name:          "invalid format",
-			rangeHeader:   "invalid",
-			totalSize:     1000,
-			expectedErr:   true,
+			name:        "invalid format",
+			rangeHeader: "invalid",
+			totalSize:   1000,
+			expectedErr: true,
 		},
 		{
-			name:          "invalid range (out of bounds)",
-			rangeHeader:   "bytes=5000-6000",
-			totalSize:     1000,
-			expectedErr:   true,
+			name:        "invalid range (out of bounds)",
+			rangeHeader: "bytes=5000-6000",
+			totalSize:   1000,
+			expectedErr: true,
 		},
 	}
 
@@ -322,10 +323,10 @@ func TestParseHTTPRangeHeader(t *testing.T) {
 
 func TestGetPlaintextSizeFromMetadata(t *testing.T) {
 	tests := []struct {
-		name        string
-		metadata    map[string]string
+		name         string
+		metadata     map[string]string
 		expectedSize int64
-		expectedErr bool
+		expectedErr  bool
 	}{
 		{
 			name: "chunked format",
@@ -399,8 +400,8 @@ func TestCalculateEncryptedRangeForPlaintextRange(t *testing.T) {
 	// Should span chunks 1-1 (bytes 65536-131071 are in chunk 1)
 	// Encrypted: chunk 1 = bytes (1 * (65536+16)) to ((1+1) * (65536+16) - 1)
 	// = 65552 to 131103
-	expectedStart := int64(65552)  // chunk 1 start: 1 * 65552
-	expectedEnd := int64(131103)   // chunk 1 end: 2 * 65552 - 1
+	expectedStart := int64(65552) // chunk 1 start: 1 * 65552
+	expectedEnd := int64(131103)  // chunk 1 end: 2 * 65552 - 1
 
 	if encryptedStart != expectedStart {
 		t.Errorf("encryptedStart = %d, expected %d", encryptedStart, expectedStart)
@@ -426,7 +427,7 @@ func TestRangeDecryptionEdgeCases(t *testing.T) {
 
 	// Encrypt the data
 	reader := bytes.NewReader(originalData)
-	encryptedReader, metadata, err := engine.Encrypt(reader, nil)
+	encryptedReader, metadata, err := engine.Encrypt(context.Background(), reader, nil)
 	if err != nil {
 		t.Fatalf("Failed to encrypt: %v", err)
 	}
@@ -522,15 +523,15 @@ func TestRangeDecryptionEdgeCases(t *testing.T) {
 		},
 		{
 			name:           "cross-multiple-chunks",
-			plaintextStart: 16*1024 - 100, // within chunk 0
-			plaintextEnd:   32*1024 + 100, // within chunk 2
+			plaintextStart: 16*1024 - 100,                              // within chunk 0
+			plaintextEnd:   32*1024 + 100,                              // within chunk 2
 			expectedSize:   int64(32*1024 + 100 - (16*1024 - 100) + 1), // 16585 bytes
 			expectError:    false,
 			description:    "range spanning chunks 0, 1, and 2",
 		},
 		{
 			name:           "start-at-chunk-boundary",
-			plaintextStart: 16 * 1024, // exact start of chunk 1
+			plaintextStart: 16 * 1024,            // exact start of chunk 1
 			plaintextEnd:   16*1024 + 4*1024 - 1, // end of 4KB range
 			expectedSize:   4 * 1024,
 			expectError:    false,
@@ -582,7 +583,7 @@ func TestRangeDecryptionEdgeCases(t *testing.T) {
 		},
 		{
 			name:           "middle-chunk-only",
-			plaintextStart: 16 * 1024, // start of chunk 1
+			plaintextStart: 16 * 1024,   // start of chunk 1
 			plaintextEnd:   32*1024 - 1, // end of chunk 1
 			expectedSize:   16 * 1024,
 			expectError:    false,
@@ -596,8 +597,8 @@ func TestRangeDecryptionEdgeCases(t *testing.T) {
 
 			// Use the engine's DecryptRange method
 			rangeReader, _, err := engine.(interface {
-				DecryptRange(reader io.Reader, metadata map[string]string, plaintextStart, plaintextEnd int64) (io.Reader, map[string]string, error)
-			}).DecryptRange(encryptedReader2, metadata, tc.plaintextStart, tc.plaintextEnd)
+				DecryptRange(ctx context.Context, reader io.Reader, metadata map[string]string, plaintextStart, plaintextEnd int64) (io.Reader, map[string]string, error)
+			}).DecryptRange(context.Background(), encryptedReader2, metadata, tc.plaintextStart, tc.plaintextEnd)
 
 			if tc.expectError {
 				if err == nil {
@@ -646,38 +647,38 @@ func TestRangeDecryptionContentRangeMapping(t *testing.T) {
 	totalPlaintextSize := int64(totalChunks * chunkSize)
 
 	testCases := []struct {
-		name              string
-		plaintextStart    int64
-		plaintextEnd      int64
-		expectedStartChunk int
-		expectedEndChunk   int
+		name                string
+		plaintextStart      int64
+		plaintextEnd        int64
+		expectedStartChunk  int
+		expectedEndChunk    int
 		expectedStartOffset int
 		expectedEndOffset   int
 	}{
 		{
-			name:               "first-chunk-partial",
-			plaintextStart:     1000,
-			plaintextEnd:       2000,
-			expectedStartChunk: 0,
-			expectedEndChunk:   0,
+			name:                "first-chunk-partial",
+			plaintextStart:      1000,
+			plaintextEnd:        2000,
+			expectedStartChunk:  0,
+			expectedEndChunk:    0,
 			expectedStartOffset: 1000,
 			expectedEndOffset:   2000,
 		},
 		{
-			name:               "cross-chunk",
-			plaintextStart:     int64(chunkSize - 100),
-			plaintextEnd:       int64(chunkSize + 100),
-			expectedStartChunk: 0,
-			expectedEndChunk:   1,
+			name:                "cross-chunk",
+			plaintextStart:      int64(chunkSize - 100),
+			plaintextEnd:        int64(chunkSize + 100),
+			expectedStartChunk:  0,
+			expectedEndChunk:    1,
 			expectedStartOffset: chunkSize - 100,
 			expectedEndOffset:   100,
 		},
 		{
-			name:               "last-chunk-partial",
-			plaintextStart:     totalPlaintextSize - 1000,
-			plaintextEnd:       totalPlaintextSize - 1,
-			expectedStartChunk: 2,
-			expectedEndChunk:   2,
+			name:                "last-chunk-partial",
+			plaintextStart:      totalPlaintextSize - 1000,
+			plaintextEnd:        totalPlaintextSize - 1,
+			expectedStartChunk:  2,
+			expectedEndChunk:    2,
 			expectedStartOffset: chunkSize - 1000,
 			expectedEndOffset:   chunkSize - 1,
 		},
@@ -741,7 +742,7 @@ func TestRangeDecryptionAuthenticationVerification(t *testing.T) {
 
 	// Encrypt the data
 	reader := bytes.NewReader(originalData)
-	encryptedReader, metadata, err := engine.Encrypt(reader, nil)
+	encryptedReader, metadata, err := engine.Encrypt(context.Background(), reader, nil)
 	if err != nil {
 		t.Fatalf("Failed to encrypt: %v", err)
 	}
@@ -771,8 +772,8 @@ func TestRangeDecryptionAuthenticationVerification(t *testing.T) {
 	expectedSize := plaintextEnd - plaintextStart + 1
 
 	rangeReader, _, err := engine.(interface {
-		DecryptRange(reader io.Reader, metadata map[string]string, plaintextStart, plaintextEnd int64) (io.Reader, map[string]string, error)
-	}).DecryptRange(bytes.NewReader(encryptedData), metadata, plaintextStart, plaintextEnd)
+		DecryptRange(ctx context.Context, reader io.Reader, metadata map[string]string, plaintextStart, plaintextEnd int64) (io.Reader, map[string]string, error)
+	}).DecryptRange(context.Background(), bytes.NewReader(encryptedData), metadata, plaintextStart, plaintextEnd)
 
 	if err != nil {
 		t.Fatalf("Failed to create range reader: %v", err)
@@ -800,7 +801,7 @@ func TestRangeDecryptionAuthenticationVerification(t *testing.T) {
 
 		// Corrupt a byte in the middle of a chunk (not in auth tag)
 		// Find a good spot to corrupt - avoid the auth tag at the end
-		chunkSize := 16*1024 + tagSize // 16KB + 16 bytes tag
+		chunkSize := 16*1024 + tagSize    // 16KB + 16 bytes tag
 		corruptOffset := chunkSize/2 + 10 // Middle of first chunk, avoid tag
 		if corruptOffset < len(corruptedData) {
 			corruptedData[corruptOffset] ^= 0xFF // Flip all bits
@@ -808,8 +809,8 @@ func TestRangeDecryptionAuthenticationVerification(t *testing.T) {
 
 		// Try to decrypt range - should fail due to auth tag verification
 		rangeReader, _, err := engine.(interface {
-			DecryptRange(reader io.Reader, metadata map[string]string, plaintextStart, plaintextEnd int64) (io.Reader, map[string]string, error)
-		}).DecryptRange(bytes.NewReader(corruptedData), metadata, plaintextStart, plaintextEnd)
+			DecryptRange(ctx context.Context, reader io.Reader, metadata map[string]string, plaintextStart, plaintextEnd int64) (io.Reader, map[string]string, error)
+		}).DecryptRange(context.Background(), bytes.NewReader(corruptedData), metadata, plaintextStart, plaintextEnd)
 
 		if err != nil {
 			// Should fail during range reader creation or reading
@@ -839,7 +840,7 @@ func TestRangeDecryptionChunkAlignment(t *testing.T) {
 
 	// Encrypt the data
 	reader := bytes.NewReader(originalData)
-	encryptedReader, metadata, err := engine.Encrypt(reader, nil)
+	encryptedReader, metadata, err := engine.Encrypt(context.Background(), reader, nil)
 	if err != nil {
 		t.Fatalf("Failed to encrypt: %v", err)
 	}
@@ -869,8 +870,8 @@ func TestRangeDecryptionChunkAlignment(t *testing.T) {
 	expectedSize := plaintextEnd - plaintextStart + 1
 
 	rangeReader, _, err := engine.(interface {
-		DecryptRange(reader io.Reader, metadata map[string]string, plaintextStart, plaintextEnd int64) (io.Reader, map[string]string, error)
-	}).DecryptRange(bytes.NewReader(encryptedData), metadata, plaintextStart, plaintextEnd)
+		DecryptRange(ctx context.Context, reader io.Reader, metadata map[string]string, plaintextStart, plaintextEnd int64) (io.Reader, map[string]string, error)
+	}).DecryptRange(context.Background(), bytes.NewReader(encryptedData), metadata, plaintextStart, plaintextEnd)
 
 	if err != nil {
 		t.Fatalf("Failed to create range reader: %v", err)

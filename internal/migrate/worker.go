@@ -27,14 +27,14 @@ func (m *Migrator) migrateObject(ctx context.Context, bucket, key string, class 
 	defer reader.Close()
 
 	// Step 2: Decrypt with source engine
-	plaintextReader, decMeta, err := m.SourceEngine.Decrypt(reader, meta)
+	plaintextReader, decMeta, err := m.SourceEngine.Decrypt(ctx, reader, meta)
 	if err != nil {
 		return fmt.Errorf("decrypt failed: %w", err)
 	}
 
 	// Step 3: Re-encrypt with target engine (pass original user metadata)
 	userMeta := filterUserMetadata(decMeta)
-	encryptedReader, encMeta, err := m.TargetEngine.Encrypt(plaintextReader, userMeta)
+	encryptedReader, encMeta, err := m.TargetEngine.Encrypt(ctx, plaintextReader, userMeta)
 	if err != nil {
 		return fmt.Errorf("encrypt failed: %w", err)
 	}
@@ -119,7 +119,7 @@ func (m *Migrator) verifyObject(ctx context.Context, bucket, key string) error {
 	}
 	defer reader.Close()
 
-	_, _, err = m.TargetEngine.Decrypt(reader, meta)
+	_, _, err = m.TargetEngine.Decrypt(ctx, reader, meta)
 	if err != nil {
 		return fmt.Errorf("verify decrypt failed: %w", err)
 	}
@@ -141,6 +141,3 @@ func filterUserMetadata(meta map[string]string) map[string]string {
 	}
 	return userMeta
 }
-
-
-

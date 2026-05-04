@@ -2,6 +2,7 @@ package crypto
 
 import (
 	"bytes"
+	"context"
 	"io"
 	"testing"
 )
@@ -25,11 +26,11 @@ func BenchmarkEngine_Encrypt_Small(b *testing.B) {
 
 	for i := 0; i < b.N; i++ {
 		reader := bytes.NewReader(data)
-		encrypted, _, err := engine.Encrypt(reader, nil)
+		encrypted, _, err := engine.Encrypt(context.Background(), reader, nil)
 		if err != nil {
 			b.Fatalf("Encryption failed: %v", err)
 		}
-		
+
 		// Consume the encrypted data
 		_, err = io.Copy(io.Discard, encrypted)
 		if err != nil {
@@ -55,11 +56,11 @@ func BenchmarkEngine_Encrypt_Medium(b *testing.B) {
 
 	for i := 0; i < b.N; i++ {
 		reader := bytes.NewReader(data)
-		encrypted, _, err := engine.Encrypt(reader, nil)
+		encrypted, _, err := engine.Encrypt(context.Background(), reader, nil)
 		if err != nil {
 			b.Fatalf("Encryption failed: %v", err)
 		}
-		
+
 		_, err = io.Copy(io.Discard, encrypted)
 		if err != nil {
 			b.Fatalf("Failed to read encrypted data: %v", err)
@@ -85,11 +86,11 @@ func BenchmarkEngine_Encrypt_Large(b *testing.B) {
 	b.RunParallel(func(pb *testing.PB) {
 		for pb.Next() {
 			reader := bytes.NewReader(data)
-			encrypted, _, err := engine.Encrypt(reader, nil)
+			encrypted, _, err := engine.Encrypt(context.Background(), reader, nil)
 			if err != nil {
 				b.Fatalf("Encryption failed: %v", err)
 			}
-			
+
 			_, err = io.Copy(io.Discard, encrypted)
 			if err != nil {
 				b.Fatalf("Failed to read encrypted data: %v", err)
@@ -109,13 +110,13 @@ func BenchmarkEngine_Decrypt_Small(b *testing.B) {
 	for i := range data {
 		data[i] = byte(i % 256)
 	}
-	
+
 	reader := bytes.NewReader(data)
-	encrypted, metadata, err := engine.Encrypt(reader, nil)
+	encrypted, metadata, err := engine.Encrypt(context.Background(), reader, nil)
 	if err != nil {
 		b.Fatalf("Failed to encrypt test data: %v", err)
 	}
-	
+
 	encryptedData, err := io.ReadAll(encrypted)
 	if err != nil {
 		b.Fatalf("Failed to read encrypted data: %v", err)
@@ -127,11 +128,11 @@ func BenchmarkEngine_Decrypt_Small(b *testing.B) {
 
 	for i := 0; i < b.N; i++ {
 		reader := bytes.NewReader(encryptedData)
-		decrypted, _, err := engine.Decrypt(reader, metadata)
+		decrypted, _, err := engine.Decrypt(context.Background(), reader, metadata)
 		if err != nil {
 			b.Fatalf("Decryption failed: %v", err)
 		}
-		
+
 		_, err = io.Copy(io.Discard, decrypted)
 		if err != nil {
 			b.Fatalf("Failed to read decrypted data: %v", err)
@@ -150,13 +151,13 @@ func BenchmarkEngine_Decrypt_Medium(b *testing.B) {
 	for i := range data {
 		data[i] = byte(i % 256)
 	}
-	
+
 	reader := bytes.NewReader(data)
-	encrypted, metadata, err := engine.Encrypt(reader, nil)
+	encrypted, metadata, err := engine.Encrypt(context.Background(), reader, nil)
 	if err != nil {
 		b.Fatalf("Failed to encrypt test data: %v", err)
 	}
-	
+
 	encryptedData, err := io.ReadAll(encrypted)
 	if err != nil {
 		b.Fatalf("Failed to read encrypted data: %v", err)
@@ -168,11 +169,11 @@ func BenchmarkEngine_Decrypt_Medium(b *testing.B) {
 
 	for i := 0; i < b.N; i++ {
 		reader := bytes.NewReader(encryptedData)
-		decrypted, _, err := engine.Decrypt(reader, metadata)
+		decrypted, _, err := engine.Decrypt(context.Background(), reader, metadata)
 		if err != nil {
 			b.Fatalf("Decryption failed: %v", err)
 		}
-		
+
 		_, err = io.Copy(io.Discard, decrypted)
 		if err != nil {
 			b.Fatalf("Failed to read decrypted data: %v", err)
@@ -198,28 +199,28 @@ func BenchmarkEngine_EncryptDecrypt_RoundTrip(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		// Encrypt
 		reader := bytes.NewReader(data)
-		encrypted, metadata, err := engine.Encrypt(reader, nil)
+		encrypted, metadata, err := engine.Encrypt(context.Background(), reader, nil)
 		if err != nil {
 			b.Fatalf("Encryption failed: %v", err)
 		}
-		
+
 		encryptedData, err := io.ReadAll(encrypted)
 		if err != nil {
 			b.Fatalf("Failed to read encrypted data: %v", err)
 		}
-		
+
 		// Decrypt
 		reader = bytes.NewReader(encryptedData)
-		decrypted, _, err := engine.Decrypt(reader, metadata)
+		decrypted, _, err := engine.Decrypt(context.Background(), reader, metadata)
 		if err != nil {
 			b.Fatalf("Decryption failed: %v", err)
 		}
-		
+
 		decryptedData, err := io.ReadAll(decrypted)
 		if err != nil {
 			b.Fatalf("Failed to read decrypted data: %v", err)
 		}
-		
+
 		// Verify
 		if !bytes.Equal(data, decryptedData) {
 			b.Fatal("Decrypted data does not match original")

@@ -2,6 +2,7 @@ package crypto
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"io"
 	"testing"
@@ -21,7 +22,7 @@ func TestRangeDecryptReader_Basic(t *testing.T) {
 
 	// Encrypt
 	reader := bytes.NewReader(originalData)
-	encryptedReader, metadata, err := engine.Encrypt(reader, nil)
+	encryptedReader, metadata, err := engine.Encrypt(context.Background(), reader, nil)
 	if err != nil {
 		t.Fatalf("Failed to encrypt: %v", err)
 	}
@@ -51,8 +52,8 @@ func TestRangeDecryptReader_Basic(t *testing.T) {
 
 	encryptedReader2 := bytes.NewReader(encryptedData)
 	rangeReader, _, err := engine.(interface {
-		DecryptRange(reader io.Reader, metadata map[string]string, plaintextStart, plaintextEnd int64) (io.Reader, map[string]string, error)
-	}).DecryptRange(encryptedReader2, metadata, plaintextStart, plaintextEnd)
+		DecryptRange(ctx context.Context, reader io.Reader, metadata map[string]string, plaintextStart, plaintextEnd int64) (io.Reader, map[string]string, error)
+	}).DecryptRange(context.Background(), encryptedReader2, metadata, plaintextStart, plaintextEnd)
 
 	if err != nil {
 		t.Fatalf("Failed to decrypt range: %v", err)
@@ -94,7 +95,7 @@ func TestRangeDecryptReader_EdgeCases(t *testing.T) {
 	}
 
 	reader := bytes.NewReader(originalData)
-	encryptedReader, metadata, err := engine.Encrypt(reader, nil)
+	encryptedReader, metadata, err := engine.Encrypt(context.Background(), reader, nil)
 	if err != nil {
 		t.Fatalf("Failed to encrypt: %v", err)
 	}
@@ -115,10 +116,10 @@ func TestRangeDecryptReader_EdgeCases(t *testing.T) {
 	}
 
 	testCases := []struct {
-		name          string
-		start         int64
-		end           int64
-		expectedSize  int64
+		name         string
+		start        int64
+		end          int64
+		expectedSize int64
 	}{
 		{
 			name:         "start of first chunk",
@@ -150,8 +151,8 @@ func TestRangeDecryptReader_EdgeCases(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			encryptedReader3 := bytes.NewReader(encryptedData)
 			rangeReader, _, err := engine.(interface {
-				DecryptRange(reader io.Reader, metadata map[string]string, plaintextStart, plaintextEnd int64) (io.Reader, map[string]string, error)
-			}).DecryptRange(encryptedReader3, metadata, tc.start, tc.end)
+				DecryptRange(ctx context.Context, reader io.Reader, metadata map[string]string, plaintextStart, plaintextEnd int64) (io.Reader, map[string]string, error)
+			}).DecryptRange(context.Background(), encryptedReader3, metadata, tc.start, tc.end)
 
 			if err != nil {
 				t.Fatalf("Failed to decrypt range: %v", err)

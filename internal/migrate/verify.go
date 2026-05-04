@@ -33,7 +33,7 @@ func Verify(ctx context.Context, s3 S3Client, engine crypto.EncryptionEngine, bu
 
 	// If the expected plaintext is small enough, do a full comparison.
 	if int64(len(expectedPlaintext)) <= VerifyMaxBytes {
-		decrypted, _, err := engine.Decrypt(reader, meta)
+		decrypted, _, err := engine.Decrypt(ctx, reader, meta)
 		if err != nil {
 			return fmt.Errorf("verify decrypt failed: %w", err)
 		}
@@ -64,7 +64,7 @@ func verifyLargeObject(ctx context.Context, reader io.Reader, meta map[string]st
 	}
 
 	// Decrypt first and last 4 KiB for a spot-check.
-	decryptedReader, _, err := engine.Decrypt(reader, meta)
+	decryptedReader, _, err := engine.Decrypt(ctx, reader, meta)
 	if err != nil {
 		return fmt.Errorf("verify decrypt failed: %w", err)
 	}

@@ -850,7 +850,7 @@ func TestContentRangeMapping(t *testing.T) {
 	originalMetadata := map[string]string{
 		"ETag": "\"original-etag-12345\"", // Mock original ETag
 	}
-	encryptedReader, metadata, err := engine.Encrypt(bytes.NewReader(testData), originalMetadata)
+	encryptedReader, metadata, err := engine.Encrypt(context.Background(), bytes.NewReader(testData), originalMetadata)
 	if err != nil {
 		t.Fatalf("Failed to encrypt: %v", err)
 	}

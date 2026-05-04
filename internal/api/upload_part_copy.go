@@ -521,7 +521,7 @@ func (h *Handler) uploadPartCopyChunked(ctx context.Context, s3Client s3.Client,
 
 	// DecryptRange uses the manifest in metadata to seek within the encrypted
 	// stream and emits plaintext for the requested absolute range.
-	decryptedReader, _, err := srcEngine.DecryptRange(srcReader, srcMetadata, plaintextStart, plaintextEnd)
+	decryptedReader, _, err := srcEngine.DecryptRange(ctx, srcReader, srcMetadata, plaintextStart, plaintextEnd)
 	if err != nil {
 		return nil, 0, fmt.Errorf("failed to decrypt range: %w", err)
 	}
@@ -579,7 +579,7 @@ func (h *Handler) uploadPartCopyLegacy(ctx context.Context, s3Client s3.Client,
 	}
 	defer srcReader.Close()
 
-	decryptedReader, _, err := srcEngine.Decrypt(srcReader, srcMetadata)
+	decryptedReader, _, err := srcEngine.Decrypt(ctx, srcReader, srcMetadata)
 	if err != nil {
 		return nil, 0, fmt.Errorf("failed to decrypt source object: %w", err)
 	}
@@ -639,9 +639,9 @@ func (h *Handler) uploadPartCopyLegacy(ctx context.Context, s3Client s3.Client,
 // --- sentinel errors & helpers ---
 
 var (
-	errLegacySourceTooLarge  = fmt.Errorf("legacy copy source exceeds gateway cap")
-	errRangeNotSatisfiable   = fmt.Errorf("range not satisfiable")
-	errMPUStateUnavailable   = fmt.Errorf("mpu state store unavailable")
+	errLegacySourceTooLarge = fmt.Errorf("legacy copy source exceeds gateway cap")
+	errRangeNotSatisfiable  = fmt.Errorf("range not satisfiable")
+	errMPUStateUnavailable  = fmt.Errorf("mpu state store unavailable")
 )
 
 func isLegacySourceTooLarge(err error) bool {
@@ -775,7 +775,7 @@ func (h *Handler) uploadPartCopyReencryptMPU(
 			return nil, 0, fmt.Errorf("uploadPartCopyReencryptMPU: get chunked source: %w", err)
 		}
 		defer r.Close()
-		decR, _, err := srcEngine.DecryptRange(r, srcMeta, pStart, pEnd)
+		decR, _, err := srcEngine.DecryptRange(ctx, r, srcMeta, pStart, pEnd)
 		if err != nil {
 			return nil, 0, fmt.Errorf("uploadPartCopyReencryptMPU: decrypt chunked source: %w", err)
 		}
@@ -800,7 +800,7 @@ func (h *Handler) uploadPartCopyReencryptMPU(
 			return nil, 0, err
 		}
 		defer r.Close()
-		decR, _, err := srcEngine.Decrypt(r, srcMeta)
+		decR, _, err := srcEngine.Decrypt(ctx, r, srcMeta)
 		if err != nil {
 			return nil, 0, fmt.Errorf("uploadPartCopyReencryptMPU: decrypt legacy source: %w", err)
 		}

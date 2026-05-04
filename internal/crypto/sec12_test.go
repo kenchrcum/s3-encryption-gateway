@@ -29,9 +29,9 @@ func (s *shortKeyManager) WrapKey(ctx context.Context, dek []byte, meta map[stri
 func (s *shortKeyManager) UnwrapKey(ctx context.Context, env *KeyEnvelope, meta map[string]string) ([]byte, error) {
 	return make([]byte, 16), nil // intentionally too short
 }
-func (s *shortKeyManager) HealthCheck(ctx context.Context) error                    { return nil }
-func (s *shortKeyManager) ActiveKeyVersion(ctx context.Context) (int, error)        { return 1, nil }
-func (s *shortKeyManager) Close(ctx context.Context) error                          { return nil }
+func (s *shortKeyManager) HealthCheck(ctx context.Context) error             { return nil }
+func (s *shortKeyManager) ActiveKeyVersion(ctx context.Context) (int, error) { return 1, nil }
+func (s *shortKeyManager) Close(ctx context.Context) error                   { return nil }
 
 // TestSEC12_Encrypt_KMSShortKey rejects a 16-byte key from generateDataKey.
 func TestSEC12_Encrypt_KMSShortKey(t *testing.T) {
@@ -44,7 +44,7 @@ func TestSEC12_Encrypt_KMSShortKey(t *testing.T) {
 	eng, err := NewEngineWithOpts([]byte("test-password-123456"), nil, WithKeyManager(&shortKeyManager{}))
 	require.NoError(t, err)
 
-	_, _, err = eng.Encrypt(strings.NewReader("hello world"), nil)
+	_, _, err = eng.Encrypt(context.Background(), strings.NewReader("hello world"), nil)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "generateDataKey returned unexpected key size")
 }
@@ -56,14 +56,14 @@ func TestSEC12_Decrypt_KMSShortKey(t *testing.T) {
 	goodEng, err := NewEngineWithOpts([]byte("test-password-123456"), nil, WithKeyManager(goodKM))
 	require.NoError(t, err)
 
-	reader, meta, err := goodEng.Encrypt(strings.NewReader("hello world"), nil)
+	reader, meta, err := goodEng.Encrypt(context.Background(), strings.NewReader("hello world"), nil)
 	require.NoError(t, err)
 
 	// Decrypt with a short-key KMS.
 	badEng, err := NewEngineWithOpts([]byte("test-password-123456"), nil, WithKeyManager(&shortKeyManager{}))
 	require.NoError(t, err)
 
-	_, _, err = badEng.Decrypt(reader, meta)
+	_, _, err = badEng.Decrypt(context.Background(), reader, meta)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "KMS returned key of size 16, expected 32")
 }
@@ -94,7 +94,7 @@ func TestSEC12_DecryptChunked_KMSShortKey(t *testing.T) {
 	require.NoError(t, err)
 	goodEng.(*engine).kmsManager = goodKM
 
-	reader, meta, err := goodEng.Encrypt(strings.NewReader("hello world, this is chunked data for testing"), nil)
+	reader, meta, err := goodEng.Encrypt(context.Background(), strings.NewReader("hello world, this is chunked data for testing"), nil)
 	require.NoError(t, err)
 
 	// Decrypt with a short-key KMS.
@@ -102,7 +102,7 @@ func TestSEC12_DecryptChunked_KMSShortKey(t *testing.T) {
 	require.NoError(t, err)
 	badEng.(*engine).kmsManager = &shortKeyManager{}
 
-	_, _, err = badEng.Decrypt(reader, meta)
+	_, _, err = badEng.Decrypt(context.Background(), reader, meta)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "KMS returned key of size 16, expected 32")
 }
@@ -116,7 +116,7 @@ func TestSEC12_DecryptRange_KMSShortKey(t *testing.T) {
 	goodEng.(*engine).kmsManager = goodKM
 
 	data := []byte("hello world, this is chunked range data for testing sec12")
-	reader, meta, err := goodEng.Encrypt(bytes.NewReader(data), map[string]string{
+	reader, meta, err := goodEng.Encrypt(context.Background(), bytes.NewReader(data), map[string]string{
 		"Content-Length": fmt.Sprintf("%d", len(data)),
 	})
 	require.NoError(t, err)
@@ -130,8 +130,8 @@ func TestSEC12_DecryptRange_KMSShortKey(t *testing.T) {
 	badEng.(*engine).kmsManager = &shortKeyManager{}
 
 	_, _, err = badEng.(interface {
-		DecryptRange(reader io.Reader, metadata map[string]string, plaintextStart, plaintextEnd int64) (io.Reader, map[string]string, error)
-	}).DecryptRange(bytes.NewReader(encryptedData), meta, 0, int64(len(data)-1))
+		DecryptRange(ctx context.Context, reader io.Reader, metadata map[string]string, plaintextStart, plaintextEnd int64) (io.Reader, map[string]string, error)
+	}).DecryptRange(context.Background(), bytes.NewReader(encryptedData), meta, 0, int64(len(data)-1))
 
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "KMS returned key of size 16, expected 32")
@@ -144,10 +144,10 @@ func TestSEC12_KMSHappyPath_32ByteKey(t *testing.T) {
 	require.NoError(t, err)
 
 	plaintext := "hello, V1.0-SEC-12 world!"
-	reader, meta, err := eng.Encrypt(strings.NewReader(plaintext), nil)
+	reader, meta, err := eng.Encrypt(context.Background(), strings.NewReader(plaintext), nil)
 	require.NoError(t, err)
 
-	decReader, _, err := eng.Decrypt(reader, meta)
+	decReader, _, err := eng.Decrypt(context.Background(), reader, meta)
 	require.NoError(t, err)
 
 	decrypted, err := io.ReadAll(decReader)
@@ -175,10 +175,10 @@ func TestSEC12_PasswordOnly_NoPaddingPathReaches(t *testing.T) {
 	require.NoError(t, err)
 
 	plaintext := strings.Repeat("A", 1024*1024) // 1 MB object
-	reader, meta, err := eng.Encrypt(strings.NewReader(plaintext), nil)
+	reader, meta, err := eng.Encrypt(context.Background(), strings.NewReader(plaintext), nil)
 	require.NoError(t, err)
 
-	decReader, _, err := eng.Decrypt(reader, meta)
+	decReader, _, err := eng.Decrypt(context.Background(), reader, meta)
 	require.NoError(t, err)
 
 	decrypted, err := io.ReadAll(decReader)

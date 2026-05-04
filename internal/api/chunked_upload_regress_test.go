@@ -2,6 +2,7 @@ package api
 
 import (
 	"bytes"
+	"context"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -59,7 +60,7 @@ func TestReproChunkedUploadIssue(t *testing.T) {
 	storedMeta := mockClient.metadata["test-bucket/test-key"]
 
 	// Check content
-	decryptedReader, _, err := engine.Decrypt(bytes.NewReader(storedData), storedMeta)
+	decryptedReader, _, err := engine.Decrypt(context.Background(), bytes.NewReader(storedData), storedMeta)
 	assert.NoError(t, err)
 	decryptedContent, err := io.ReadAll(decryptedReader)
 	assert.NoError(t, err)

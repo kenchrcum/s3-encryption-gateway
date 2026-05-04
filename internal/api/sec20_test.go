@@ -7,6 +7,7 @@ package api
 // path closes all remaining cached engines.
 
 import (
+	"context"
 	"io"
 	"testing"
 	"time"
@@ -19,15 +20,15 @@ type mockEngine struct {
 	closeCount int
 }
 
-func (m *mockEngine) Encrypt(reader io.Reader, metadata map[string]string) (io.Reader, map[string]string, error) {
+func (m *mockEngine) Encrypt(ctx context.Context, reader io.Reader, metadata map[string]string) (io.Reader, map[string]string, error) {
 	return reader, metadata, nil
 }
 
-func (m *mockEngine) Decrypt(reader io.Reader, metadata map[string]string) (io.Reader, map[string]string, error) {
+func (m *mockEngine) Decrypt(ctx context.Context, reader io.Reader, metadata map[string]string) (io.Reader, map[string]string, error) {
 	return reader, metadata, nil
 }
 
-func (m *mockEngine) DecryptRange(reader io.Reader, metadata map[string]string, _, _ int64) (io.Reader, map[string]string, error) {
+func (m *mockEngine) DecryptRange(ctx context.Context, reader io.Reader, metadata map[string]string, _, _ int64) (io.Reader, map[string]string, error) {
 	return reader, metadata, nil
 }
 

@@ -634,7 +634,7 @@ type oversizedDecryptEngine struct {
 	returnBytes int64
 }
 
-func (e *oversizedDecryptEngine) DecryptRange(reader io.Reader, metadata map[string]string, start, end int64) (io.Reader, map[string]string, error) {
+func (e *oversizedDecryptEngine) DecryptRange(ctx context.Context, reader io.Reader, metadata map[string]string, start, end int64) (io.Reader, map[string]string, error) {
 	return &infiniteReader{remaining: e.returnBytes}, metadata, nil
 }
 

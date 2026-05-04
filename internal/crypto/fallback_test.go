@@ -2,6 +2,7 @@ package crypto
 
 import (
 	"bytes"
+	"context"
 	"io"
 	"strings"
 	"testing"
@@ -11,7 +12,7 @@ func TestEngine_MetadataFallback(t *testing.T) {
 	// Create a provider profile with very small limits to force fallback
 	profile := &ProviderProfile{
 		Name:                "test-small-limits",
-		UserMetadataLimit:   50,  // Very small limit to force fallback
+		UserMetadataLimit:   50, // Very small limit to force fallback
 		SystemMetadataLimit: 0,
 		TotalHeaderLimit:    100, // Very small limit
 		SupportsLongKeys:    true,
@@ -37,8 +38,8 @@ func TestEngine_MetadataFallback(t *testing.T) {
 	largeMetadata := map[string]string{
 		"Content-Type": "application/json",
 		"x-amz-meta-very-long-user-metadata-key-that-exceeds-limits": "very-long-user-metadata-value-that-will-cause-header-overflow",
-		"x-amz-meta-another-key":                                    "another-value",
-		"x-amz-meta-third-key":                                      "third-value",
+		"x-amz-meta-another-key":                                     "another-value",
+		"x-amz-meta-third-key":                                       "third-value",
 	}
 
 	// Test data
@@ -46,7 +47,7 @@ func TestEngine_MetadataFallback(t *testing.T) {
 
 	// Encrypt - should use fallback mode
 	reader := bytes.NewReader(testData)
-	encryptedReader, encMetadata, err := encEngine.Encrypt(reader, largeMetadata)
+	encryptedReader, encMetadata, err := encEngine.Encrypt(context.Background(), reader, largeMetadata)
 	if err != nil {
 		t.Fatalf("Encrypt() failed: %v", err)
 	}
@@ -79,7 +80,7 @@ func TestEngine_MetadataFallback(t *testing.T) {
 	}
 
 	// Decrypt
-	decryptReader, decMetadata, err := encEngine.Decrypt(bytes.NewReader(encryptedData), encMetadata)
+	decryptReader, decMetadata, err := encEngine.Decrypt(context.Background(), bytes.NewReader(encryptedData), encMetadata)
 	if err != nil {
 		t.Fatalf("Decrypt() failed: %v", err)
 	}
@@ -181,23 +182,23 @@ func TestEngine_IsFallbackMode(t *testing.T) {
 	}
 
 	tests := []struct {
-		metadata    map[string]string
+		metadata       map[string]string
 		expectFallback bool
 	}{
 		{
-			metadata:        map[string]string{MetaFallbackMode: "true"},
+			metadata:       map[string]string{MetaFallbackMode: "true"},
 			expectFallback: true,
 		},
 		{
-			metadata:        map[string]string{MetaFallbackMode: "false"},
+			metadata:       map[string]string{MetaFallbackMode: "false"},
 			expectFallback: false,
 		},
 		{
-			metadata:        map[string]string{},
+			metadata:       map[string]string{},
 			expectFallback: false,
 		},
 		{
-			metadata:        nil,
+			metadata:       nil,
 			expectFallback: false,
 		},
 	}
@@ -212,8 +213,8 @@ func TestEngine_IsFallbackMode(t *testing.T) {
 
 func TestMetadataJSONEncoding(t *testing.T) {
 	original := map[string]string{
-		"key1": "value1",
-		"key2": "value2",
+		"key1":            "value1",
+		"key2":            "value2",
 		"x-amz-meta-user": "data",
 	}
 
@@ -269,7 +270,7 @@ func TestEngine_FallbackWithCompression(t *testing.T) {
 
 	// Create large metadata to force fallback
 	largeMetadata := map[string]string{
-		"Content-Type": "application/json",
+		"Content-Type":         "application/json",
 		"x-amz-meta-large-key": strings.Repeat("x", 100),
 	}
 
@@ -277,7 +278,7 @@ func TestEngine_FallbackWithCompression(t *testing.T) {
 	testData := []byte(strings.Repeat("compressible data ", 100))
 
 	reader := bytes.NewReader(testData)
-	encryptedReader, encMetadata, err := encEngine.Encrypt(reader, largeMetadata)
+	encryptedReader, encMetadata, err := encEngine.Encrypt(context.Background(), reader, largeMetadata)
 	if err != nil {
 		t.Fatalf("Encrypt() failed: %v", err)
 	}
@@ -293,7 +294,7 @@ func TestEngine_FallbackWithCompression(t *testing.T) {
 		t.Fatalf("Failed to read encrypted data: %v", err)
 	}
 
-	decryptReader, decMetadata, err := encEngine.Decrypt(bytes.NewReader(encryptedData), encMetadata)
+	decryptReader, decMetadata, err := encEngine.Decrypt(context.Background(), bytes.NewReader(encryptedData), encMetadata)
 	if err != nil {
 		t.Fatalf("Decrypt() failed: %v", err)
 	}

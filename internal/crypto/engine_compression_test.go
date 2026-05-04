@@ -2,6 +2,7 @@ package crypto
 
 import (
 	"bytes"
+	"context"
 	"io"
 	"testing"
 )
@@ -24,7 +25,7 @@ func TestEngine_EncryptDecryptWithCompression(t *testing.T) {
 	}
 
 	// Encrypt (with compression)
-	encryptedReader, encMetadata, err := engine.Encrypt(reader, metadata)
+	encryptedReader, encMetadata, err := engine.Encrypt(context.Background(), reader, metadata)
 	if err != nil {
 		t.Fatalf("Encrypt() error: %v", err)
 	}
@@ -41,7 +42,7 @@ func TestEngine_EncryptDecryptWithCompression(t *testing.T) {
 	}
 
 	// Decrypt (with decompression)
-	decryptedReader, decMetadata, err := engine.Decrypt(bytes.NewReader(encryptedData), encMetadata)
+	decryptedReader, decMetadata, err := engine.Decrypt(context.Background(), bytes.NewReader(encryptedData), encMetadata)
 	if err != nil {
 		t.Fatalf("Decrypt() error: %v", err)
 	}
@@ -77,7 +78,7 @@ func TestEngine_EncryptDecryptWithoutCompression(t *testing.T) {
 	}
 
 	// Encrypt (no compression)
-	encryptedReader, encMetadata, err := engine.Encrypt(reader, metadata)
+	encryptedReader, encMetadata, err := engine.Encrypt(context.Background(), reader, metadata)
 	if err != nil {
 		t.Fatalf("Encrypt() error: %v", err)
 	}
@@ -89,7 +90,7 @@ func TestEngine_EncryptDecryptWithoutCompression(t *testing.T) {
 
 	// Decrypt
 	encryptedData, _ := io.ReadAll(encryptedReader)
-	decryptedReader, _, err := engine.Decrypt(bytes.NewReader(encryptedData), encMetadata)
+	decryptedReader, _, err := engine.Decrypt(context.Background(), bytes.NewReader(encryptedData), encMetadata)
 	if err != nil {
 		t.Fatalf("Decrypt() error: %v", err)
 	}

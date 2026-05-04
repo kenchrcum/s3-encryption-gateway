@@ -21,7 +21,7 @@ func TestChunkedEncryptReader_Close(t *testing.T) {
 	}
 
 	data := []byte("hello close test")
-	r, _, err := engine.Encrypt(bytes.NewReader(data), nil)
+	r, _, err := engine.Encrypt(context.Background(), bytes.NewReader(data), nil)
 	if err != nil {
 		t.Fatalf("Encrypt: %v", err)
 	}
@@ -54,7 +54,7 @@ func TestChunkedDecryptReader_Close(t *testing.T) {
 	}
 
 	data := []byte("hello decrypt close test")
-	encReader, meta, err := engine.Encrypt(bytes.NewReader(data), nil)
+	encReader, meta, err := engine.Encrypt(context.Background(), bytes.NewReader(data), nil)
 	if err != nil {
 		t.Fatalf("Encrypt: %v", err)
 	}
@@ -63,7 +63,7 @@ func TestChunkedDecryptReader_Close(t *testing.T) {
 		t.Fatalf("read encrypted: %v", err)
 	}
 
-	decReader, _, err := engine.Decrypt(bytes.NewReader(encData), meta)
+	decReader, _, err := engine.Decrypt(context.Background(), bytes.NewReader(encData), meta)
 	if err != nil {
 		t.Fatalf("Decrypt: %v", err)
 	}
@@ -150,7 +150,7 @@ func TestSetKeyResolver_Works(t *testing.T) {
 	// Verify via a round-trip decrypt with an older version marker.
 	// Encrypt first with the engine (version 1 by default).
 	data := []byte("resolver test data")
-	encReader, meta, err := eng.Encrypt(bytes.NewReader(data), nil)
+	encReader, meta, err := eng.Encrypt(context.Background(), bytes.NewReader(data), nil)
 	if err != nil {
 		t.Fatalf("Encrypt: %v", err)
 	}
@@ -161,7 +161,7 @@ func TestSetKeyResolver_Works(t *testing.T) {
 
 	// Decrypt should succeed (the engine uses its own password, not the resolver,
 	// since the resolver is for multi-version decryption).
-	decReader, _, err := eng.Decrypt(bytes.NewReader(encData), meta)
+	decReader, _, err := eng.Decrypt(context.Background(), bytes.NewReader(encData), meta)
 	if err != nil {
 		t.Fatalf("Decrypt: %v", err)
 	}
@@ -219,12 +219,12 @@ func TestNewEngineWithChunkingAndProvider(t *testing.T) {
 	}
 	// Smoke-test encrypt/decrypt.
 	data := []byte("chunking-and-provider")
-	encReader, meta, err := eng.Encrypt(bytes.NewReader(data), nil)
+	encReader, meta, err := eng.Encrypt(context.Background(), bytes.NewReader(data), nil)
 	if err != nil {
 		t.Fatalf("Encrypt: %v", err)
 	}
 	encData, _ := io.ReadAll(encReader)
-	decReader, _, err := eng.Decrypt(bytes.NewReader(encData), meta)
+	decReader, _, err := eng.Decrypt(context.Background(), bytes.NewReader(encData), meta)
 	if err != nil {
 		t.Fatalf("Decrypt: %v", err)
 	}
@@ -243,7 +243,7 @@ func TestParseKeyVersion(t *testing.T) {
 	}{
 		{"1", 1},
 		{"0", 0},
-		{"", 0},   // empty → 0 (default)
+		{"", 0},    // empty → 0 (default)
 		{"abc", 0}, // invalid → 0 (default)
 		{"42", 42},
 	}
@@ -326,7 +326,7 @@ func TestRangeDecryptReader_Close(t *testing.T) {
 		data[i] = byte(i % 251)
 	}
 
-	encReader, meta, err := engine.Encrypt(bytes.NewReader(data), map[string]string{
+	encReader, meta, err := engine.Encrypt(context.Background(), bytes.NewReader(data), map[string]string{
 		"Content-Length": fmt.Sprintf("%d", len(data)),
 	})
 	if err != nil {
@@ -338,7 +338,7 @@ func TestRangeDecryptReader_Close(t *testing.T) {
 	}
 
 	// Create a range decrypt reader via the engine's DecryptRange method.
-	decReader, _, err := engine.DecryptRange(bytes.NewReader(encData), meta, 0, int64(len(data)-1))
+	decReader, _, err := engine.DecryptRange(context.Background(), bytes.NewReader(encData), meta, 0, int64(len(data)-1))
 	if err != nil {
 		t.Fatalf("DecryptRange: %v", err)
 	}
@@ -445,7 +445,7 @@ func TestEngine_Decrypt_NotEncrypted(t *testing.T) {
 	data := []byte("plain text data")
 	meta := map[string]string{"Content-Type": "text/plain"}
 
-	r, outMeta, err := eng.Decrypt(bytes.NewReader(data), meta)
+	r, outMeta, err := eng.Decrypt(context.Background(), bytes.NewReader(data), meta)
 	if err != nil {
 		t.Fatalf("Decrypt unencrypted: %v", err)
 	}
@@ -470,13 +470,13 @@ func TestEngine_EncryptDecrypt_WithInMemoryKeyManager(t *testing.T) {
 
 	data := []byte("encrypt-decrypt with in-memory key manager")
 
-	encReader, meta, err := eng.Encrypt(bytes.NewReader(data), nil)
+	encReader, meta, err := eng.Encrypt(context.Background(), bytes.NewReader(data), nil)
 	if err != nil {
 		t.Fatalf("Encrypt with KM: %v", err)
 	}
 	encData, _ := io.ReadAll(encReader)
 
-	decReader, _, err := eng.Decrypt(bytes.NewReader(encData), meta)
+	decReader, _, err := eng.Decrypt(context.Background(), bytes.NewReader(encData), meta)
 	if err != nil {
 		t.Fatalf("Decrypt with KM: %v", err)
 	}
@@ -497,13 +497,13 @@ func TestEngine_EncryptDecrypt_LegacyMode(t *testing.T) {
 
 	data := []byte("legacy mode encrypt-decrypt test")
 
-	encReader, meta, err := eng.Encrypt(bytes.NewReader(data), nil)
+	encReader, meta, err := eng.Encrypt(context.Background(), bytes.NewReader(data), nil)
 	if err != nil {
 		t.Fatalf("Encrypt legacy: %v", err)
 	}
 	encData, _ := io.ReadAll(encReader)
 
-	decReader, _, err := eng.Decrypt(bytes.NewReader(encData), meta)
+	decReader, _, err := eng.Decrypt(context.Background(), bytes.NewReader(encData), meta)
 	if err != nil {
 		t.Fatalf("Decrypt legacy: %v", err)
 	}
@@ -528,7 +528,7 @@ func TestEngine_Encrypt_MultiChunk(t *testing.T) {
 		data[i] = byte(i % 251)
 	}
 
-	encReader, meta, err := eng.Encrypt(bytes.NewReader(data), nil)
+	encReader, meta, err := eng.Encrypt(context.Background(), bytes.NewReader(data), nil)
 	if err != nil {
 		t.Fatalf("Encrypt multi-chunk: %v", err)
 	}
@@ -537,7 +537,7 @@ func TestEngine_Encrypt_MultiChunk(t *testing.T) {
 		t.Fatal("expected non-empty encrypted data")
 	}
 
-	decReader, _, err := eng.Decrypt(bytes.NewReader(encData), meta)
+	decReader, _, err := eng.Decrypt(context.Background(), bytes.NewReader(encData), meta)
 	if err != nil {
 		t.Fatalf("Decrypt multi-chunk: %v", err)
 	}
@@ -564,7 +564,7 @@ func TestEngine_IsEncrypted_Additional(t *testing.T) {
 	}
 
 	// Encrypt and check.
-	encR, meta, err := eng.Encrypt(bytes.NewReader([]byte("data")), nil)
+	encR, meta, err := eng.Encrypt(context.Background(), bytes.NewReader([]byte("data")), nil)
 	if err != nil {
 		t.Fatalf("Encrypt: %v", err)
 	}

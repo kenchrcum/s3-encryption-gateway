@@ -2,6 +2,7 @@ package crypto
 
 import (
 	"bytes"
+	"context"
 	"io"
 	"testing"
 )
@@ -98,7 +99,7 @@ func TestEngine_EncryptDecrypt(t *testing.T) {
 			metadata := make(map[string]string)
 			metadata["Content-Type"] = "text/plain"
 
-			encryptedReader, encMetadata, err := engine.Encrypt(reader, metadata)
+			encryptedReader, encMetadata, err := engine.Encrypt(context.Background(), reader, metadata)
 			if err != nil {
 				t.Fatalf("Encrypt() error: %v", err)
 			}
@@ -132,7 +133,7 @@ func TestEngine_EncryptDecrypt(t *testing.T) {
 			}
 
 			// Decrypt
-			decryptedReader, decMetadata, err := engine.Decrypt(bytes.NewReader(encryptedData), encMetadata)
+			decryptedReader, decMetadata, err := engine.Decrypt(context.Background(), bytes.NewReader(encryptedData), encMetadata)
 			if err != nil {
 				t.Fatalf("Decrypt() error: %v", err)
 			}
@@ -190,7 +191,7 @@ func TestEngine_IsEncrypted(t *testing.T) {
 			want:     false,
 		},
 		{
-			name: "empty metadata",
+			name:     "empty metadata",
 			metadata: map[string]string{},
 			want:     false,
 		},
@@ -225,7 +226,7 @@ func TestEngine_DecryptUnencrypted(t *testing.T) {
 		"Content-Type": "text/plain",
 	}
 
-	decryptedReader, decMetadata, err := engine.Decrypt(bytes.NewReader(data), metadata)
+	decryptedReader, decMetadata, err := engine.Decrypt(context.Background(), bytes.NewReader(data), metadata)
 	if err != nil {
 		t.Fatalf("Decrypt() should not error on unencrypted data: %v", err)
 	}
@@ -254,7 +255,7 @@ func TestEngine_WrongPassword(t *testing.T) {
 
 	data := []byte("secret data")
 	reader := bytes.NewReader(data)
-	encryptedReader, encMetadata, err := engine1.Encrypt(reader, nil)
+	encryptedReader, encMetadata, err := engine1.Encrypt(context.Background(), reader, nil)
 	if err != nil {
 		t.Fatalf("Encrypt() error: %v", err)
 	}
@@ -270,7 +271,7 @@ func TestEngine_WrongPassword(t *testing.T) {
 		t.Fatalf("Failed to create engine: %v", err)
 	}
 
-	_, _, err = engine2.Decrypt(bytes.NewReader(encryptedData), encMetadata)
+	_, _, err = engine2.Decrypt(context.Background(), bytes.NewReader(encryptedData), encMetadata)
 	if err == nil {
 		t.Errorf("Decrypt() with wrong password should fail")
 	}
@@ -285,12 +286,12 @@ func TestEngine_DifferentSaltPerEncryption(t *testing.T) {
 	data := []byte("test data")
 
 	// Encrypt twice
-	encrypted1, metadata1, err := engine.Encrypt(bytes.NewReader(data), nil)
+	encrypted1, metadata1, err := engine.Encrypt(context.Background(), bytes.NewReader(data), nil)
 	if err != nil {
 		t.Fatalf("Encrypt() error: %v", err)
 	}
 
-	encrypted2, metadata2, err := engine.Encrypt(bytes.NewReader(data), nil)
+	encrypted2, metadata2, err := engine.Encrypt(context.Background(), bytes.NewReader(data), nil)
 	if err != nil {
 		t.Fatalf("Encrypt() error: %v", err)
 	}
@@ -313,8 +314,8 @@ func TestEngine_DifferentSaltPerEncryption(t *testing.T) {
 	}
 
 	// But both should decrypt to same plaintext
-	dec1, _, _ := engine.Decrypt(bytes.NewReader(encData1), metadata1)
-	dec2, _, _ := engine.Decrypt(bytes.NewReader(encData2), metadata2)
+	dec1, _, _ := engine.Decrypt(context.Background(), bytes.NewReader(encData1), metadata1)
+	dec2, _, _ := engine.Decrypt(context.Background(), bytes.NewReader(encData2), metadata2)
 	decData1, _ := io.ReadAll(dec1)
 	decData2, _ := io.ReadAll(dec2)
 
@@ -343,7 +344,7 @@ func TestEngine_OriginalETagPreservation(t *testing.T) {
 	metadata := map[string]string{
 		"ETag": expectedETag,
 	}
-	encryptedReader, encMetadata, err := engine.Encrypt(reader, metadata)
+	encryptedReader, encMetadata, err := engine.Encrypt(context.Background(), reader, metadata)
 	if err != nil {
 		t.Fatalf("Encrypt() error: %v", err)
 	}
@@ -364,7 +365,7 @@ func TestEngine_OriginalETagPreservation(t *testing.T) {
 
 	// Decrypt and verify ETag is restored
 	encryptedData, _ := io.ReadAll(encryptedReader)
-	decryptedReader, decMetadata, err := engine.Decrypt(bytes.NewReader(encryptedData), encMetadata)
+	decryptedReader, decMetadata, err := engine.Decrypt(context.Background(), bytes.NewReader(encryptedData), encMetadata)
 	if err != nil {
 		t.Fatalf("Decrypt() error: %v", err)
 	}
@@ -392,5 +393,3 @@ func TestEngine_OriginalETagPreservation(t *testing.T) {
 		t.Errorf("Decrypt() data mismatch")
 	}
 }
-
-

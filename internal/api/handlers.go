@@ -513,7 +513,7 @@ func (h *Handler) forwardSignatureV4Request(w http.ResponseWriter, r *http.Reque
 		// Try to decrypt - read body first, then decrypt
 		bodyBytes, err := io.ReadAll(backendResp.Body)
 		if err == nil {
-			decryptedReader, decMetadata, err = engine.Decrypt(bytes.NewReader(bodyBytes), metadata)
+			decryptedReader, decMetadata, err = engine.Decrypt(r.Context(), bytes.NewReader(bodyBytes), metadata)
 			if err != nil {
 				h.logger.WithError(err).Warn("Failed to decrypt forwarded response, returning as-is")
 				isEncrypted = false // Fall back to forwarding encrypted
@@ -1112,24 +1112,24 @@ func (h *Handler) handleGetObject(w http.ResponseWriter, r *http.Request) {
 		// Access the concrete engine type for DecryptRange method
 		// This is safe because we know it's chunked format
 		if eng, ok := engine.(interface {
-			DecryptRange(reader io.Reader, metadata map[string]string, plaintextStart, plaintextEnd int64) (io.Reader, map[string]string, error)
+			DecryptRange(ctx context.Context, reader io.Reader, metadata map[string]string, plaintextStart, plaintextEnd int64) (io.Reader, map[string]string, error)
 		}); ok {
-			decryptedReader, decMetadata, err = eng.DecryptRange(reader, metadata, plaintextStart, plaintextEnd)
+			decryptedReader, decMetadata, err = eng.DecryptRange(r.Context(), reader, metadata, plaintextStart, plaintextEnd)
 			if err != nil {
 				h.logger.WithError(err).Warn("Range optimization failed, falling back to full decrypt")
 				// Fall back to full decryption
-				decryptedReader, decMetadata, err = engine.Decrypt(reader, metadata)
+				decryptedReader, decMetadata, err = engine.Decrypt(r.Context(), reader, metadata)
 				useRangeOptimization = false
 			}
 		} else {
 			// Engine doesn't support DecryptRange, fall back
 			h.logger.Warn("Engine doesn't support DecryptRange, falling back to full decrypt")
-			decryptedReader, decMetadata, err = engine.Decrypt(reader, metadata)
+			decryptedReader, decMetadata, err = engine.Decrypt(r.Context(), reader, metadata)
 			useRangeOptimization = false
 		}
 	} else {
 		// Standard decryption (full object)
-		decryptedReader, decMetadata, err = engine.Decrypt(reader, metadata)
+		decryptedReader, decMetadata, err = engine.Decrypt(r.Context(), reader, metadata)
 	}
 	decryptDuration := time.Since(decryptStart)
 	if err != nil {
@@ -1485,7 +1485,7 @@ func (h *Handler) handlePutObject(w http.ResponseWriter, r *http.Request) {
 
 	// Encrypt the object
 	encryptStart := time.Now()
-	encryptedReader, encMetadata, err := engine.Encrypt(inputReader, metadata)
+	encryptedReader, encMetadata, err := engine.Encrypt(r.Context(), inputReader, metadata)
 	encryptDuration := time.Since(encryptStart)
 
 	// Get algorithm and key version for audit logging
@@ -3317,7 +3317,7 @@ func (h *Handler) serveMPURangedGet(
 		h.metrics.RecordHTTPRequest(r.Context(), "GET", r.URL.Path, http.StatusInternalServerError, time.Since(start), 0)
 		return
 	}
-	manifestPlainReader, _, err := engine.Decrypt(manifestReader, manifestMeta)
+	manifestPlainReader, _, err := engine.Decrypt(r.Context(), manifestReader, manifestMeta)
 	if err != nil {
 		h.logger.WithError(err).Error("serveMPURangedGet: decrypt manifest")
 		(&S3Error{Code: "InternalError", Message: "Failed to decrypt manifest", Resource: r.URL.Path, HTTPStatus: http.StatusInternalServerError}).WriteXML(w)
@@ -3548,7 +3548,7 @@ func (h *Handler) writeMPUManifestObject(ctx context.Context, uploadID, bucket, 
 	if err != nil {
 		return fmt.Errorf("writeMPUManifest: get engine: %w", err)
 	}
-	encReader, encMeta, err := engine.Encrypt(bytes.NewReader(manifestJSON), map[string]string{
+	encReader, encMeta, err := engine.Encrypt(ctx, bytes.NewReader(manifestJSON), map[string]string{
 		"x-amz-meta-encryption-mpu-manifest": "true",
 	})
 	if err != nil {
@@ -3605,7 +3605,7 @@ func (h *Handler) decryptMPUObject(ctx context.Context, bucket, key string, meta
 	if err != nil {
 		return nil, fmt.Errorf("decryptMPUObject: get engine: %w", err)
 	}
-	manifestPlainReader, _, err := engine.Decrypt(manifestReader, manifestMeta)
+	manifestPlainReader, _, err := engine.Decrypt(ctx, manifestReader, manifestMeta)
 	if err != nil {
 		return nil, fmt.Errorf("decryptMPUObject: decrypt manifest: %w", err)
 	}
@@ -3932,7 +3932,7 @@ func (h *Handler) handleCopyObject(w http.ResponseWriter, r *http.Request, dstBu
 	// V0.6-PERF-1 Phase C: pass srcReader directly to Decrypt — the engine
 	// already handles buffering for legacy AEAD and streams for chunked.
 	// The intermediate decryptedData []byte allocation is eliminated here.
-	decryptedReader, _, err := srcEngine.Decrypt(srcReader, srcMetadata)
+	decryptedReader, _, err := srcEngine.Decrypt(r.Context(), srcReader, srcMetadata)
 	if err != nil {
 		h.logger.WithError(err).Error("Failed to decrypt source object for copy")
 		s3Err := &S3Error{
@@ -3979,7 +3979,7 @@ func (h *Handler) handleCopyObject(w http.ResponseWriter, r *http.Request, dstBu
 	// V0.6-PERF-1 Phase C: pass decryptedReader directly to Encrypt, eliminating
 	// the intermediate decryptedData []byte allocation. The engine handles its
 	// own buffering as needed for legacy vs chunked mode.
-	encryptedReader, encMetadata, err := dstEngine.Encrypt(decryptedReader, dstMetadata)
+	encryptedReader, encMetadata, err := dstEngine.Encrypt(r.Context(), decryptedReader, dstMetadata)
 	if err != nil {
 		h.logger.WithError(err).Error("Failed to encrypt destination object")
 		s3Err := &S3Error{

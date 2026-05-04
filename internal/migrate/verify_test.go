@@ -72,7 +72,7 @@ func TestVerify_Success(t *testing.T) {
 	}
 
 	plaintext := []byte("hello verify world")
-	encReader, meta, err := eng.Encrypt(bytes.NewReader(plaintext), nil)
+	encReader, meta, err := eng.Encrypt(context.Background(), bytes.NewReader(plaintext), nil)
 	if err != nil {
 		t.Fatalf("encrypt failed: %v", err)
 	}
@@ -93,7 +93,7 @@ func TestVerify_Tampered(t *testing.T) {
 	}
 
 	plaintext := []byte("hello verify world")
-	encReader, meta, err := eng.Encrypt(bytes.NewReader(plaintext), nil)
+	encReader, meta, err := eng.Encrypt(context.Background(), bytes.NewReader(plaintext), nil)
 	if err != nil {
 		t.Fatalf("encrypt failed: %v", err)
 	}

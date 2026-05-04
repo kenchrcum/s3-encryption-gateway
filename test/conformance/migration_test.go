@@ -63,7 +63,7 @@ func putEncryptedObject(t *testing.T, client s3.Client, eng crypto.EncryptionEng
 	t.Helper()
 	ctx := context.Background()
 
-	encReader, encMeta, err := eng.Encrypt(bytes.NewReader(plaintext), nil)
+	encReader, encMeta, err := eng.Encrypt(context.Background(), bytes.NewReader(plaintext), nil)
 	if err != nil {
 		t.Fatalf("encrypt %s: %v", key, err)
 	}
@@ -87,7 +87,7 @@ func putEncryptedObjectWithMeta(t *testing.T, client s3.Client, eng crypto.Encry
 	t.Helper()
 	ctx := context.Background()
 
-	encReader, encMeta, err := eng.Encrypt(bytes.NewReader(plaintext), encryptMeta)
+	encReader, encMeta, err := eng.Encrypt(context.Background(), bytes.NewReader(plaintext), encryptMeta)
 	if err != nil {
 		t.Fatalf("encrypt %s: %v", key, err)
 	}
@@ -126,7 +126,7 @@ func decryptObject(t *testing.T, client s3.Client, eng crypto.EncryptionEngine, 
 	}
 	defer reader.Close()
 
-	decReader, _, err := eng.Decrypt(reader, meta)
+	decReader, _, err := eng.Decrypt(context.Background(), reader, meta)
 	if err != nil {
 		t.Fatalf("decrypt %s: %v", key, err)
 	}
@@ -513,13 +513,13 @@ func testMaint1_GoldenPath_AllBreakingChanges(t *testing.T, inst provider.Instan
 	}
 	putEncryptedObjectWithMeta(t, client, fallbackEng, bucket, prefix+"c-1", wantPlain,
 		map[string]string{
-			"Content-Type":      "application/octet-stream",
+			"Content-Type":       "application/octet-stream",
 			"x-amz-meta-project": "s3-encryption-gateway",
 		},
 		nil)
 	putEncryptedObjectWithMeta(t, client, fallbackEng, bucket, prefix+"c-2", wantPlain,
 		map[string]string{
-			"Content-Type":      "application/octet-stream",
+			"Content-Type":       "application/octet-stream",
 			"x-amz-meta-project": "s3-encryption-gateway",
 		},
 		func(meta map[string]string) {

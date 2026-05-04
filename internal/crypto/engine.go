@@ -65,16 +65,16 @@ const (
 type EncryptionEngine interface {
 	// Encrypt encrypts data from the reader and returns an encrypted reader
 	// along with encryption metadata.
-	Encrypt(reader io.Reader, metadata map[string]string) (io.Reader, map[string]string, error)
+	Encrypt(ctx context.Context, reader io.Reader, metadata map[string]string) (io.Reader, map[string]string, error)
 
 	// Decrypt decrypts data from the reader using the provided metadata
 	// and returns a decrypted reader along with updated metadata.
-	Decrypt(reader io.Reader, metadata map[string]string) (io.Reader, map[string]string, error)
+	Decrypt(ctx context.Context, reader io.Reader, metadata map[string]string) (io.Reader, map[string]string, error)
 
 	// DecryptRange decrypts a specific byte range from the reader, returning plaintext
 	// bounded by the requested plaintext range [plaintextStart, plaintextEnd].
 	// Efficiently handles chunked sources by seeking within the encrypted stream.
-	DecryptRange(reader io.Reader, metadata map[string]string, plaintextStart, plaintextEnd int64) (io.Reader, map[string]string, error)
+	DecryptRange(ctx context.Context, reader io.Reader, metadata map[string]string, plaintextStart, plaintextEnd int64) (io.Reader, map[string]string, error)
 
 	// IsEncrypted checks if the metadata indicates the object is encrypted.
 	IsEncrypted(metadata map[string]string) bool
@@ -333,8 +333,7 @@ var generateDataKey = func(size int) ([]byte, error) {
 
 // Encrypt encrypts data from the reader and returns an encrypted reader
 // along with encryption metadata.
-func (e *engine) Encrypt(reader io.Reader, metadata map[string]string) (io.Reader, map[string]string, error) {
-	ctx := context.Background() // TODO: Accept context parameter in future refactor
+func (e *engine) Encrypt(ctx context.Context, reader io.Reader, metadata map[string]string) (io.Reader, map[string]string, error) {
 	ctx, span := e.tracer.Start(ctx, "Crypto.Encrypt",
 		trace.WithAttributes(
 			attribute.String("crypto.algorithm", e.preferredAlgorithm),
@@ -563,8 +562,7 @@ func (e *engine) Encrypt(reader io.Reader, metadata map[string]string) (io.Reade
 
 // Decrypt decrypts data from the reader using the provided metadata
 // and returns a decrypted reader along with updated metadata.
-func (e *engine) Decrypt(reader io.Reader, metadata map[string]string) (io.Reader, map[string]string, error) {
-	ctx := context.Background() // TODO: Accept context parameter in future refactor
+func (e *engine) Decrypt(ctx context.Context, reader io.Reader, metadata map[string]string) (io.Reader, map[string]string, error) {
 	ctx, span := e.tracer.Start(ctx, "Crypto.Decrypt",
 		trace.WithAttributes(
 			attribute.Bool("crypto.chunked", e.IsEncrypted(metadata) && isChunkedFormat(metadata)),
@@ -578,7 +576,7 @@ func (e *engine) Decrypt(reader io.Reader, metadata map[string]string) (io.Reade
 
 	// Check if this is fallback mode (metadata stored in object body)
 	if e.isFallbackMode(metadata) {
-		return e.decryptWithMetadataFallback(reader, metadata)
+		return e.decryptWithMetadataFallback(ctx, reader, metadata)
 	}
 
 	// Expand compacted metadata first
@@ -1271,8 +1269,7 @@ func (e *engine) decryptChunked(ctx context.Context, reader io.Reader, metadata 
 
 // DecryptRange decrypts only the chunks needed for a specific plaintext range.
 // This optimizes range requests by decrypting only necessary chunks.
-func (e *engine) DecryptRange(reader io.Reader, metadata map[string]string, plaintextStart, plaintextEnd int64) (io.Reader, map[string]string, error) {
-	ctx := context.Background() // TODO: propagate caller context once EncryptionEngine interface adds context
+func (e *engine) DecryptRange(ctx context.Context, reader io.Reader, metadata map[string]string, plaintextStart, plaintextEnd int64) (io.Reader, map[string]string, error) {
 	if !e.IsEncrypted(metadata) {
 		return nil, nil, fmt.Errorf("object is not encrypted")
 	}
@@ -1552,7 +1549,7 @@ func (e *engine) isFallbackMode(metadata map[string]string) bool {
 }
 
 // decryptWithMetadataFallback decrypts data with metadata stored in object body
-func (e *engine) decryptWithMetadataFallback(reader io.Reader, metadata map[string]string) (io.Reader, map[string]string, error) {
+func (e *engine) decryptWithMetadataFallback(ctx context.Context, reader io.Reader, metadata map[string]string) (io.Reader, map[string]string, error) {
 	// V1.0-SEC-27: dispatch on the on-disk format version stored in header metadata.
 	//
 	// Version "2" (MetaFallbackVersion == "2"): streaming format written by the
@@ -1566,7 +1563,7 @@ func (e *engine) decryptWithMetadataFallback(reader io.Reader, metadata map[stri
 	// wrapped the chunked ciphertext in a second outer AEAD Seal. Handled by
 	// decryptFallbackV1 for backward compatibility.
 	if metadata[MetaFallbackVersion] == "2" {
-		return e.decryptFallbackV2(reader, metadata)
+		return e.decryptFallbackV2(ctx, reader, metadata)
 	}
 	return e.decryptFallbackV1(reader, metadata)
 }
@@ -1574,9 +1571,7 @@ func (e *engine) decryptWithMetadataFallback(reader io.Reader, metadata map[stri
 // decryptFallbackV2 decrypts objects written by the fixed (V1.0-SEC-27) fallback
 // encrypt path. Format: [4-byte BE metadata_length][metadata_json][chunked_stream].
 // No outer AEAD — integrity comes from the per-chunk AEAD in the chunked layer.
-func (e *engine) decryptFallbackV2(reader io.Reader, headerMetadata map[string]string) (io.Reader, map[string]string, error) {
-	ctx := context.Background()
-
+func (e *engine) decryptFallbackV2(ctx context.Context, reader io.Reader, headerMetadata map[string]string) (io.Reader, map[string]string, error) {
 	// Read the 4-byte big-endian metadata length prefix.
 	var lenBuf [4]byte
 	if _, err := io.ReadFull(reader, lenBuf[:]); err != nil {

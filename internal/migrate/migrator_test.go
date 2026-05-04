@@ -134,7 +134,7 @@ func setupMockWithObjects(t *testing.T, objs map[string]map[string]string) *mock
 	mock := newMockS3ForMigrate()
 	for key, meta := range objs {
 		plaintext := []byte("plaintext for " + key)
-		encReader, encMeta, err := eng.Encrypt(bytes.NewReader(plaintext), meta)
+		encReader, encMeta, err := eng.Encrypt(context.Background(), bytes.NewReader(plaintext), meta)
 		if err != nil {
 			t.Fatalf("encrypt %s: %v", key, err)
 		}
@@ -153,7 +153,7 @@ func TestMigrator_ClassA_XOR_RoundTrip(t *testing.T) {
 	// Create a legacy XOR object manually.
 	mock := newMockS3ForMigrate()
 	plaintext := []byte("legacy xor data")
-	encReader, encMeta, err := eng.Encrypt(bytes.NewReader(plaintext), nil)
+	encReader, encMeta, err := eng.Encrypt(context.Background(), bytes.NewReader(plaintext), nil)
 	if err != nil {
 		t.Fatalf("encrypt: %v", err)
 	}
@@ -198,7 +198,7 @@ func TestMigrator_DryRun_NoWrites(t *testing.T) {
 
 	mock := newMockS3ForMigrate()
 	plaintext := []byte("dry run data")
-	encReader, encMeta, err := eng.Encrypt(bytes.NewReader(plaintext), nil)
+	encReader, encMeta, err := eng.Encrypt(context.Background(), bytes.NewReader(plaintext), nil)
 	if err != nil {
 		t.Fatalf("encrypt: %v", err)
 	}
@@ -249,7 +249,7 @@ func TestBackfillLegacyNoAAD_TagsCandidate(t *testing.T) {
 	// Object A: encrypted, non-chunked, no MetaLegacyNoAAD — CLASS B candidate,
 	// must be tagged via CopyObject.
 	plainA := []byte("object a")
-	rA, mA, err := eng.Encrypt(bytes.NewReader(plainA), nil)
+	rA, mA, err := eng.Encrypt(context.Background(), bytes.NewReader(plainA), nil)
 	if err != nil {
 		t.Fatalf("encrypt A: %v", err)
 	}
@@ -262,7 +262,7 @@ func TestBackfillLegacyNoAAD_TagsCandidate(t *testing.T) {
 
 	// Object C: already has MetaLegacyNoAAD="true" — skipped.
 	plainC := []byte("object c")
-	rC, mC, err := eng.Encrypt(bytes.NewReader(plainC), nil)
+	rC, mC, err := eng.Encrypt(context.Background(), bytes.NewReader(plainC), nil)
 	if err != nil {
 		t.Fatalf("encrypt C: %v", err)
 	}
@@ -273,7 +273,7 @@ func TestBackfillLegacyNoAAD_TagsCandidate(t *testing.T) {
 	// Object D: chunked — skipped (not a CLASS B candidate).
 	plainD := []byte("object d")
 	engChunked, _ := crypto.NewEngineWithChunking([]byte("test-migrate-password-1234"), nil, "", nil, true, crypto.DefaultChunkSize)
-	rD, mD, err := engChunked.Encrypt(bytes.NewReader(plainD), nil)
+	rD, mD, err := engChunked.Encrypt(context.Background(), bytes.NewReader(plainD), nil)
 	if err != nil {
 		t.Fatalf("encrypt D: %v", err)
 	}
@@ -316,7 +316,7 @@ func TestBackfillLegacyNoAAD_DryRun_NoCopyObject(t *testing.T) {
 
 	mock := newMockS3ForMigrate()
 	plainA := []byte("object a")
-	rA, mA, err := eng.Encrypt(bytes.NewReader(plainA), nil)
+	rA, mA, err := eng.Encrypt(context.Background(), bytes.NewReader(plainA), nil)
 	if err != nil {
 		t.Fatalf("encrypt A: %v", err)
 	}
@@ -352,7 +352,7 @@ func TestMigrator_Resume(t *testing.T) {
 	mock := newMockS3ForMigrate()
 	for i := 1; i <= 3; i++ {
 		plaintext := []byte(fmt.Sprintf("data %d", i))
-		encReader, encMeta, _ := eng.Encrypt(bytes.NewReader(plaintext), nil)
+		encReader, encMeta, _ := eng.Encrypt(context.Background(), bytes.NewReader(plaintext), nil)
 		cipherdata, _ := io.ReadAll(encReader)
 		delete(encMeta, crypto.MetaIVDerivation)
 		_ = mock.PutObject(context.Background(), "bucket", fmt.Sprintf("obj%d", i), bytes.NewReader(cipherdata), encMeta, nil, "", nil)
@@ -400,7 +400,7 @@ func TestMigrator_Filter_Sec2Only(t *testing.T) {
 
 	// Class A (XOR-IV) object
 	p1 := []byte("class a")
-	r1, m1, _ := eng.Encrypt(bytes.NewReader(p1), nil)
+	r1, m1, _ := eng.Encrypt(context.Background(), bytes.NewReader(p1), nil)
 	c1, _ := io.ReadAll(r1)
 	delete(m1, crypto.MetaIVDerivation)
 	_ = mock.PutObject(context.Background(), "bucket", "obj-a", bytes.NewReader(c1), m1, nil, "", nil)
@@ -408,7 +408,7 @@ func TestMigrator_Filter_Sec2Only(t *testing.T) {
 	// Class B (no-AAD legacy) object — non-chunked, legacy flag
 	p2 := []byte("class b")
 	m2 := map[string]string{crypto.MetaLegacyNoAAD: "true"}
-	r2, m2enc, _ := eng.Encrypt(bytes.NewReader(p2), m2)
+	r2, m2enc, _ := eng.Encrypt(context.Background(), bytes.NewReader(p2), m2)
 	c2, _ := io.ReadAll(r2)
 	_ = mock.PutObject(context.Background(), "bucket", "obj-b", bytes.NewReader(c2), m2enc, nil, "", nil)
 
@@ -452,7 +452,7 @@ func TestMigrator_ClassB_NoAAD_RoundTrip(t *testing.T) {
 	// We simulate the legacy condition by adding MetaLegacyNoAAD.
 	mock := newMockS3ForMigrate()
 	plaintext := []byte("legacy no-aad data")
-	encReader, encMeta, err := eng.Encrypt(bytes.NewReader(plaintext), map[string]string{crypto.MetaLegacyNoAAD: "true"})
+	encReader, encMeta, err := eng.Encrypt(context.Background(), bytes.NewReader(plaintext), map[string]string{crypto.MetaLegacyNoAAD: "true"})
 	if err != nil {
 		t.Fatalf("encrypt: %v", err)
 	}
@@ -494,7 +494,7 @@ func TestMigrator_ClassC_FallbackV1_RoundTrip(t *testing.T) {
 
 	mock := newMockS3ForMigrate()
 	plaintext := []byte("fallback v1 data")
-	encReader, encMeta, err := eng.Encrypt(bytes.NewReader(plaintext), nil)
+	encReader, encMeta, err := eng.Encrypt(context.Background(), bytes.NewReader(plaintext), nil)
 	if err != nil {
 		t.Fatalf("encrypt: %v", err)
 	}
@@ -552,7 +552,7 @@ func TestMigrator_Idempotency(t *testing.T) {
 
 	mock := newMockS3ForMigrate()
 	plaintext := []byte("idempotency data")
-	encReader, encMeta, err := eng.Encrypt(bytes.NewReader(plaintext), nil)
+	encReader, encMeta, err := eng.Encrypt(context.Background(), bytes.NewReader(plaintext), nil)
 	if err != nil {
 		t.Fatalf("encrypt: %v", err)
 	}
@@ -610,7 +610,7 @@ func TestMigrator_FailedObject_Continue(t *testing.T) {
 	mock := newMockS3ForMigrate()
 	for i := 1; i <= 3; i++ {
 		plaintext := []byte(fmt.Sprintf("data %d", i))
-		encReader, encMeta, _ := eng.Encrypt(bytes.NewReader(plaintext), nil)
+		encReader, encMeta, _ := eng.Encrypt(context.Background(), bytes.NewReader(plaintext), nil)
 		cipherdata, _ := io.ReadAll(encReader)
 		delete(encMeta, crypto.MetaIVDerivation)
 		_ = mock.PutObject(context.Background(), "bucket", fmt.Sprintf("obj%d", i), bytes.NewReader(cipherdata), encMeta, nil, "", nil)

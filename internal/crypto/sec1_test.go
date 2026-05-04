@@ -152,7 +152,7 @@ func TestDecrypt_NoBase64InErrorMessage(t *testing.T) {
 	stubKMS := &stubKeyManager{}
 	SetKeyManager(eng, stubKMS)
 
-	_, _, decErr := eng.Decrypt(bytes.NewReader(make([]byte, 32)), metadata)
+	_, _, decErr := eng.Decrypt(context.Background(), bytes.NewReader(make([]byte, 32)), metadata)
 	require.Error(t, decErr)
 
 	// The error must not contain the bogus wrapped-key value.
@@ -170,9 +170,9 @@ func (s *stubKeyManager) WrapKey(ctx context.Context, dek []byte, meta map[strin
 func (s *stubKeyManager) UnwrapKey(ctx context.Context, env *KeyEnvelope, meta map[string]string) ([]byte, error) {
 	return nil, nil
 }
-func (s *stubKeyManager) HealthCheck(ctx context.Context) error        { return nil }
+func (s *stubKeyManager) HealthCheck(ctx context.Context) error             { return nil }
 func (s *stubKeyManager) ActiveKeyVersion(ctx context.Context) (int, error) { return 1, nil }
-func (s *stubKeyManager) Close(ctx context.Context) error               { return nil }
+func (s *stubKeyManager) Close(ctx context.Context) error                   { return nil }
 
 // ── SEC-1.4: computeETag build-tag correctness ────────────────────────────────
 
@@ -231,10 +231,10 @@ func TestSEC1_EncryptDecryptRoundTrip(t *testing.T) {
 	defer eng.(io.Closer).Close()
 
 	plaintext := "hello, V1.0-SEC-1 world!"
-	reader, meta, err := eng.Encrypt(strings.NewReader(plaintext), nil)
+	reader, meta, err := eng.Encrypt(context.Background(), strings.NewReader(plaintext), nil)
 	require.NoError(t, err)
 
-	decReader, _, err := eng.Decrypt(reader, meta)
+	decReader, _, err := eng.Decrypt(context.Background(), reader, meta)
 	require.NoError(t, err)
 
 	decrypted, err := io.ReadAll(decReader)
