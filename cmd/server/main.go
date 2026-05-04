@@ -626,6 +626,11 @@ func main() {
 	// Setup router
 	router := mux.NewRouter()
 
+	// Register health check endpoint
+	router.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}).Methods("GET", "HEAD")
+
 	// Register metrics endpoint
 	router.Handle("/metrics", m.Handler()).Methods("GET")
 
