@@ -556,6 +556,65 @@ func TestValidateSignatureV4_InvalidCredentialFormat(t *testing.T) {
 	}
 }
 
+// TestValidateSignatureV4_CredentialDateMismatch_Header verifies that a header-auth
+// request whose credential-scope date does not match X-Amz-Date is rejected.
+func TestValidateSignatureV4_CredentialDateMismatch_Header(t *testing.T) {
+	secretKey := "test-secret"
+	now := time.Now().UTC()
+	timestamp := now.Format("20060102T150405Z")
+	// Deliberately use yesterday's date in the credential scope
+	oldDate := now.Add(-24 * time.Hour).Format("20060102")
+	credScope := fmt.Sprintf("%s/us-east-1/s3/aws4_request", oldDate)
+
+	authHeader := fmt.Sprintf(
+		"AWS4-HMAC-SHA256 Credential=AKIATEST/%s, SignedHeaders=host, Signature=%s",
+		credScope, strings.Repeat("a", 64))
+
+	req := httptest.NewRequest("GET", "/bucket/key", nil)
+	req.Host = "localhost"
+	req.Header.Set("Authorization", authHeader)
+	req.Header.Set("X-Amz-Date", timestamp)
+
+	err := ValidateSignatureV4(req, secretKey, defaultClockSkew)
+	if err == nil {
+		t.Fatal("ValidateSignatureV4() expected error for credential date mismatch, got nil")
+	}
+	if !strings.Contains(err.Error(), "credential date mismatch") {
+		t.Errorf("ValidateSignatureV4() error = %v, want credential date mismatch", err)
+	}
+}
+
+// TestValidateSignatureV4_CredentialDateMismatch_Presigned verifies that a
+// presigned URL whose credential-scope date does not match X-Amz-Date is rejected.
+func TestValidateSignatureV4_CredentialDateMismatch_Presigned(t *testing.T) {
+	secretKey := "test-secret"
+	now := time.Now().UTC()
+	timestamp := now.Format("20060102T150405Z")
+	oldDate := now.Add(-24 * time.Hour).Format("20060102")
+	credScope := fmt.Sprintf("%s/us-east-1/s3/aws4_request", oldDate)
+	accessKey := "AKIATEST"
+
+	q := url.Values{}
+	q.Set("X-Amz-Algorithm", "AWS4-HMAC-SHA256")
+	q.Set("X-Amz-Credential", accessKey+"/"+credScope)
+	q.Set("X-Amz-Date", timestamp)
+	q.Set("X-Amz-Expires", "300")
+	q.Set("X-Amz-SignedHeaders", "host")
+	q.Set("X-Amz-Signature", strings.Repeat("a", 64))
+
+	reqURL := "/bucket/key?" + q.Encode()
+	req := httptest.NewRequest("GET", reqURL, nil)
+	req.Host = "localhost"
+
+	err := ValidateSignatureV4(req, secretKey, defaultClockSkew)
+	if err == nil {
+		t.Fatal("ValidateSignatureV4() expected error for credential date mismatch, got nil")
+	}
+	if !strings.Contains(err.Error(), "credential date mismatch") {
+		t.Errorf("ValidateSignatureV4() error = %v, want credential date mismatch", err)
+	}
+}
+
 // TestValidateSignatureV4_PresignedURL_Expired verifies that an expired
 // presigned URL is rejected.
 func TestValidateSignatureV4_PresignedURL_Expired(t *testing.T) {

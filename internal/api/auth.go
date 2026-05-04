@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/url"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -124,9 +125,23 @@ func ValidateSignatureV4(r *http.Request, secretKey string, clockSkew time.Durat
 	if err != nil {
 		return fmt.Errorf("invalid timestamp format")
 	}
-	skew := time.Since(t).Abs()
+	now := time.Now().UTC()
+	skew := now.Sub(t).Abs()
 	if skew > clockSkew {
 		return fmt.Errorf("request timestamp outside clock skew window")
+	}
+
+	// Cross-validate credential-scope date against X-Amz-Date.
+	// The signing key is derived from the credential-scope date; if it does not
+	// match the request timestamp an attacker can replay old credentials within
+	// the clock-skew window.
+	scopeParts := strings.Split(credentialScope, "/")
+	if len(scopeParts) != 4 {
+		return fmt.Errorf("invalid credential scope")
+	}
+	credDate := scopeParts[0]
+	if credDate != t.Format("20060102") {
+		return fmt.Errorf("credential date mismatch")
 	}
 
 	// 1. Create Canonical Request
@@ -138,8 +153,7 @@ func ValidateSignatureV4(r *http.Request, secretKey string, clockSkew time.Durat
 	// 2. Create String to Sign
 	stringToSign := createStringToSign(timestamp, credentialScope, canonicalRequest)
 
-	// 3. Calculate Signature
-	scopeParts := strings.Split(credentialScope, "/")
+	// 3. Calculate Signature (scopeParts already validated above)
 	date := scopeParts[0]
 	region := scopeParts[1]
 	service := scopeParts[2]
@@ -160,13 +174,11 @@ func ValidateSignatureV4(r *http.Request, secretKey string, clockSkew time.Durat
 	if isPresigned {
 		expiresStr := query.Get("X-Amz-Expires")
 		if expiresStr != "" {
-			// Parse expires duration
-			var expires int
-			if _, err := fmt.Sscanf(expiresStr, "%d", &expires); err != nil {
+			expires, err := strconv.Atoi(expiresStr)
+			if err != nil {
 				return fmt.Errorf("invalid expires format")
 			}
-			// Check if expired (t was already parsed during clock-skew validation)
-			if time.Now().UTC().After(t.Add(time.Duration(expires) * time.Second)) {
+			if now.After(t.Add(time.Duration(expires) * time.Second)) {
 				return fmt.Errorf("presigned url expired")
 			}
 		}
