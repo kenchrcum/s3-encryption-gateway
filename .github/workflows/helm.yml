@@ -106,6 +106,38 @@ jobs:
         env:
           CR_TOKEN: "${{ secrets.GITHUB_TOKEN }}"
 
+      # ── Build and attach binaries to the same release ───────────────────────
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+
+      - name: Build binaries
+        id: build_binaries
+        run: |
+          CHART_VERSION="${{ steps.version_check.outputs.chart_version }}"
+          mkdir -p bin
+          # Gateway server
+          GOOS=linux  GOARCH=amd64  CGO_ENABLED=0 go build -ldflags="-w -s -X main.version=${CHART_VERSION} -X main.commit=${{ github.sha }}" -o bin/s3-encryption-gateway-linux-amd64  ./cmd/server
+          GOOS=linux  GOARCH=arm64  CGO_ENABLED=0 go build -ldflags="-w -s -X main.version=${CHART_VERSION} -X main.commit=${{ github.sha }}" -o bin/s3-encryption-gateway-linux-arm64  ./cmd/server
+          GOOS=darwin GOARCH=arm64  CGO_ENABLED=0 go build -ldflags="-w -s -X main.version=${CHART_VERSION} -X main.commit=${{ github.sha }}" -o bin/s3-encryption-gateway-darwin-arm64 ./cmd/server
+          # Migration tool
+          GOOS=linux  GOARCH=amd64  CGO_ENABLED=0 go build -ldflags="-w -s -X main.version=${CHART_VERSION} -X main.commit=${{ github.sha }}" -o bin/s3eg-migrate-linux-amd64  ./cmd/migrate
+          GOOS=linux  GOARCH=arm64  CGO_ENABLED=0 go build -ldflags="-w -s -X main.version=${CHART_VERSION} -X main.commit=${{ github.sha }}" -o bin/s3eg-migrate-linux-arm64  ./cmd/migrate
+          GOOS=darwin GOARCH=arm64  CGO_ENABLED=0 go build -ldflags="-w -s -X main.version=${CHART_VERSION} -X main.commit=${{ github.sha }}" -o bin/s3eg-migrate-darwin-arm64 ./cmd/migrate
+          echo "binaries_built=true" >> "$GITHUB_OUTPUT"
+
+      - name: Upload binaries to release
+        if: steps.build_binaries.outputs.binaries_built == 'true' && steps.version_check.outputs.already_released == 'false'
+        run: |
+          RELEASE_TAG="${{ steps.version_check.outputs.release_tag }}"
+          for f in bin/*; do
+            echo "Uploading $f to release ${RELEASE_TAG}"
+            gh release upload "${RELEASE_TAG}" "$f" --repo "${{ github.repository }}" --clobber
+          done
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
       - name: Copy chart README to gh-pages
         run: |
           git fetch origin gh-pages

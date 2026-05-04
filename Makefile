@@ -1,4 +1,4 @@
-.PHONY: build build-fips test test-fips test-conformance test-conformance-local test-conformance-minio test-conformance-external test-conformance-kms test-load test-load-range test-load-multipart test-load-soak test-load-minio test-load-garage test-load-rustfs test-load-seaweedfs test-load-prometheus test-load-baseline test-rotation test-fuzz test-comprehensive test-isolation-check bench-lint bench-micro-baseline bench-macro-minio bench-macro-garage bench-macro-rustfs bench-macro-seaweedfs bench-baseline lint clean run docker-build docker-push docker-build-fips docker-push-fips profile-image coverage-gate coverage-html coverage-fips mutation-report mutation-report-pkg help
+.PHONY: build build-fips migrate migrate-multiarch test test-fips test-conformance test-conformance-local test-conformance-minio test-conformance-external test-conformance-kms test-load test-load-range test-load-multipart test-load-soak test-load-minio test-load-garage test-load-rustfs test-load-seaweedfs test-load-prometheus test-load-baseline test-rotation test-fuzz test-comprehensive test-isolation-check bench-lint bench-micro-baseline bench-macro-minio bench-macro-garage bench-macro-rustfs bench-macro-seaweedfs bench-baseline lint clean run docker-build docker-push docker-build-fips docker-push-fips profile-image coverage-gate coverage-html coverage-fips mutation-report mutation-report-pkg help
 
 # Variables
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo "dev")
@@ -24,6 +24,26 @@ build-fips:
 	@GOFIPS140=v1.0.0 CGO_ENABLED=0 go build -tags=fips \
 		-ldflags="-w -s -X main.version=$(VERSION) -X main.commit=$(COMMIT)" \
 		-o bin/$(BINARY_NAME)-fips-$(VERSION) ./cmd/server
+
+# Build the migration tool binary
+migrate:
+	@echo "Building s3eg-migrate..."
+	@CGO_ENABLED=0 go build -ldflags="-w -s -X main.version=$(VERSION) -X main.commit=$(COMMIT)" \
+		-o bin/s3eg-migrate-$(VERSION) ./cmd/migrate
+
+# Build multi-arch gateway binaries
+build-multiarch:
+	@echo "Building $(BINARY_NAME) for multiple architectures..."
+	@GOOS=linux  GOARCH=amd64  CGO_ENABLED=0 go build -ldflags="-w -s -X main.version=$(VERSION) -X main.commit=$(COMMIT)" -o bin/$(BINARY_NAME)-linux-amd64  ./cmd/server
+	@GOOS=linux  GOARCH=arm64  CGO_ENABLED=0 go build -ldflags="-w -s -X main.version=$(VERSION) -X main.commit=$(COMMIT)" -o bin/$(BINARY_NAME)-linux-arm64  ./cmd/server
+	@GOOS=darwin GOARCH=arm64  CGO_ENABLED=0 go build -ldflags="-w -s -X main.version=$(VERSION) -X main.commit=$(COMMIT)" -o bin/$(BINARY_NAME)-darwin-arm64 ./cmd/server
+
+# Build multi-arch migration binaries
+migrate-multiarch:
+	@echo "Building s3eg-migrate for multiple architectures..."
+	@GOOS=linux  GOARCH=amd64  CGO_ENABLED=0 go build -ldflags="-w -s" -o bin/s3eg-migrate-linux-amd64  ./cmd/migrate
+	@GOOS=linux  GOARCH=arm64  CGO_ENABLED=0 go build -ldflags="-w -s" -o bin/s3eg-migrate-linux-arm64  ./cmd/migrate
+	@GOOS=darwin GOARCH=arm64  CGO_ENABLED=0 go build -ldflags="-w -s" -o bin/s3eg-migrate-darwin-arm64 ./cmd/migrate
 
 # Run tests
 test:
@@ -366,7 +386,10 @@ mutation-report-pkg:
 help:
 	@echo "Available targets:"
 	@echo "  build              - Build the binary"
+	@echo "  build-multiarch    - Build the binary for linux/amd64, linux/arm64, darwin/arm64"
 	@echo "  build-fips         - Build FIPS-compliant binary"
+	@echo "  migrate            - Build the s3eg-migrate tool"
+	@echo "  migrate-multiarch  - Build s3eg-migrate for linux/amd64, linux/arm64, darwin/arm64"
 	@echo "  test               - Run tier-1 unit tests (-race)"
 	@echo "  test-fips          - Run tests with FIPS build tag"
 	@echo "  test-fuzz          - Run fuzz tests (regression mode)"
