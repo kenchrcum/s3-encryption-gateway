@@ -6,17 +6,27 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
-### Security
+## [0.7.0] — 2026-05-04
+
+### Breaking Changes (read-only backward compatibility maintained)
+
+- **HKDF-based chunk-IV derivation** (V1.0-SEC-2):
+  New chunked objects now use HKDF-SHA256 instead of XOR for per-chunk IV
+  derivation. The metadata flag `x-amz-meta-enc-iv-deriv="hkdf-sha256"`
+  is written on all new objects. Existing objects without the flag continue
+  to decrypt transparently via the legacy XOR path. The XOR read path is
+  retained until v3.0. Operators can migrate legacy objects with
+  `s3eg-migrate --migration-class sec2`.
 
 - **Restrict AAD fallback to explicitly marked legacy objects** (V1.0-SEC-4):
   The blind `gcm.Open(..., nil)` fallback in `engine.Decrypt` is now gated
   behind the metadata flag `x-amz-meta-enc-legacy-no-aad="true"`. New
   objects never receive this flag. Objects encrypted without AAD that do
-  not carry the flag will fail to decrypt. This is a **breaking change**
-  for very old objects; a migration tool or admin API endpoint for
-  back-tagging is recommended.
+  not carry the flag will fail to decrypt. Recovery path:
+  `s3eg-migrate backfill-legacy-no-aad` (metadata-only CopyObject) followed
+  by `s3eg-migrate --migration-class sec4` (full re-encrypt with AAD).
 
-- **Proper fix for streaming chunked metadata-fallback format** (V1.0-SEC-27 — supersedes the 0.6.4 partial fix):
+- **Streaming chunked metadata-fallback format v2** (V1.0-SEC-27 — supersedes the 0.6.4 partial fix):
   The 0.6.4 entry for V1.0-SEC-27 was only a partial fix. The root cause was
   not identified at the time: `encryptChunkedWithMetadataFallback` still
   accumulated the entire chunked ciphertext into a `bytes.Buffer` and then
@@ -37,31 +47,51 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   are routed to the preserved legacy decoder (`decryptFallbackV1`) — they
   remain fully readable.
 
-  > ⚠️ **Potential breaking change — three conditions must all be true.**
-  >
-  > This only affects deployments where **all three** of the following hold
-  > simultaneously:
-  >
-  > 1. `chunked_mode: true` is set (opt-in, not the default), **and**
-  > 2. The S3 provider enforces a tight total metadata header size limit
-  >    (`provider.total_header_limit > 0`), so objects with large user
-  >    metadata are written through the fallback path, **and**
-  > 3. An object written by the **upgraded** gateway (version header `"2"`)
-  >    is later read by a **downgraded** instance running code from 0.6.4 or
-  >    earlier that does not understand the v2 format.
-  >
-  > In that scenario the old instance will attempt to outer-AEAD-decrypt a
-  > raw chunked stream, which will fail with a decryption error. Objects
-  > written before the upgrade (no version header) are unaffected and decode
-  > correctly on both old and new instances.
-  >
-  > **Mitigation:** rolling upgrades are safe provided you do not roll back
-  > after new objects have been written via the fallback path. If a rollback
-  > is required, quiesce writes before downgrading, or temporarily set
-  > `provider.total_header_limit: 0` to bypass the fallback path for the
-  > duration of the rollback window. Deployments on standard AWS S3 or any
-  > provider with `total_header_limit: 0` (unlimited headers) are **not
-  > affected** — the fallback path is never reached for those providers.
+  > ⚠️ **Very narrow breaking-change window:** only affects rolling back
+  > after writing new fallback-v2 objects on a gateway running ≥ 0.7.0. A
+  > downgraded instance (≤ 0.6.4) will fail to decrypt such objects.
+  > Mitigation: do not roll back after writes; or disable the fallback path
+  > (`provider.total_header_limit: 0`) during rollback. Deployments on
+  > standard AWS S3 are **not affected** — the fallback path is never reached.
+
+### Security
+
+- **UploadPartCopy buffer caps** (V1.0-SEC-29):
+  Two unbounded `io.ReadAll` calls in `UploadPartCopy` handling of chunked
+  sources were capped at `maxCopyPartRangeBytes` (5 GiB, the S3 per-part
+  limit). All six `io.ReadAll` sites in the file now have consistent
+  bounding rationale comments.
+
+### Added
+
+- **Offline migration tool** (`s3eg-migrate`) (V1.0-MAINT-1):
+  New CLI for batch re-encryption and format migration. Supports scoped
+  migration (`--migration-class all | sec2 | sec4 | sec27`), dry-run,
+  post-write verification, resumable state file, and a
+  `backfill-legacy-no-aad` sub-command for metadata-only SEC-4 recovery.
+  See `docs/MIGRATION.md` for the operator runbook.
+
+### Changed
+
+- `internal/crypto/engine.go`: `isEncryptionMetadata` and
+  `isCompressionMetadata` are now exported (`IsEncryptionMetadata`,
+  `IsCompressionMetadata`) so the migration tool can reuse them.
+
+### Fixed
+
+- **Constant-time token comparison** in `internal/admin/auth.go`:
+  Replaced string equality with `hmac.Equal` for bearer-token validation.
+- **Chunked-mode startup warning** in `cmd/server/main.go`:
+  Emits an explicit `WARN`-level log when `chunked_mode: true` is set,
+  reminding operators that chunked encryption is opt-in and has provider-
+  specific compatibility implications.
+
+### Build & Ops
+
+- `Makefile`: new targets `migrate`, `migrate-multiarch`, `build-multiarch`.
+- `.github/workflows/helm.yml`: gateway and `s3eg-migrate` binaries are now
+  built and attached to every Helm chart release (linux/amd64, linux/arm64,
+  darwin/arm64).
 
 ---
 
