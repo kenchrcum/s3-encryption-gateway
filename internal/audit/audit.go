@@ -1,7 +1,6 @@
 package audit
 
 import (
-	"encoding/json"
 	"fmt"
 	"sync"
 	"time"
@@ -110,7 +109,7 @@ func NewLogger(maxEvents int, writer EventWriter) Logger {
 // NewLoggerWithRedaction creates a new audit logger with redaction keys.
 func NewLoggerWithRedaction(maxEvents int, writer EventWriter, redactKeys []string) Logger {
 	if writer == nil {
-		writer = &defaultWriter{}
+		writer = &StdoutSink{}
 	}
 
 	return &auditLogger{
@@ -143,7 +142,7 @@ func NewLoggerFromConfig(cfg config.AuditConfig) (Logger, error) {
 			writer = NewFileSink(cfg.Sink.FilePath)
 		}
 	case "stdout", "":
-		writer = &defaultWriter{}
+		writer = &StdoutSink{}
 	default:
 		return nil, fmt.Errorf("unknown sink type: %s", cfg.Sink.Type)
 	}
@@ -161,6 +160,11 @@ func NewLoggerFromConfig(cfg config.AuditConfig) (Logger, error) {
 func (l *auditLogger) Log(event *AuditEvent) error {
 	l.mu.Lock()
 	defer l.mu.Unlock()
+
+	// Redact sensitive metadata before persisting or dispatching.
+	// This ensures every path — including direct Log(event) calls —
+	// honours the configured redaction list. V1.0-SEC-C01.
+	event.Metadata = l.redactMetadata(event.Metadata)
 
 	// Write to external writer if available
 	if l.writer != nil {
@@ -322,17 +326,4 @@ func (l *auditLogger) GetEvents() []*AuditEvent {
 	return events
 }
 
-// defaultWriter is a default implementation that writes to stdout as JSON.
-type defaultWriter struct{}
 
-func (w *defaultWriter) WriteEvent(event *AuditEvent) error {
-	data, err := json.Marshal(event)
-	if err != nil {
-		return fmt.Errorf("failed to marshal event: %w", err)
-	}
-
-	// In production, you would write to a file, database, or external service
-	// For now, we'll just format it (actual writing would be done by logging middleware)
-	fmt.Printf("%s\n", string(data))
-	return nil
-}
