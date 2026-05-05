@@ -8,6 +8,7 @@ import (
 	"crypto/pbkdf2"
 	"crypto/rand"
 	"crypto/sha256"
+	"encoding/binary"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -680,8 +681,17 @@ func (e *engine) Decrypt(ctx context.Context, reader io.Reader, metadata map[str
 		)
 	}
 
-	// Attempt decrypt with current key and AAD
+	// Attempt decrypt with current key and AAD (new length-prefixed format)
 	plaintext, openErr := gcm.Open(nil, iv, ciphertext, aad)
+	if openErr != nil {
+		// Backward compatibility: try legacy pipe-delimited AAD format
+		// for objects created before V1.0-SEC-H01.
+		aadLegacy := buildAADLegacy(algorithm, salt, iv, aadMeta)
+		if pt, err2 := gcm.Open(nil, iv, ciphertext, aadLegacy); err2 == nil {
+			plaintext = pt
+			openErr = nil
+		}
+	}
 	if openErr != nil {
 		// Backward compatibility: try without AAD only for explicitly
 		// marked legacy objects. This prevents an attacker with backend
@@ -1609,15 +1619,20 @@ func (e *engine) decryptFallbackV1(reader io.Reader, metadata map[string]string)
 		contentType = metadata["Content-Type"]
 	}
 	originalSize := metadata[MetaOriginalSize]
-	aad := buildAAD(algorithm, salt, iv, map[string]string{
+	aadMeta := map[string]string{
 		"Content-Type":   contentType,
 		MetaOriginalSize: originalSize,
-	})
+	}
+	aad := buildAAD(algorithm, salt, iv, aadMeta)
 
-	// Decrypt the data
+	// Decrypt the data (try new format first, then legacy)
 	plaintext, err := aeadCipher.Open(nil, iv, ciphertext, aad)
 	if err != nil {
-		return nil, nil, fmt.Errorf("failed to decrypt data: %w", err)
+		aadLegacy := buildAADLegacy(algorithm, salt, iv, aadMeta)
+		plaintext, err = aeadCipher.Open(nil, iv, ciphertext, aadLegacy)
+		if err != nil {
+			return nil, nil, fmt.Errorf("failed to decrypt data: %w", err)
+		}
 	}
 
 	// Parse the decrypted data: [metadata_length][metadata_json][actual_data]
@@ -1730,11 +1745,10 @@ func IsCompressionMetadata(key string) bool {
 		key == MetaCompressionOriginalSize
 }
 
-// buildAAD constructs additional authenticated data from stable metadata fields.
-// Fields included: algorithm, salt, nonce, keyVersion (if present), content-type (if present), original-size (if present).
-func buildAAD(algorithm string, salt, nonce []byte, meta map[string]string) []byte {
-	// Use a simple canonical concatenation with separators.
-	// Note: All values must be stable between encrypt/decrypt.
+// buildAADLegacy is the old pipe-delimited AAD format.
+// Kept for backward compatibility when decrypting objects created
+// before the AAD canonicalization fix (V1.0-SEC-H01).
+func buildAADLegacy(algorithm string, salt, nonce []byte, meta map[string]string) []byte {
 	var b bytes.Buffer
 	b.WriteString("alg:")
 	b.WriteString(algorithm)
@@ -1755,6 +1769,29 @@ func buildAAD(algorithm string, salt, nonce []byte, meta map[string]string) []by
 		b.WriteString(osz)
 	}
 	return b.Bytes()
+}
+
+// buildAAD constructs additional authenticated data from stable metadata fields.
+// Uses length-prefixed encoding to prevent injection attacks (V1.0-SEC-H01).
+// Fields are written in a fixed canonical order.
+func buildAAD(algorithm string, salt, nonce []byte, meta map[string]string) []byte {
+	var b bytes.Buffer
+	writeLengthPrefixed(&b, []byte(algorithm))
+	writeLengthPrefixed(&b, salt)
+	writeLengthPrefixed(&b, nonce)
+	// Fixed order for canonicalization
+	writeLengthPrefixed(&b, []byte(meta[MetaKeyVersion]))
+	writeLengthPrefixed(&b, []byte(meta["Content-Type"]))
+	writeLengthPrefixed(&b, []byte(meta[MetaOriginalSize]))
+	return b.Bytes()
+}
+
+// writeLengthPrefixed writes data to buf prefixed with its length as a big-endian uint32.
+func writeLengthPrefixed(buf *bytes.Buffer, data []byte) {
+	var tmp [4]byte
+	binary.BigEndian.PutUint32(tmp[:], uint32(len(data)))
+	buf.Write(tmp[:])
+	buf.Write(data)
 }
 
 // zeroBytes overwrites a byte slice with zeros for secure memory cleanup.
