@@ -870,8 +870,7 @@ func loadFromEnv(config *Config) {
 		}
 	}
 	if v := os.Getenv("SERVER_MAX_HEADER_BYTES"); v != "" {
-		var maxBytes int
-		if _, err := fmt.Sscanf(v, "%d", &maxBytes); err == nil && maxBytes > 0 {
+		if maxBytes, err := strconv.Atoi(v); err == nil && maxBytes > 0 {
 			config.Server.MaxHeaderBytes = maxBytes
 		}
 	}
@@ -879,8 +878,7 @@ func loadFromEnv(config *Config) {
 		config.RateLimit.Enabled = v == "true" || v == "1"
 	}
 	if v := os.Getenv("RATE_LIMIT_REQUESTS"); v != "" {
-		var limit int
-		if _, err := fmt.Sscanf(v, "%d", &limit); err == nil && limit > 0 {
+		if limit, err := strconv.Atoi(v); err == nil && limit > 0 {
 			config.RateLimit.Limit = limit
 		}
 	}
@@ -894,14 +892,12 @@ func loadFromEnv(config *Config) {
 		config.Cache.Enabled = v == "true" || v == "1"
 	}
 	if v := os.Getenv("CACHE_MAX_SIZE"); v != "" {
-		var maxSize int64
-		if _, err := fmt.Sscanf(v, "%d", &maxSize); err == nil && maxSize > 0 {
+		if maxSize, err := strconv.ParseInt(v, 10, 64); err == nil && maxSize > 0 {
 			config.Cache.MaxSize = maxSize
 		}
 	}
 	if v := os.Getenv("CACHE_MAX_ITEMS"); v != "" {
-		var maxItems int
-		if _, err := fmt.Sscanf(v, "%d", &maxItems); err == nil && maxItems > 0 {
+		if maxItems, err := strconv.Atoi(v); err == nil && maxItems > 0 {
 			config.Cache.MaxItems = maxItems
 		}
 	}
@@ -915,8 +911,7 @@ func loadFromEnv(config *Config) {
 		config.Audit.Enabled = v == "true" || v == "1"
 	}
 	if v := os.Getenv("AUDIT_MAX_EVENTS"); v != "" {
-		var maxEvents int
-		if _, err := fmt.Sscanf(v, "%d", &maxEvents); err == nil && maxEvents > 0 {
+		if maxEvents, err := strconv.Atoi(v); err == nil && maxEvents > 0 {
 			config.Audit.MaxEvents = maxEvents
 		}
 	}

@@ -749,9 +749,13 @@ func (e *engine) encryptChunked(ctx context.Context, reader io.Reader, metadata 
 	var originalSize int64
 	if metadata != nil {
 		if cl := metadata["Content-Length"]; cl != "" {
-			fmt.Sscanf(cl, "%d", &originalSize)
+			if v, err := strconv.ParseInt(cl, 10, 64); err == nil {
+				originalSize = v
+			}
 		} else if cl := metadata["x-amz-meta-original-content-length"]; cl != "" {
-			fmt.Sscanf(cl, "%d", &originalSize)
+			if v, err := strconv.ParseInt(cl, 10, 64); err == nil {
+				originalSize = v
+			}
 		}
 	}
 	originalETag := ""
@@ -1183,13 +1187,12 @@ func (e *engine) decryptChunked(ctx context.Context, reader io.Reader, metadata 
 		decMetadata["Content-Length"] = originalSize
 	} else if chunkCount, ok := metadata[MetaChunkCount]; ok {
 		if chunkSize, ok2 := metadata[MetaChunkSize]; ok2 {
-			var count, size int
-			if _, err1 := fmt.Sscanf(chunkCount, "%d", &count); err1 == nil {
-				if _, err2 := fmt.Sscanf(chunkSize, "%d", &size); err2 == nil {
-					// Approximate original size (last chunk might be smaller)
-					approxSize := int64((count-1)*size + size)
-					decMetadata["Content-Length"] = fmt.Sprintf("%d", approxSize)
-				}
+			count, err1 := strconv.Atoi(chunkCount)
+			size, err2 := strconv.Atoi(chunkSize)
+			if err1 == nil && err2 == nil {
+				// Approximate original size (last chunk might be smaller)
+				approxSize := int64((count-1)*size + size)
+				decMetadata["Content-Length"] = fmt.Sprintf("%d", approxSize)
 			}
 		}
 	}

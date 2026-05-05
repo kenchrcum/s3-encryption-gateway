@@ -114,8 +114,8 @@ func ParseHTTPRangeHeader(rangeHeader string, totalSizeHint int64) (start, end i
 		if totalSizeHint <= 0 {
 			return 0, 0, fmt.Errorf("suffix range requires known total size")
 		}
-		var suffix int64
-		if _, err := fmt.Sscanf(rangeSpec, "-%d", &suffix); err != nil {
+		suffix, err := strconv.ParseInt(rangeSpec[1:], 10, 64)
+		if err != nil {
 			return 0, 0, fmt.Errorf("invalid suffix range: %w", err)
 		}
 		start = totalSizeHint - suffix
@@ -130,7 +130,9 @@ func ParseHTTPRangeHeader(rangeHeader string, totalSizeHint int64) (start, end i
 			return 0, 0, fmt.Errorf("invalid range format")
 		}
 
-		if _, err := fmt.Sscanf(parts[0], "%d", &start); err != nil {
+		var err error
+		start, err = strconv.ParseInt(parts[0], 10, 64)
+		if err != nil {
 			return 0, 0, fmt.Errorf("invalid start: %w", err)
 		}
 
@@ -140,7 +142,8 @@ func ParseHTTPRangeHeader(rangeHeader string, totalSizeHint int64) (start, end i
 			}
 			end = totalSizeHint - 1
 		} else {
-			if _, err := fmt.Sscanf(parts[1], "%d", &end); err != nil {
+			end, err = strconv.ParseInt(parts[1], 10, 64)
+			if err != nil {
 				return 0, 0, fmt.Errorf("invalid end: %w", err)
 			}
 		}

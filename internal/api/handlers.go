@@ -1438,10 +1438,14 @@ func (h *Handler) handlePutObject(w http.ResponseWriter, r *http.Request) {
 	decodedLen := r.Header.Get("x-amz-decoded-content-length")
 	if decodedLen != "" {
 		metadata["x-amz-meta-original-content-length"] = decodedLen
-		fmt.Sscanf(decodedLen, "%d", &originalBytes)
+		if v, err := strconv.ParseInt(decodedLen, 10, 64); err == nil {
+			originalBytes = v
+		}
 	} else if contentLength := r.Header.Get("Content-Length"); contentLength != "" {
 		metadata["x-amz-meta-original-content-length"] = contentLength
-		fmt.Sscanf(contentLength, "%d", &originalBytes)
+		if v, err := strconv.ParseInt(contentLength, 10, 64); err == nil {
+			originalBytes = v
+		}
 	}
 
 	// Extract Content-Type for encryption engine (for compression decisions)
@@ -1600,8 +1604,7 @@ func (h *Handler) handlePutObject(w http.ResponseWriter, r *http.Request) {
 		// Determine chunk size from metadata
 		chunkSize := crypto.DefaultChunkSize
 		if csStr, ok := encMetadata[crypto.MetaChunkSize]; ok && csStr != "" {
-			var cs int
-			if _, err := fmt.Sscanf(csStr, "%d", &cs); err == nil && cs > 0 {
+			if cs, err := strconv.Atoi(csStr); err == nil && cs > 0 {
 				chunkSize = cs
 			}
 		}
@@ -1916,7 +1919,9 @@ func (h *Handler) handleListObjects(w http.ResponseWriter, r *http.Request) {
 	continuationToken := r.URL.Query().Get("continuation-token")
 	maxKeys := int32(1000) // Default
 	if mk := r.URL.Query().Get("max-keys"); mk != "" {
-		fmt.Sscanf(mk, "%d", &maxKeys)
+		if v, err := strconv.ParseInt(mk, 10, 32); err == nil {
+			maxKeys = int32(v)
+		}
 	}
 
 	opts := s3.ListOptions{
@@ -2160,8 +2165,8 @@ func applyRangeRequest(data []byte, rangeHeader string) ([]byte, error) {
 	var start, end int64
 	if rangeSpec[0] == '-' {
 		// Suffix range: "-suffix" means last N bytes
-		var suffix int64
-		if _, err := fmt.Sscanf(rangeSpec, "-%d", &suffix); err != nil {
+		suffix, err := strconv.ParseInt(rangeSpec[1:], 10, 64)
+		if err != nil {
 			return nil, fmt.Errorf("invalid suffix range: %w", err)
 		}
 		start = dataLen - suffix
@@ -2176,13 +2181,16 @@ func applyRangeRequest(data []byte, rangeHeader string) ([]byte, error) {
 			if len(parts) != 2 {
 				return nil, fmt.Errorf("invalid range format")
 			}
-			if _, err := fmt.Sscanf(parts[0], "%d", &start); err != nil {
+			var err error
+			start, err = strconv.ParseInt(parts[0], 10, 64)
+			if err != nil {
 				return nil, fmt.Errorf("invalid start: %w", err)
 			}
 			if parts[1] == "" {
 				end = dataLen - 1
 			} else {
-				if _, err := fmt.Sscanf(parts[1], "%d", &end); err != nil {
+				end, err = strconv.ParseInt(parts[1], 10, 64)
+				if err != nil {
 					return nil, fmt.Errorf("invalid end: %w", err)
 				}
 			}
