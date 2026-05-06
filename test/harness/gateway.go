@@ -99,6 +99,11 @@ func StartGateway(t *testing.T, inst provider.Instance, opts ...Option) *Gateway
 		},
 		Encryption: config.EncryptionConfig{
 			Password: o.encryptionPassword,
+			KDF: config.KDFConfig{
+				PBKDF2: config.PBKDF2Config{
+					Iterations: o.pbkdf2Iterations,
+				},
+			},
 		},
 		Compression: config.CompressionConfig{
 			Enabled:   o.compressionEnabled,
@@ -175,7 +180,12 @@ func StartGateway(t *testing.T, inst provider.Instance, opts ...Option) *Gateway
 		)
 	}
 
-	encryptionEngine, err := crypto.NewEngineWithCompression([]byte(o.encryptionPassword), compressionEngine)
+	encryptionEngine, err := crypto.NewEngineWithOpts(
+		[]byte(o.encryptionPassword),
+		compressionEngine,
+		crypto.WithPBKDF2Iterations(o.pbkdf2Iterations),
+		crypto.WithChunking(o.chunkedMode),
+	)
 	if err != nil {
 		listener.Close()
 		t.Fatalf("harness.StartGateway: create encryption engine: %v", err)
@@ -232,7 +242,7 @@ func StartGateway(t *testing.T, inst provider.Instance, opts ...Option) *Gateway
 	// When encrypted MPU is active a KeyManager is required for DEK wrap/unwrap.
 	// Default to the password-derived KeyManager if none was supplied.
 	if o.mpuStore != nil && o.keyManager == nil {
-		km, kmErr := crypto.NewPasswordKeyManager([]byte(o.encryptionPassword))
+		km, kmErr := crypto.NewPasswordKeyManager([]byte(o.encryptionPassword), crypto.DefaultPBKDF2Iterations)
 		if kmErr != nil {
 			listener.Close()
 			t.Fatalf("harness.StartGateway: create password KeyManager: %v", kmErr)

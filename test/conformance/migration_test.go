@@ -22,6 +22,7 @@ import (
 	"github.com/kenneth/s3-encryption-gateway/internal/crypto"
 	"github.com/kenneth/s3-encryption-gateway/internal/migrate"
 	"github.com/kenneth/s3-encryption-gateway/internal/s3"
+	"github.com/kenneth/s3-encryption-gateway/test/harness"
 	"github.com/kenneth/s3-encryption-gateway/test/provider"
 )
 
@@ -717,5 +718,350 @@ func testMaint1_VerifyAfterWrite(t *testing.T, inst provider.Instance) {
 	meta := headMeta(t, client, bucket, prefix+"obj")
 	if meta[crypto.MetaIVDerivation] != "hkdf-sha256" {
 		t.Errorf("expected hkdf-sha256 after migration, got %q", meta[crypto.MetaIVDerivation])
+	}
+}
+
+// ------------------------------------------------------------------
+// V1.0-MGMT-2 KDF iteration migration conformance tests
+// ------------------------------------------------------------------
+
+// mgmt2Password matches the default harness password so gateway round-trips
+// and direct-backend objects use the same key material.
+var mgmt2Password = kdfTestPassword
+
+// testMGMT2_KDF_DryRun_DetectsClassD writes 3 ClassD objects (no MetaKDFParams)
+// and 2 modern objects, then runs DryRunScan and asserts the report counts.
+func testMGMT2_KDF_DryRun_DetectsClassD(t *testing.T, inst provider.Instance) {
+	t.Helper()
+	client := newS3Client(t, inst)
+	eng100k := newEngine100k(t)
+	bucket := inst.Bucket
+	prefix := fmt.Sprintf("mgmt2/dryrun/%s/", uniqueSuffix(t))
+
+	for i := 0; i < 3; i++ {
+		putEncryptedObject(t, client, eng100k, bucket, fmt.Sprintf("%sclassd-%d", prefix, i), []byte("classd"), func(meta map[string]string) {
+			delete(meta, crypto.MetaKDFParams)
+		})
+	}
+	for i := 0; i < 2; i++ {
+		putEncryptedObject(t, client, eng100k, bucket, fmt.Sprintf("%smodern-%d", prefix, i), []byte("modern"), nil)
+	}
+
+	report, err := migrate.DryRunScan(context.Background(), client, bucket, prefix, nil)
+	if err != nil {
+		t.Fatalf("DryRunScan failed: %v", err)
+	}
+	if report.ClassD != 3 {
+		t.Errorf("ClassD = %d, want 3", report.ClassD)
+	}
+	if report.Modern != 2 {
+		t.Errorf("Modern = %d, want 2", report.Modern)
+	}
+}
+
+// testMGMT2_KDF_Migrate_100k_to_600k writes 5 ClassD objects, runs the
+// migrator with FilterKDF, and asserts that every object now carries
+// MetaKDFParams == "pbkdf2-sha256:600000".
+func testMGMT2_KDF_Migrate_100k_to_600k(t *testing.T, inst provider.Instance) {
+	t.Helper()
+	client := newS3Client(t, inst)
+	eng100k := newEngine100k(t)
+	bucket := inst.Bucket
+	prefix := fmt.Sprintf("mgmt2/migrate/%s/", uniqueSuffix(t))
+
+	for i := 0; i < 5; i++ {
+		putEncryptedObject(t, client, eng100k, bucket, fmt.Sprintf("%sobj-%d", prefix, i), []byte("migrate-me"), func(meta map[string]string) {
+			delete(meta, crypto.MetaKDFParams)
+		})
+	}
+
+	m := &migrate.Migrator{
+		S3Client:         client,
+		Password:         mgmt2Password,
+		GatewayVersion:   "0.7.0",
+		Workers:          2,
+		StateFile:        t.TempDir() + "/state.json",
+		DryRun:           false,
+		Verify:           false,
+		Filter:           migrate.FilterKDF,
+		SourceIterations: 100000,
+		TargetIterations: 600000,
+	}
+
+	ctx := context.Background()
+	if err := m.Migrate(ctx, bucket, prefix); err != nil {
+		t.Fatalf("Migrate failed: %v", err)
+	}
+
+	for i := 0; i < 5; i++ {
+		meta := headMeta(t, client, bucket, fmt.Sprintf("%sobj-%d", prefix, i))
+		if meta[crypto.MetaKDFParams] != "pbkdf2-sha256:600000" {
+			t.Errorf("obj-%d: MetaKDFParams = %q, want %q", i, meta[crypto.MetaKDFParams], "pbkdf2-sha256:600000")
+		}
+	}
+}
+
+// testMGMT2_KDF_Idempotency runs a ClassD migration twice and asserts that
+// the second pass skips every object.
+func testMGMT2_KDF_Idempotency(t *testing.T, inst provider.Instance) {
+	t.Helper()
+	client := newS3Client(t, inst)
+	eng100k := newEngine100k(t)
+	bucket := inst.Bucket
+	prefix := fmt.Sprintf("mgmt2/idemp/%s/", uniqueSuffix(t))
+
+	for i := 0; i < 3; i++ {
+		putEncryptedObject(t, client, eng100k, bucket, fmt.Sprintf("%sobj-%d", prefix, i), []byte("idemp"), func(meta map[string]string) {
+			delete(meta, crypto.MetaKDFParams)
+		})
+	}
+
+	stateFile := t.TempDir() + "/state.json"
+	m1 := &migrate.Migrator{
+		S3Client:         client,
+		Password:         mgmt2Password,
+		GatewayVersion:   "0.7.0",
+		Workers:          2,
+		StateFile:        stateFile,
+		DryRun:           false,
+		Verify:           false,
+		Filter:           migrate.FilterKDF,
+		SourceIterations: 100000,
+		TargetIterations: 600000,
+	}
+
+	ctx := context.Background()
+	if err := m1.Migrate(ctx, bucket, prefix); err != nil {
+		t.Fatalf("first Migrate failed: %v", err)
+	}
+
+	m2 := &migrate.Migrator{
+		S3Client:         client,
+		Password:         mgmt2Password,
+		GatewayVersion:   "0.7.0",
+		Workers:          2,
+		StateFile:        stateFile,
+		DryRun:           false,
+		Verify:           false,
+		Filter:           migrate.FilterKDF,
+		SourceIterations: 100000,
+		TargetIterations: 600000,
+	}
+	if err := m2.Migrate(ctx, bucket, prefix); err != nil {
+		t.Fatalf("second Migrate failed: %v", err)
+	}
+
+	state, _, err := migrate.LoadOrCreate(stateFile, bucket, prefix)
+	if err != nil {
+		t.Fatalf("load state: %v", err)
+	}
+	if state.Stats.Migrated != 3 {
+		t.Errorf("first run migrated = %d, want 3", state.Stats.Migrated)
+	}
+	if state.Stats.Skipped != 3 {
+		t.Errorf("second run skipped = %d, want 3", state.Stats.Skipped)
+	}
+}
+
+// testMGMT2_KDF_FilterKDF_SkipsOtherClasses writes 2 ClassA and 2 ClassD
+// objects, runs the migrator with FilterKDF, and asserts that only ClassD
+// objects are re-encrypted.
+func testMGMT2_KDF_FilterKDF_SkipsOtherClasses(t *testing.T, inst provider.Instance) {
+	t.Helper()
+	client := newS3Client(t, inst)
+	eng600k, err := crypto.NewEngineWithOpts(mgmt2Password, nil, crypto.WithChunking(true))
+	if err != nil {
+		t.Fatalf("newEngine600k: %v", err)
+	}
+	bucket := inst.Bucket
+	prefix := fmt.Sprintf("mgmt2/filter/%s/", uniqueSuffix(t))
+
+	for i := 0; i < 2; i++ {
+		putEncryptedObject(t, client, eng600k, bucket, fmt.Sprintf("%sclassa-%d", prefix, i), []byte("classa"), func(meta map[string]string) {
+			delete(meta, crypto.MetaIVDerivation)
+		})
+	}
+
+	eng100k := newEngine100k(t)
+	for i := 0; i < 2; i++ {
+		putEncryptedObject(t, client, eng100k, bucket, fmt.Sprintf("%sclassd-%d", prefix, i), []byte("classd"), func(meta map[string]string) {
+			delete(meta, crypto.MetaKDFParams)
+		})
+	}
+
+	m := &migrate.Migrator{
+		S3Client:         client,
+		Password:         mgmt2Password,
+		GatewayVersion:   "0.7.0",
+		Workers:          2,
+		StateFile:        t.TempDir() + "/state.json",
+		DryRun:           false,
+		Verify:           false,
+		Filter:           migrate.FilterKDF,
+		SourceIterations: 100000,
+		TargetIterations: 600000,
+	}
+
+	ctx := context.Background()
+	if err := m.Migrate(ctx, bucket, prefix); err != nil {
+		t.Fatalf("Migrate failed: %v", err)
+	}
+
+	for i := 0; i < 2; i++ {
+		meta := headMeta(t, client, bucket, fmt.Sprintf("%sclassa-%d", prefix, i))
+		if meta[crypto.MetaKDFParams] != "" {
+			t.Errorf("classa-%d: should not have been migrated, got MetaKDFParams=%q", i, meta[crypto.MetaKDFParams])
+		}
+	}
+	for i := 0; i < 2; i++ {
+		meta := headMeta(t, client, bucket, fmt.Sprintf("%sclassd-%d", prefix, i))
+		if meta[crypto.MetaKDFParams] != "pbkdf2-sha256:600000" {
+			t.Errorf("classd-%d: should have been migrated, got MetaKDFParams=%q", i, meta[crypto.MetaKDFParams])
+		}
+	}
+}
+
+// testMGMT2_KDF_Mixed_AllClasses writes one object of every class and a
+// plaintext object, then runs the migrator with FilterAll and asserts that
+// every legacy class is promoted to ClassModern.
+func testMGMT2_KDF_Mixed_AllClasses(t *testing.T, inst provider.Instance) {
+	t.Helper()
+	client := newS3Client(t, inst)
+	bucket := inst.Bucket
+	prefix := fmt.Sprintf("mgmt2/mixed/%s/", uniqueSuffix(t))
+
+	// ClassA (XOR IV derivation)
+	eng600k, err := crypto.NewEngineWithOpts(mgmt2Password, nil, crypto.WithChunking(true))
+	if err != nil {
+		t.Fatalf("newEngine600k: %v", err)
+	}
+	putEncryptedObject(t, client, eng600k, bucket, prefix+"classa-0", []byte("mixed"), func(meta map[string]string) {
+		delete(meta, crypto.MetaIVDerivation)
+	})
+
+	// ClassB (no AAD legacy)
+	plainEng, err := crypto.NewEngineWithOpts(mgmt2Password, nil, crypto.WithChunking(false))
+	if err != nil {
+		t.Fatalf("new plain engine: %v", err)
+	}
+	putEncryptedObjectWithMeta(t, client, plainEng, bucket, prefix+"classb-0", []byte("mixed"),
+		map[string]string{"Content-Type": "application/octet-stream"},
+		func(meta map[string]string) {
+			meta[crypto.MetaLegacyNoAAD] = "true"
+		})
+
+	// ClassC (fallback mode)
+	fallbackEng, err := crypto.NewTestEngineWithFallbackProfile(mgmt2Password, false)
+	if err != nil {
+		t.Fatalf("new fallback engine: %v", err)
+	}
+	putEncryptedObjectWithMeta(t, client, fallbackEng, bucket, prefix+"classc-0", []byte("mixed"),
+		map[string]string{"Content-Type": "application/octet-stream"},
+		nil)
+
+	// ClassD (legacy KDF)
+	eng100k := newEngine100k(t)
+	putEncryptedObject(t, client, eng100k, bucket, prefix+"classd-0", []byte("mixed"), func(meta map[string]string) {
+		delete(meta, crypto.MetaKDFParams)
+	})
+
+	// ClassModern (already modern)
+	putEncryptedObject(t, client, eng600k, bucket, prefix+"modern-0", []byte("mixed"), nil)
+
+	// Plaintext
+	ctx := context.Background()
+	if err := client.PutObject(ctx, bucket, prefix+"plain.txt", bytes.NewReader([]byte("mixed")),
+		map[string]string{"Content-Type": "text/plain"}, nil, "", nil); err != nil {
+		t.Fatalf("put plaintext: %v", err)
+	}
+
+	m := &migrate.Migrator{
+		S3Client:         client,
+		Password:         mgmt2Password,
+		GatewayVersion:   "0.7.0",
+		Workers:          2,
+		StateFile:        t.TempDir() + "/state.json",
+		DryRun:           false,
+		Verify:           false,
+		Filter:           migrate.FilterAll,
+		SourceIterations: 100000,
+		TargetIterations: 600000,
+	}
+	if err := m.Migrate(ctx, bucket, prefix); err != nil {
+		t.Fatalf("Migrate failed: %v", err)
+	}
+
+	keys := []string{
+		prefix + "classa-0",
+		prefix + "classb-0",
+		prefix + "classc-0",
+		prefix + "classd-0",
+		prefix + "modern-0",
+		prefix + "plain.txt",
+	}
+	for _, key := range keys {
+		meta := headMeta(t, client, bucket, key)
+		class := migrate.ClassifyObject(meta)
+		if class != migrate.ClassModern && class != migrate.ClassPlaintext {
+			t.Errorf("%s: expected ClassModern or ClassPlaintext after migration, got %s", key, migrate.ClassToString(class))
+		}
+	}
+}
+
+// testMGMT2_KDF_GoldenPath is the end-to-end headline test for V1.0-MGMT-2.
+// It writes via a 100k gateway, verifies metadata, migrates with FilterKDF,
+// and asserts that the object is still readable after migration.
+func testMGMT2_KDF_GoldenPath(t *testing.T, inst provider.Instance) {
+	t.Helper()
+	bucket := inst.Bucket
+	key := uniqueKey(t)
+	plaintext := []byte("golden-path-plaintext")
+
+	// 1. Write via 100k gateway.
+	gw100k := harness.StartGateway(t, inst, harness.WithPBKDF2Iterations(100000))
+	put(t, gw100k, bucket, key, plaintext)
+
+	// 2. Verify MetaKDFParams directly on backend.
+	client := newS3Client(t, inst)
+	meta := headMeta(t, client, bucket, key)
+	if meta[crypto.MetaKDFParams] != "pbkdf2-sha256:100000" {
+		t.Fatalf("pre-migrate MetaKDFParams = %q, want pbkdf2-sha256:100000", meta[crypto.MetaKDFParams])
+	}
+
+	// 3. Start 600k gateway and GET (metadata-driven decryption).
+	gw600k := harness.StartGateway(t, inst)
+	got := get(t, gw600k, bucket, key)
+	if !bytes.Equal(got, plaintext) {
+		t.Errorf("pre-migrate GET mismatch")
+	}
+
+	// 4. Run migration with FilterKDF.
+	m := &migrate.Migrator{
+		S3Client:         client,
+		Password:         mgmt2Password,
+		GatewayVersion:   "0.7.0",
+		Workers:          1,
+		StateFile:        t.TempDir() + "/state.json",
+		DryRun:           false,
+		Verify:           false,
+		Filter:           migrate.FilterKDF,
+		SourceIterations: 100000,
+		TargetIterations: 600000,
+	}
+	ctx := context.Background()
+	if err := m.Migrate(ctx, bucket, key); err != nil {
+		t.Fatalf("Migrate failed: %v", err)
+	}
+
+	// 5. Verify MetaKDFParams updated.
+	meta = headMeta(t, client, bucket, key)
+	if meta[crypto.MetaKDFParams] != "pbkdf2-sha256:600000" {
+		t.Fatalf("post-migrate MetaKDFParams = %q, want pbkdf2-sha256:600000", meta[crypto.MetaKDFParams])
+	}
+
+	// 6. GET still works via 600k gateway.
+	got = get(t, gw600k, bucket, key)
+	if !bytes.Equal(got, plaintext) {
+		t.Errorf("post-migrate GET mismatch")
 	}
 }

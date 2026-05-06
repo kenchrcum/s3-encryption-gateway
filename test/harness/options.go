@@ -31,6 +31,11 @@ type options struct {
 	compressionAlgo     string
 	logLevel            string
 	extraConfig         func(*config.Config)
+	// pbkdf2Iterations overrides the default PBKDF2 iteration count (600k).
+	// Values below the minimum (100k) are ignored and the default is used.
+	pbkdf2Iterations    int
+	// chunkedMode enables chunked/streaming encryption for the gateway engine.
+	chunkedMode         bool
 	// backendTransport, when non-nil, replaces the HTTP transport used by the
 	// gateway's S3 backend client.  Use this in chaos / retry tests to inject
 	// faults at the gateway→backend layer without an external proxy.
@@ -140,6 +145,18 @@ func WithConfigMutator(fn func(*config.Config)) Option {
 // Production code must never call this; it is for tests only.
 func WithBackendTransport(rt http.RoundTripper) Option {
 	return func(o *options) { o.backendTransport = rt }
+}
+
+// WithPBKDF2Iterations sets the PBKDF2 iteration count for the gateway's
+// encryption engine and config.
+func WithPBKDF2Iterations(n int) Option {
+	return func(o *options) { o.pbkdf2Iterations = n }
+}
+
+// WithChunking enables or disables chunked/streaming encryption mode for the
+// gateway's encryption engine.
+func WithChunking(enabled bool) Option {
+	return func(o *options) { o.chunkedMode = enabled }
 }
 
 // WithAdminServer starts an admin listener alongside the gateway. The listener
