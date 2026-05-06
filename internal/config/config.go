@@ -603,7 +603,7 @@ func LoadConfig(path string) (*Config, error) {
 		},
 		Server: ServerConfig{
 			ReadTimeout:              15 * time.Second,
-			WriteTimeout:             15 * time.Second,
+			WriteTimeout:             0, // S3 object streaming can be unbounded; disable by default
 			IdleTimeout:              60 * time.Second,
 			ReadHeaderTimeout:        10 * time.Second,
 			MaxHeaderBytes:           1 << 20, // 1MB
