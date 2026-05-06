@@ -2,6 +2,8 @@ package audit
 
 import (
 	"bytes"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/json"
 	"fmt"
 	"io/fs"
@@ -201,13 +203,14 @@ type HTTPSink struct {
 // NewHTTPSink creates a new HTTP sink with default (hardened) transport settings.
 // For configurable settings, use NewHTTPSinkWithConfig.
 func NewHTTPSink(endpoint string, headers map[string]string) *HTTPSink {
-	return NewHTTPSinkWithConfig(endpoint, headers, config.HTTPTransportConfig{})
+	return NewHTTPSinkWithConfig(endpoint, headers, config.HTTPTransportConfig{}, config.SinkTLSConfig{})
 }
 
 // NewHTTPSinkWithConfig creates a new HTTP sink with configurable transport settings.
 // V1.0-SEC-8 — hardened HTTP transport with per-phase timeouts, connection limits,
 // and concurrency caps to prevent resource exhaustion.
-func NewHTTPSinkWithConfig(endpoint string, headers map[string]string, cfg config.HTTPTransportConfig) *HTTPSink {
+// V1.0-SEC-H07 — supports custom TLS configuration for private PKI audit endpoints.
+func NewHTTPSinkWithConfig(endpoint string, headers map[string]string, cfg config.HTTPTransportConfig, tlsCfg config.SinkTLSConfig) *HTTPSink {
 	// Apply defaults for zero values
 	timeout := cfg.Timeout
 	if timeout == 0 {
@@ -247,6 +250,16 @@ func NewHTTPSinkWithConfig(endpoint string, headers map[string]string, cfg confi
 		MaxConnsPerHost:       maxConnsPerHost,
 	}
 
+	if tlsCfg.CAFile != "" || tlsCfg.CertFile != "" || tlsCfg.InsecureSkipVerify || tlsCfg.MinVersion != "" {
+		tlsConfig, err := buildSinkTLSConfig(tlsCfg)
+		if err != nil {
+			// Log the error but don't fail — fall back to system defaults
+			slog.Default().Error("audit: failed to build TLS config, using system defaults", "error", err)
+		} else {
+			transport.TLSClientConfig = tlsConfig
+		}
+	}
+
 	return &HTTPSink{
 		endpoint: endpoint,
 		client: &http.Client{
@@ -256,6 +269,46 @@ func NewHTTPSinkWithConfig(endpoint string, headers map[string]string, cfg confi
 		headers: headers,
 		logger:  slog.Default(),
 	}
+}
+
+func buildSinkTLSConfig(cfg config.SinkTLSConfig) (*tls.Config, error) {
+	tlsConfig := &tls.Config{
+		InsecureSkipVerify: cfg.InsecureSkipVerify,
+		MinVersion:         tls.VersionTLS12,
+	}
+
+	if cfg.MinVersion != "" {
+		switch cfg.MinVersion {
+		case "1.2":
+			tlsConfig.MinVersion = tls.VersionTLS12
+		case "1.3":
+			tlsConfig.MinVersion = tls.VersionTLS13
+		default:
+			return nil, fmt.Errorf("unsupported TLS min_version: %s", cfg.MinVersion)
+		}
+	}
+
+	if cfg.CAFile != "" {
+		caCert, err := os.ReadFile(cfg.CAFile)
+		if err != nil {
+			return nil, fmt.Errorf("failed to read CA file: %w", err)
+		}
+		caCertPool := x509.NewCertPool()
+		if !caCertPool.AppendCertsFromPEM(caCert) {
+			return nil, fmt.Errorf("failed to parse CA certificate")
+		}
+		tlsConfig.RootCAs = caCertPool
+	}
+
+	if cfg.CertFile != "" && cfg.KeyFile != "" {
+		cert, err := tls.LoadX509KeyPair(cfg.CertFile, cfg.KeyFile)
+		if err != nil {
+			return nil, fmt.Errorf("failed to load client certificate: %w", err)
+		}
+		tlsConfig.Certificates = []tls.Certificate{cert}
+	}
+
+	return tlsConfig, nil
 }
 
 // WriteEvent writes a single event.

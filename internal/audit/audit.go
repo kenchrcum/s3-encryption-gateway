@@ -133,7 +133,7 @@ func NewLoggerFromConfig(cfg config.AuditConfig) (Logger, error) {
 	switch cfg.Sink.Type {
 	case "http":
 		// V1.0-SEC-8 — use hardened HTTP sink with configurable transport settings
-		writer = NewHTTPSinkWithConfig(cfg.Sink.Endpoint, cfg.Sink.Headers, cfg.Sink.HTTP)
+		writer = NewHTTPSinkWithConfig(cfg.Sink.Endpoint, cfg.Sink.Headers, cfg.Sink.HTTP, cfg.Sink.TLS)
 	case "file":
 		// V1.0-SEC-26: default to 0600; honour operator-supplied FileMode when non-zero.
 		if cfg.Sink.FileMode != 0 {

@@ -1,6 +1,7 @@
 package audit
 
 import (
+	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"io/fs"
@@ -314,7 +315,7 @@ func TestNewHTTPSinkWithConfig_CustomValues(t *testing.T) {
 		ResponseHeaderTimeout: 20 * time.Second,
 	}
 
-	sink := NewHTTPSinkWithConfig("http://localhost:8080/audit", map[string]string{"X-Test": "true"}, cfg)
+	sink := NewHTTPSinkWithConfig("http://localhost:8080/audit", map[string]string{"X-Test": "true"}, cfg, config.SinkTLSConfig{})
 
 	transport := sink.client.Transport.(*http.Transport)
 
@@ -355,7 +356,7 @@ func TestHTTPSink_SlowEndpointTimeout(t *testing.T) {
 	cfg := config.HTTPTransportConfig{
 		Timeout: 500 * time.Millisecond,
 	}
-	sink := NewHTTPSinkWithConfig(ts.URL, nil, cfg)
+	sink := NewHTTPSinkWithConfig(ts.URL, nil, cfg, config.SinkTLSConfig{})
 
 	event := &AuditEvent{Operation: "test-slow"}
 
@@ -510,7 +511,7 @@ func TestHTTPSinkWithConfig_DefaultLogger(t *testing.T) {
 	}))
 	defer ts.Close()
 
-	sink := NewHTTPSinkWithConfig(ts.URL, nil, config.HTTPTransportConfig{})
+	sink := NewHTTPSinkWithConfig(ts.URL, nil, config.HTTPTransportConfig{}, config.SinkTLSConfig{})
 
 	// Verify logger is set to slog.Default() by default
 	if sink.logger == nil {
@@ -522,6 +523,74 @@ func TestHTTPSinkWithConfig_DefaultLogger(t *testing.T) {
 	sink.SetLogger(testLogger)
 	if sink.logger != testLogger {
 		t.Error("expected logger to be updated")
+	}
+}
+
+// TestBuildSinkTLSConfig_ValidMinVersion13 verifies that MinVersion "1.3" is
+// correctly parsed and applied. V1.0-SEC-H07.
+func TestBuildSinkTLSConfig_ValidMinVersion13(t *testing.T) {
+	cfg := config.SinkTLSConfig{
+		MinVersion: "1.3",
+	}
+	tlsConfig, err := buildSinkTLSConfig(cfg)
+	if err != nil {
+		t.Fatalf("expected no error for valid min_version 1.3, got %v", err)
+	}
+	if tlsConfig.MinVersion != tls.VersionTLS13 {
+		t.Errorf("expected MinVersion=TLS1.3, got %d", tlsConfig.MinVersion)
+	}
+}
+
+// TestBuildSinkTLSConfig_InvalidMinVersion verifies that an unsupported
+// MinVersion returns an error. V1.0-SEC-H07.
+func TestBuildSinkTLSConfig_InvalidMinVersion(t *testing.T) {
+	cfg := config.SinkTLSConfig{
+		MinVersion: "1.1",
+	}
+	_, err := buildSinkTLSConfig(cfg)
+	if err == nil {
+		t.Fatal("expected error for unsupported min_version 1.1, got nil")
+	}
+}
+
+// TestBuildSinkTLSConfig_InsecureSkipVerify verifies that InsecureSkipVerify
+// is passed through to the TLS config. V1.0-SEC-H07.
+func TestBuildSinkTLSConfig_InsecureSkipVerify(t *testing.T) {
+	cfg := config.SinkTLSConfig{
+		InsecureSkipVerify: true,
+	}
+	tlsConfig, err := buildSinkTLSConfig(cfg)
+	if err != nil {
+		t.Fatalf("expected no error, got %v", err)
+	}
+	if !tlsConfig.InsecureSkipVerify {
+		t.Error("expected InsecureSkipVerify=true")
+	}
+}
+
+// TestNewHTTPSinkWithConfig_TLSConfigApplied verifies that when a TLS config
+// is provided, the transport's TLSClientConfig is set. V1.0-SEC-H07.
+func TestNewHTTPSinkWithConfig_TLSConfigApplied(t *testing.T) {
+	cfg := config.HTTPTransportConfig{}
+	tlsCfg := config.SinkTLSConfig{
+		MinVersion:         "1.3",
+		InsecureSkipVerify: true,
+	}
+
+	sink := NewHTTPSinkWithConfig("https://localhost:8080/audit", nil, cfg, tlsCfg)
+
+	transport, ok := sink.client.Transport.(*http.Transport)
+	if !ok {
+		t.Fatalf("expected *http.Transport, got %T", sink.client.Transport)
+	}
+	if transport.TLSClientConfig == nil {
+		t.Fatal("expected TLSClientConfig to be set")
+	}
+	if transport.TLSClientConfig.MinVersion != tls.VersionTLS13 {
+		t.Errorf("expected TLSClientConfig.MinVersion=TLS1.3, got %d", transport.TLSClientConfig.MinVersion)
+	}
+	if !transport.TLSClientConfig.InsecureSkipVerify {
+		t.Error("expected TLSClientConfig.InsecureSkipVerify=true")
 	}
 }
 

@@ -1,6 +1,7 @@
 package config
 
 import (
+	"bytes"
 	"encoding/base64"
 	"encoding/hex"
 	"fmt"
@@ -410,6 +411,17 @@ type SinkConfig struct {
 	MaxConcurrentFlushes int `yaml:"max_concurrent_flushes" env:"AUDIT_SINK_MAX_CONCURRENT_FLUSHES"`
 	// HTTP transport configuration for HTTP sink (V1.0-SEC-8)
 	HTTP HTTPTransportConfig `yaml:"http"`
+	// TLS configuration for HTTP sink (V1.0-SEC-H07)
+	TLS SinkTLSConfig `yaml:"tls"`
+}
+
+// SinkTLSConfig holds TLS settings for the audit HTTP sink.
+type SinkTLSConfig struct {
+	CAFile             string `yaml:"ca_file" env:"AUDIT_SINK_TLS_CA_FILE"`
+	CertFile           string `yaml:"cert_file" env:"AUDIT_SINK_TLS_CERT_FILE"`
+	KeyFile            string `yaml:"key_file" env:"AUDIT_SINK_TLS_KEY_FILE"`
+	InsecureSkipVerify bool   `yaml:"insecure_skip_verify" env:"AUDIT_SINK_TLS_INSECURE_SKIP_VERIFY"`
+	MinVersion         string `yaml:"min_version" env:"AUDIT_SINK_TLS_MIN_VERSION"`
 }
 
 // HTTPTransportConfig holds HTTP client transport settings for the audit HTTP sink.
@@ -1009,6 +1021,22 @@ func loadFromEnv(config *Config) {
 		if d, err := time.ParseDuration(v); err == nil {
 			config.Audit.Sink.HTTP.ResponseHeaderTimeout = d
 		}
+	}
+	// V1.0-SEC-H07 — TLS configuration for audit sink
+	if v := os.Getenv("AUDIT_SINK_TLS_CA_FILE"); v != "" {
+		config.Audit.Sink.TLS.CAFile = v
+	}
+	if v := os.Getenv("AUDIT_SINK_TLS_CERT_FILE"); v != "" {
+		config.Audit.Sink.TLS.CertFile = v
+	}
+	if v := os.Getenv("AUDIT_SINK_TLS_KEY_FILE"); v != "" {
+		config.Audit.Sink.TLS.KeyFile = v
+	}
+	if v := os.Getenv("AUDIT_SINK_TLS_INSECURE_SKIP_VERIFY"); v != "" {
+		config.Audit.Sink.TLS.InsecureSkipVerify = v == "true" || v == "1"
+	}
+	if v := os.Getenv("AUDIT_SINK_TLS_MIN_VERSION"); v != "" {
+		config.Audit.Sink.TLS.MinVersion = v
 	}
 	if v := os.Getenv("AUDIT_REDACT_METADATA_KEYS"); v != "" {
 		config.Audit.RedactMetadataKeys = strings.Split(v, ",")
