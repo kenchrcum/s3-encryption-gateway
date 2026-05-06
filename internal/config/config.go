@@ -715,7 +715,9 @@ func LoadConfig(path string) (*Config, error) {
 			return nil, fmt.Errorf("failed to read config file: %w", err)
 		}
 		if len(data) > 0 {
-			if err := yaml.Unmarshal(data, config); err != nil {
+			dec := yaml.NewDecoder(bytes.NewReader(data))
+			dec.KnownFields(true)
+			if err := dec.Decode(config); err != nil {
 				return nil, fmt.Errorf("failed to parse config file: %w", err)
 			}
 		}

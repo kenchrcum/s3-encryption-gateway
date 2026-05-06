@@ -3,6 +3,7 @@ package config
 import (
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -1636,5 +1637,28 @@ func TestConfig_EnvOverride_BelowMin_Ignored(t *testing.T) {
 
 	if config.Encryption.KDF.PBKDF2.Iterations != 600000 {
 		t.Errorf("expected default PBKDF2 iterations 600000 when env override is below min, got %d", config.Encryption.KDF.PBKDF2.Iterations)
+	}
+}
+
+// TestLoadConfig_UnknownField verifies that loading a config file containing
+// an unknown field returns an error (yaml.Decoder.KnownFields(true) behaviour).
+func TestLoadConfig_UnknownField(t *testing.T) {
+	tmpDir := t.TempDir()
+	configPath := filepath.Join(tmpDir, "config.yaml")
+	content := `
+listen_addr: ":8080"
+unknown_field: "value"
+`
+	err := os.WriteFile(configPath, []byte(content), 0644)
+	if err != nil {
+		t.Fatalf("failed to write temp config: %v", err)
+	}
+
+	_, err = LoadConfig(configPath)
+	if err == nil {
+		t.Fatal("LoadConfig expected error for unknown field, got nil")
+	}
+	if !strings.Contains(err.Error(), "failed to parse config file") {
+		t.Errorf("expected error to contain 'failed to parse config file', got: %v", err)
 	}
 }
