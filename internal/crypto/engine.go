@@ -745,6 +745,13 @@ func (e *engine) Decrypt(ctx context.Context, reader io.Reader, metadata map[str
 			return nil, nil, fmt.Errorf("failed to decompress data: %w", err)
 		}
 		finalReader = decompressedReader
+		// V1.0-SEC-M05: bound decompressed output to prevent decompression bombs
+		if originalSizeStr, ok := expandedMetadata[MetaCompressionOriginalSize]; ok {
+			if originalSize, err := strconv.ParseInt(originalSizeStr, 10, 64); err == nil && originalSize > 0 {
+				limit := originalSize + 65536 // 64 KiB tolerance for format overhead
+				finalReader = io.LimitReader(finalReader, limit)
+			}
+		}
 	}
 
 	// Prepare decrypted metadata (remove encryption and compression markers)
@@ -1707,6 +1714,13 @@ func (e *engine) decryptFallbackV1(reader io.Reader, metadata map[string]string)
 			return nil, nil, fmt.Errorf("failed to decompress data: %w", err)
 		}
 		finalReader = decompressedReader
+		// V1.0-SEC-M05: bound decompressed output to prevent decompression bombs
+		if originalSizeStr, ok := fullMetadata[MetaCompressionOriginalSize]; ok {
+			if originalSize, err := strconv.ParseInt(originalSizeStr, 10, 64); err == nil && originalSize > 0 {
+				limit := originalSize + 65536 // 64 KiB tolerance for format overhead
+				finalReader = io.LimitReader(finalReader, limit)
+			}
+		}
 	}
 
 	// Prepare decrypted metadata (remove encryption and compression markers)
