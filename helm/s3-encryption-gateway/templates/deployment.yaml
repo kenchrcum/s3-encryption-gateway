@@ -88,6 +88,13 @@ spec:
         {{- if or .Values.config.encryption.supportedAlgorithms.value .Values.config.encryption.supportedAlgorithms.valueFrom }}
         {{- include "s3-encryption-gateway.envVar" (dict "name" "ENCRYPTION_SUPPORTED_ALGORITHMS" "value" .Values.config.encryption.supportedAlgorithms.value "valueFrom" .Values.config.encryption.supportedAlgorithms.valueFrom) | nindent 8 }}
         {{- end }}
+        {{- if .Values.config.encryption.kdf.pbkdf2.iterations.value }}
+        - name: ENCRYPTION_KDF_PBKDF2_ITERATIONS
+          value: {{ .Values.config.encryption.kdf.pbkdf2.iterations.value | quote }}
+        {{- else if .Values.config.encryption.kdf.pbkdf2.iterations.valueFrom }}
+        - name: ENCRYPTION_KDF_PBKDF2_ITERATIONS
+          valueFrom: {{ toYaml .Values.config.encryption.kdf.pbkdf2.iterations.valueFrom | nindent 12 }}
+        {{- end }}
         {{- include "s3-encryption-gateway.envVar" (dict "name" "KEY_MANAGER_ENABLED" "value" .Values.config.encryption.keyManager.enabled.value "valueFrom" .Values.config.encryption.keyManager.enabled.valueFrom) | nindent 8 }}
         {{- if or (eq .Values.config.encryption.keyManager.enabled.value "true") (eq .Values.config.encryption.keyManager.enabled.value "1") }}
         {{- include "s3-encryption-gateway.envVar" (dict "name" "KEY_MANAGER_PROVIDER" "value" .Values.config.encryption.keyManager.provider.value "valueFrom" .Values.config.encryption.keyManager.provider.valueFrom) | nindent 8 }}

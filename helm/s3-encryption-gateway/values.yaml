@@ -321,6 +321,19 @@ config:
           #     name: s3-encryption-gateway-config
           #     key: cosmian-kms-insecure-skip-verify
 
+    kdf:
+      pbkdf2:
+        iterations:
+          value: "600000"
+          valueFrom: {}
+          # valueFrom:
+          #   configMapKeyRef:
+          #     name: s3-encryption-gateway-config
+          #     key: encryption-kdf-pbkdf2-iterations
+          # Increase above 600000 to exceed the NIST SP 800-132 (2023) floor.
+          # Do not set below 100000. Legacy objects (written before V1.0-SEC-H03)
+          # are decrypted transparently regardless of this setting.
+
   # Compression configuration
   compression:
     enabled:

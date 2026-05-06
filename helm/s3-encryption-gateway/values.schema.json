@@ -825,6 +825,33 @@
                   }
                 }
               }
+            },
+            "kdf": {
+              "type": "object",
+              "description": "Key derivation function configuration.",
+              "additionalProperties": false,
+              "properties": {
+                "pbkdf2": {
+                  "type": "object",
+                  "description": "PBKDF2-SHA256 configuration (active when no argon2id support is compiled in).",
+                  "additionalProperties": false,
+                  "properties": {
+                    "iterations": {
+                      "allOf": [
+                        { "$ref": "#/$defs/configValue" },
+                        {
+                          "properties": {
+                            "value": {
+                              "type": ["string", "integer", "null"],
+                              "description": "PBKDF2-SHA256 iteration count. NIST SP 800-132 (2023) minimum: 600000. Must be >= 100000."
+                            }
+                          }
+                        }
+                      ]
+                    }
+                  }
+                }
+              }
             }
           }
         },
