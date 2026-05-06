@@ -13,6 +13,7 @@ const (
 	ClassB_NoAAD                        // SEC-4: no-AAD legacy
 	ClassC_Fallback_XOR                 // SEC-27 + SEC-2: v1 fallback + XOR IV
 	ClassC_Fallback_HKDF                // SEC-27: v1 fallback, HKDF IV already
+	ClassD_LegacyKDF                    // SEC-H03: legacy PBKDF2 100k, no KDF params metadata
 	ClassPlaintext                      // Not encrypted; skip
 	ClassUnknown                        // Cannot determine; log and skip
 )
@@ -30,6 +31,8 @@ func ClassToString(c ObjectClass) string {
 		return "class_c_fallback_xor"
 	case ClassC_Fallback_HKDF:
 		return "class_c_fallback_hkdf"
+	case ClassD_LegacyKDF:
+		return "class_d_legacy_kdf"
 	case ClassPlaintext:
 		return "plaintext"
 	case ClassUnknown:
@@ -102,6 +105,12 @@ func ClassifyObject(meta map[string]string) ObjectClass {
 		return ClassA_XOR
 	}
 
+	// After existing class checks that did not match (ClassModern reached):
+	// A modern object without MetaKDFParams is Class D — legacy KDF.
+	if meta[crypto.MetaKDFParams] == "" {
+		return ClassD_LegacyKDF
+	}
+
 	return ClassModern
 }
 
@@ -109,7 +118,7 @@ func ClassifyObject(meta map[string]string) ObjectClass {
 // processed by the migration tool.
 func NeedsMigration(c ObjectClass) bool {
 	switch c {
-	case ClassA_XOR, ClassB_NoAAD, ClassC_Fallback_XOR, ClassC_Fallback_HKDF:
+	case ClassA_XOR, ClassB_NoAAD, ClassC_Fallback_XOR, ClassC_Fallback_HKDF, ClassD_LegacyKDF:
 		return true
 	default:
 		return false

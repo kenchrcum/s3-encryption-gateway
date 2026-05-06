@@ -679,3 +679,218 @@ func TestMigrator_InvalidGatewayVersion(t *testing.T) {
 		t.Error("expected error for invalid gateway version")
 	}
 }
+
+
+func TestMigrator_ClassD_KDFParams_RoundTrip(t *testing.T) {
+	eng100k, err := crypto.NewEngineWithChunkingAndProvider([]byte("test-migrate-password-1234"), nil, "", nil, true, crypto.DefaultChunkSize, "default", 100000)
+	if err != nil {
+		t.Fatalf("failed to create 100k engine: %v", err)
+	}
+	eng600k, err := crypto.NewEngineWithChunkingAndProvider([]byte("test-migrate-password-1234"), nil, "", nil, true, crypto.DefaultChunkSize, "default", 600000)
+	if err != nil {
+		t.Fatalf("failed to create 600k engine: %v", err)
+	}
+
+	mock := newMockS3ForMigrate()
+	plaintext := []byte("class d kdf data")
+	encReader, encMeta, err := eng100k.Encrypt(context.Background(), bytes.NewReader(plaintext), nil)
+	if err != nil {
+		t.Fatalf("encrypt: %v", err)
+	}
+	cipherdata, _ := io.ReadAll(encReader)
+	delete(encMeta, crypto.MetaKDFParams)
+	_ = mock.PutObject(context.Background(), "bucket", "obj1", bytes.NewReader(cipherdata), encMeta, nil, "", nil)
+
+	m := &Migrator{
+		S3Client:       mock,
+		SourceEngine:   eng100k,
+		TargetEngine:   eng600k,
+		GatewayVersion: "0.7.0",
+		Workers:        1,
+		StateFile:      t.TempDir() + "/state.json",
+		DryRun:         false,
+		Verify:         false,
+		Filter:         FilterKDF,
+	}
+
+	ctx := context.Background()
+	if err := m.Migrate(ctx, "bucket", ""); err != nil {
+		t.Fatalf("Migrate failed: %v", err)
+	}
+
+	meta, err := mock.HeadObject(ctx, "bucket", "obj1", nil)
+	if err != nil {
+		t.Fatalf("head after migration: %v", err)
+	}
+	if meta[crypto.MetaKDFParams] != "pbkdf2-sha256:600000" {
+		t.Errorf("after migration MetaKDFParams = %q, want pbkdf2-sha256:600000", meta[crypto.MetaKDFParams])
+	}
+}
+
+func TestMigrator_FilterKDF_SkipsOtherClasses(t *testing.T) {
+	eng100k, err := crypto.NewEngineWithChunkingAndProvider([]byte("test-migrate-password-1234"), nil, "", nil, true, crypto.DefaultChunkSize, "default", 100000)
+	if err != nil {
+		t.Fatalf("failed to create 100k engine: %v", err)
+	}
+	eng600k, err := crypto.NewEngineWithChunkingAndProvider([]byte("test-migrate-password-1234"), nil, "", nil, true, crypto.DefaultChunkSize, "default", 600000)
+	if err != nil {
+		t.Fatalf("failed to create 600k engine: %v", err)
+	}
+
+	mock := newMockS3ForMigrate()
+
+	// ClassA object: encrypted, delete both MetaKDFParams and MetaIVDerivation
+	pA := []byte("class a")
+	rA, mA, _ := eng100k.Encrypt(context.Background(), bytes.NewReader(pA), nil)
+	cA, _ := io.ReadAll(rA)
+	delete(mA, crypto.MetaKDFParams)
+	delete(mA, crypto.MetaIVDerivation)
+	_ = mock.PutObject(context.Background(), "bucket", "obj-a", bytes.NewReader(cA), mA, nil, "", nil)
+
+	// ClassD object: encrypted, delete MetaKDFParams only
+	pD := []byte("class d")
+	rD, mD, _ := eng100k.Encrypt(context.Background(), bytes.NewReader(pD), nil)
+	cD, _ := io.ReadAll(rD)
+	delete(mD, crypto.MetaKDFParams)
+	_ = mock.PutObject(context.Background(), "bucket", "obj-d", bytes.NewReader(cD), mD, nil, "", nil)
+
+	m := &Migrator{
+		S3Client:       mock,
+		SourceEngine:   eng100k,
+		TargetEngine:   eng600k,
+		GatewayVersion: "0.7.0",
+		Workers:        1,
+		StateFile:      t.TempDir() + "/state.json",
+		DryRun:         false,
+		Verify:         false,
+		Filter:         FilterKDF,
+	}
+
+	ctx := context.Background()
+	if err := m.Migrate(ctx, "bucket", ""); err != nil {
+		t.Fatalf("Migrate failed: %v", err)
+	}
+
+	// ClassD should have KDF params now
+	metaD, _ := mock.HeadObject(ctx, "bucket", "obj-d", nil)
+	if metaD[crypto.MetaKDFParams] != "pbkdf2-sha256:600000" {
+		t.Errorf("obj-d: expected MetaKDFParams=pbkdf2-sha256:600000, got %q", metaD[crypto.MetaKDFParams])
+	}
+
+	// ClassA should NOT have KDF params and still NOT have HKDF
+	metaA, _ := mock.HeadObject(ctx, "bucket", "obj-a", nil)
+	if metaA[crypto.MetaKDFParams] != "" {
+		t.Errorf("obj-a: expected MetaKDFParams absent, got %q", metaA[crypto.MetaKDFParams])
+	}
+	if metaA[crypto.MetaIVDerivation] != "" {
+		t.Errorf("obj-a: expected MetaIVDerivation absent, got %q", metaA[crypto.MetaIVDerivation])
+	}
+}
+
+func TestMigrator_ClassD_Migrate_100k_to_600k(t *testing.T) {
+	eng100k, err := crypto.NewEngineWithChunkingAndProvider([]byte("test-migrate-password-1234"), nil, "", nil, true, crypto.DefaultChunkSize, "default", 100000)
+	if err != nil {
+		t.Fatalf("failed to create 100k engine: %v", err)
+	}
+	eng600k, err := crypto.NewEngineWithChunkingAndProvider([]byte("test-migrate-password-1234"), nil, "", nil, true, crypto.DefaultChunkSize, "default", 600000)
+	if err != nil {
+		t.Fatalf("failed to create 600k engine: %v", err)
+	}
+
+	mock := newMockS3ForMigrate()
+	for i := 1; i <= 3; i++ {
+		plaintext := []byte(fmt.Sprintf("data %d", i))
+		encReader, encMeta, _ := eng100k.Encrypt(context.Background(), bytes.NewReader(plaintext), nil)
+		cipherdata, _ := io.ReadAll(encReader)
+		delete(encMeta, crypto.MetaKDFParams)
+		_ = mock.PutObject(context.Background(), "bucket", fmt.Sprintf("obj%d", i), bytes.NewReader(cipherdata), encMeta, nil, "", nil)
+	}
+
+	m := &Migrator{
+		S3Client:       mock,
+		SourceEngine:   eng100k,
+		TargetEngine:   eng600k,
+		GatewayVersion: "0.7.0",
+		Workers:        1,
+		StateFile:      t.TempDir() + "/state.json",
+		DryRun:         false,
+		Verify:         false,
+		Filter:         FilterKDF,
+	}
+
+	ctx := context.Background()
+	if err := m.Migrate(ctx, "bucket", ""); err != nil {
+		t.Fatalf("Migrate failed: %v", err)
+	}
+
+	for i := 1; i <= 3; i++ {
+		meta, _ := mock.HeadObject(ctx, "bucket", fmt.Sprintf("obj%d", i), nil)
+		if meta[crypto.MetaKDFParams] != "pbkdf2-sha256:600000" {
+			t.Errorf("obj%d: after migration MetaKDFParams = %q, want pbkdf2-sha256:600000", i, meta[crypto.MetaKDFParams])
+		}
+	}
+}
+
+func TestMigrator_ClassD_Idempotency(t *testing.T) {
+	eng100k, err := crypto.NewEngineWithChunkingAndProvider([]byte("test-migrate-password-1234"), nil, "", nil, true, crypto.DefaultChunkSize, "default", 100000)
+	if err != nil {
+		t.Fatalf("failed to create 100k engine: %v", err)
+	}
+	eng600k, err := crypto.NewEngineWithChunkingAndProvider([]byte("test-migrate-password-1234"), nil, "", nil, true, crypto.DefaultChunkSize, "default", 600000)
+	if err != nil {
+		t.Fatalf("failed to create 600k engine: %v", err)
+	}
+
+	mock := newMockS3ForMigrate()
+	for i := 1; i <= 3; i++ {
+		plaintext := []byte(fmt.Sprintf("idempotency data %d", i))
+		encReader, encMeta, _ := eng100k.Encrypt(context.Background(), bytes.NewReader(plaintext), nil)
+		cipherdata, _ := io.ReadAll(encReader)
+		delete(encMeta, crypto.MetaKDFParams)
+		_ = mock.PutObject(context.Background(), "bucket", fmt.Sprintf("obj%d", i), bytes.NewReader(cipherdata), encMeta, nil, "", nil)
+	}
+
+	stateFile := t.TempDir() + "/state.json"
+	m := &Migrator{
+		S3Client:       mock,
+		SourceEngine:   eng100k,
+		TargetEngine:   eng600k,
+		GatewayVersion: "0.7.0",
+		Workers:        1,
+		StateFile:      stateFile,
+		DryRun:         false,
+		Verify:         false,
+		Filter:         FilterKDF,
+	}
+
+	ctx := context.Background()
+	if err := m.Migrate(ctx, "bucket", ""); err != nil {
+		t.Fatalf("first Migrate failed: %v", err)
+	}
+
+	getCallsAfterFirst := mock.getObjectCalls
+
+	// Run again with same state file.
+	m2 := &Migrator{
+		S3Client:       mock,
+		SourceEngine:   eng100k,
+		TargetEngine:   eng600k,
+		GatewayVersion: "0.7.0",
+		Workers:        1,
+		StateFile:      stateFile,
+		DryRun:         false,
+		Verify:         false,
+		Filter:         FilterKDF,
+	}
+	if err := m2.Migrate(ctx, "bucket", ""); err != nil {
+		t.Fatalf("second Migrate failed: %v", err)
+	}
+
+	state, _, _ := LoadOrCreate(stateFile, "bucket", "")
+	if state.Stats.Migrated != 3 {
+		t.Errorf("expected 3 migrated after idempotent second run, got %d", state.Stats.Migrated)
+	}
+	if mock.getObjectCalls != getCallsAfterFirst {
+		t.Errorf("expected no additional GetObject calls on second run, got %d total (was %d after first run)", mock.getObjectCalls, getCallsAfterFirst)
+	}
+}

@@ -20,6 +20,7 @@ func TestClassify_Modern_Chunked(t *testing.T) {
 		crypto.MetaEncrypted:     "true",
 		crypto.MetaChunkedFormat: "true",
 		crypto.MetaIVDerivation:  "hkdf-sha256",
+		crypto.MetaKDFParams:     "pbkdf2-sha256:600000",
 	}
 	if got := ClassifyObject(meta); got != ClassModern {
 		t.Errorf("ClassifyObject(modern chunked) = %v, want ClassModern", ClassToString(got))
@@ -30,6 +31,7 @@ func TestClassify_Modern_NonChunked(t *testing.T) {
 	meta := map[string]string{
 		crypto.MetaEncrypted: "true",
 		crypto.MetaAlgorithm: crypto.AlgorithmAES256GCM,
+		crypto.MetaKDFParams: "pbkdf2-sha256:600000",
 	}
 	if got := ClassifyObject(meta); got != ClassModern {
 		t.Errorf("ClassifyObject(modern non-chunked) = %v, want ClassModern", ClassToString(got))
@@ -89,6 +91,7 @@ func TestClassify_FallbackV2_IsModern(t *testing.T) {
 		crypto.MetaFallbackMode:    "true",
 		crypto.MetaFallbackVersion: "2",
 		crypto.MetaIVDerivation:    "hkdf-sha256",
+		crypto.MetaKDFParams:       "pbkdf2-sha256:600000",
 	}
 	if got := ClassifyObject(meta); got != ClassModern {
 		t.Errorf("ClassifyObject(fallback v2) = %v, want ClassModern", ClassToString(got))
@@ -100,6 +103,7 @@ func TestClassify_CompactEncryptedKey(t *testing.T) {
 		"x-amz-meta-e":           "true",
 		crypto.MetaChunkedFormat: "true",
 		crypto.MetaIVDerivation:  "hkdf-sha256",
+		crypto.MetaKDFParams:     "pbkdf2-sha256:600000",
 	}
 	if got := ClassifyObject(meta); got != ClassModern {
 		t.Errorf("ClassifyObject(compact key) = %v, want ClassModern", ClassToString(got))
@@ -133,6 +137,7 @@ func TestNeedsMigration(t *testing.T) {
 		{ClassB_NoAAD, true},
 		{ClassC_Fallback_XOR, true},
 		{ClassC_Fallback_HKDF, true},
+		{ClassD_LegacyKDF, true},
 	}
 	for _, tt := range tests {
 		t.Run(ClassToString(tt.class), func(t *testing.T) {
@@ -140,5 +145,96 @@ func TestNeedsMigration(t *testing.T) {
 				t.Errorf("NeedsMigration(%s) = %v, want %v", ClassToString(tt.class), got, tt.want)
 			}
 		})
+	}
+}
+
+func TestClassify_ClassD_LegacyKDF(t *testing.T) {
+	meta := map[string]string{
+		crypto.MetaEncrypted: "true",
+		crypto.MetaAlgorithm: crypto.AlgorithmAES256GCM,
+		// MetaKDFParams absent → legacy KDF
+	}
+	if got := ClassifyObject(meta); got != ClassD_LegacyKDF {
+		t.Errorf("ClassifyObject(class D) = %v, want ClassD_LegacyKDF", ClassToString(got))
+	}
+}
+
+func TestClassify_ClassD_LegacyKDF_Chunked(t *testing.T) {
+	meta := map[string]string{
+		crypto.MetaEncrypted:     "true",
+		crypto.MetaChunkedFormat: "true",
+		crypto.MetaIVDerivation:  "hkdf-sha256",
+		// MetaKDFParams absent → legacy KDF
+	}
+	if got := ClassifyObject(meta); got != ClassD_LegacyKDF {
+		t.Errorf("ClassifyObject(class D chunked) = %v, want ClassD_LegacyKDF", ClassToString(got))
+	}
+}
+
+func TestClassify_ClassD_LegacyKDF_WithLegacyKDFParams(t *testing.T) {
+	meta := map[string]string{
+		crypto.MetaEncrypted: "true",
+		crypto.MetaAlgorithm: crypto.AlgorithmAES256GCM,
+		crypto.MetaKDFParams: "pbkdf2-sha256:100000",
+	}
+	if got := ClassifyObject(meta); got != ClassModern {
+		t.Errorf("ClassifyObject(modern with legacy KDF params) = %v, want ClassModern", ClassToString(got))
+	}
+}
+
+func TestClassToString_ClassD(t *testing.T) {
+	if got := ClassToString(ClassD_LegacyKDF); got != "class_d_legacy_kdf" {
+		t.Errorf("ClassToString(ClassD_LegacyKDF) = %q, want class_d_legacy_kdf", got)
+	}
+}
+
+func TestFilterKDF_AllowsClassD(t *testing.T) {
+	if !FilterKDF.IsAllowed(ClassD_LegacyKDF) {
+		t.Error("FilterKDF should allow ClassD_LegacyKDF")
+	}
+}
+
+func TestFilterKDF_SkipsModern(t *testing.T) {
+	if FilterKDF.IsAllowed(ClassModern) {
+		t.Error("FilterKDF should not allow ClassModern")
+	}
+}
+
+func TestFilterKDF_SkipsClassA(t *testing.T) {
+	if FilterKDF.IsAllowed(ClassA_XOR) {
+		t.Error("FilterKDF should not allow ClassA_XOR")
+	}
+}
+
+func TestFilterAll_AllowsClassD(t *testing.T) {
+	if !FilterAll.IsAllowed(ClassD_LegacyKDF) {
+		t.Error("FilterAll should allow ClassD_LegacyKDF")
+	}
+}
+
+func TestClassifyObject_ClassD_NeedsMigration(t *testing.T) {
+	meta := map[string]string{
+		crypto.MetaEncrypted: "true",
+		crypto.MetaAlgorithm: crypto.AlgorithmAES256GCM,
+		// NO crypto.MetaKDFParams
+	}
+	if got := ClassifyObject(meta); got != ClassD_LegacyKDF {
+		t.Errorf("ClassifyObject(class D) = %v, want ClassD_LegacyKDF", ClassToString(got))
+	}
+	if got := NeedsMigration(ClassD_LegacyKDF); got != true {
+		t.Errorf("NeedsMigration(ClassD_LegacyKDF) = %v, want true", got)
+	}
+}
+
+func TestClassifyObject_Modern_WithKDFParams(t *testing.T) {
+	meta := map[string]string{
+		crypto.MetaEncrypted: "true",
+		crypto.MetaKDFParams: "pbkdf2-sha256:600000",
+	}
+	if got := ClassifyObject(meta); got != ClassModern {
+		t.Errorf("ClassifyObject(modern with KDF params) = %v, want ClassModern", ClassToString(got))
+	}
+	if got := NeedsMigration(ClassModern); got != false {
+		t.Errorf("NeedsMigration(ClassModern) = %v, want false", got)
 	}
 }

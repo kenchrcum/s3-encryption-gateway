@@ -27,10 +27,11 @@ type S3Client interface {
 type MigrationClassFilter string
 
 const (
-	FilterAll  MigrationClassFilter = "all"
-	FilterSec2 MigrationClassFilter = "sec2"
-	FilterSec4 MigrationClassFilter = "sec4"
+	FilterAll   MigrationClassFilter = "all"
+	FilterSec2  MigrationClassFilter = "sec2"
+	FilterSec4  MigrationClassFilter = "sec4"
 	FilterSec27 MigrationClassFilter = "sec27"
+	FilterKDF   MigrationClassFilter = "kdf"
 )
 
 // IsAllowed reports whether the given object class passes the filter.
@@ -44,6 +45,8 @@ func (f MigrationClassFilter) IsAllowed(c ObjectClass) bool {
 		return c == ClassB_NoAAD
 	case FilterSec27:
 		return c == ClassC_Fallback_XOR || c == ClassC_Fallback_HKDF
+	case FilterKDF:
+		return c == ClassD_LegacyKDF
 	default:
 		return true
 	}
@@ -51,17 +54,20 @@ func (f MigrationClassFilter) IsAllowed(c ObjectClass) bool {
 
 // Migrator orchestrates the re-encryption of objects in an S3 bucket.
 type Migrator struct {
-	S3Client       S3Client
-	SourceEngine   crypto.EncryptionEngine
-	TargetEngine   crypto.EncryptionEngine
-	GatewayVersion string // e.g. "0.6.4" or "0.7.0"
-	Workers        int
-	StateFile      string
-	DryRun         bool
-	Verify         bool
-	VerifyDelay    time.Duration
-	Filter         MigrationClassFilter
-	Logger         *slog.Logger
+	S3Client         S3Client
+	SourceEngine     crypto.EncryptionEngine
+	TargetEngine     crypto.EncryptionEngine
+	GatewayVersion   string // e.g. "0.6.4" or "0.7.0"
+	Workers          int
+	StateFile        string
+	DryRun           bool
+	Verify           bool
+	VerifyDelay      time.Duration
+	Filter           MigrationClassFilter
+	Logger           *slog.Logger
+	Password         []byte // password for auto-constructing engines from iteration counts
+	SourceIterations int    // PBKDF2 iterations of existing objects (default 100000)
+	TargetIterations int    // PBKDF2 iterations for re-encrypted objects (default 600000)
 }
 
 // Migrate iterates over objects in the given bucket and prefix, classifying
@@ -86,6 +92,29 @@ func (m *Migrator) Migrate(ctx context.Context, bucket, prefix string) error {
 	}
 	state.GatewayVersion = m.GatewayVersion
 	state.DryRun = m.DryRun
+
+	// Auto-construct engines from iteration counts when caller did not
+	// supply them explicitly.
+	if m.SourceEngine == nil && m.SourceIterations > 0 {
+		if len(m.Password) == 0 {
+			return fmt.Errorf("SourceEngine is nil and SourceIterations is set, but Password is empty")
+		}
+		m.SourceEngine, err = crypto.NewEngineWithOpts(m.Password, nil,
+			crypto.WithPBKDF2Iterations(m.SourceIterations))
+		if err != nil {
+			return fmt.Errorf("failed to build source engine: %w", err)
+		}
+	}
+	if m.TargetEngine == nil && m.TargetIterations > 0 {
+		if len(m.Password) == 0 {
+			return fmt.Errorf("TargetEngine is nil and TargetIterations is set, but Password is empty")
+		}
+		m.TargetEngine, err = crypto.NewEngineWithOpts(m.Password, nil,
+			crypto.WithPBKDF2Iterations(m.TargetIterations))
+		if err != nil {
+			return fmt.Errorf("failed to build target engine: %w", err)
+		}
+	}
 
 	if m.Logger == nil {
 		m.Logger = slog.New(slog.NewTextHandler(os.Stderr, nil))
@@ -151,6 +180,7 @@ func (m *Migrator) Migrate(ctx context.Context, bucket, prefix string) error {
 			"class_b", stats.ClassB,
 			"class_c_xor", stats.ClassC_XOR,
 			"class_c_hkdf", stats.ClassC_HKDF,
+			"class_d", stats.ClassD,
 			"checkpoint", state.Checkpoint,
 		)
 	} else {
@@ -163,6 +193,7 @@ func (m *Migrator) Migrate(ctx context.Context, bucket, prefix string) error {
 			"class_b", stats.ClassB,
 			"class_c_xor", stats.ClassC_XOR,
 			"class_c_hkdf", stats.ClassC_HKDF,
+			"class_d", stats.ClassD,
 			"checkpoint", state.Checkpoint,
 		)
 	}

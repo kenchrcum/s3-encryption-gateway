@@ -17,6 +17,7 @@ type DryRunReport struct {
 	ClassB      int64            `json:"class_b"`
 	ClassC_XOR  int64            `json:"class_c_xor"`
 	ClassC_HKDF int64            `json:"class_c_hkdf"`
+	ClassD      int64            `json:"class_d"`
 	Unknown     int64            `json:"unknown"`
 	Samples     map[string][]string `json:"samples,omitempty"` // up to 10 keys per class
 }
@@ -72,6 +73,9 @@ func DryRunScan(ctx context.Context, client S3Client, bucket, prefix string, log
 			case ClassC_Fallback_HKDF:
 				report.ClassC_HKDF++
 				addSample(report.Samples, "class_c_fallback_hkdf", obj.Key)
+			case ClassD_LegacyKDF:
+				report.ClassD++
+				addSample(report.Samples, "class_d_legacy_kdf", obj.Key)
 			default:
 				report.Unknown++
 			}

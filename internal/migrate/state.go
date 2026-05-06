@@ -20,6 +20,7 @@ type Stats struct {
 	ClassB      int64 `json:"class_b"`
 	ClassC_XOR  int64 `json:"class_c_xor"`
 	ClassC_HKDF int64 `json:"class_c_hkdf"`
+	ClassD      int64 `json:"class_d"`
 }
 
 // FailedObject records a single object that could not be migrated.
@@ -153,6 +154,8 @@ func (s *State) MarkClass(c ObjectClass) {
 		s.Stats.ClassC_XOR++
 	case ClassC_Fallback_HKDF:
 		s.Stats.ClassC_HKDF++
+	case ClassD_LegacyKDF:
+		s.Stats.ClassD++
 	}
 	s.Updated = time.Now().UTC()
 }
