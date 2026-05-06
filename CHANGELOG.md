@@ -6,6 +6,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.7.2] — 2026-05-06
+
+### Fixed
+
+- **Active streaming write-deadline refresh** (#135 follow-up): even when
+  `WriteTimeout` is set to a non-zero value (either explicitly in config or
+  via `SERVER_WRITE_TIMEOUT`), the gateway now extends the HTTP write deadline
+  every `timeout/2` interval while bytes are actively flowing. This prevents
+  long-running S3 object downloads from being killed mid-stream, regardless of
+  the configured timeout value.
+
+- **Network-error handling on standard encrypted GET path**: the non-MPU
+  `GetObject` streaming path now also distinguishes network aborts from
+  decryption failures and logs them at Warn level rather than Error, matching
+  the MPU path introduced in 0.7.1.
+
 ## [0.7.1] — 2026-05-06
 
 ### Fixed
