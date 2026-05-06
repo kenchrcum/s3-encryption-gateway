@@ -426,7 +426,7 @@ func main() {
 		// multipart uploads (EncryptMultipartUploads=true) can wrap per-upload
 		// DEKs with PBKDF2+AES-256-GCM instead of storing them in plaintext.
 		// This provides equivalent confidentiality to single-PUT chunked encryption.
-		pkm, pkmErr := crypto.NewPasswordKeyManager(activePassword)
+		pkm, pkmErr := crypto.NewPasswordKeyManager(activePassword, cfg.Encryption.KDF.PBKDF2.Iterations)
 		if pkmErr != nil {
 			logger.WithError(pkmErr).Fatal("Failed to initialize password key manager")
 		}
@@ -499,13 +499,15 @@ func main() {
 		chunkSize = crypto.DefaultChunkSize
 	}
 
-	encryptionEngine, err = crypto.NewEngineWithChunking(
+	encryptionEngine, err = crypto.NewEngineWithOpts(
 		activePassword,
 		compressionEngine,
-		cfg.Encryption.PreferredAlgorithm,
-		cfg.Encryption.SupportedAlgorithms,
-		chunkedMode,
-		chunkSize,
+		crypto.WithPreferredAlgorithm(cfg.Encryption.PreferredAlgorithm),
+		crypto.WithSupportedAlgorithms(cfg.Encryption.SupportedAlgorithms),
+		crypto.WithChunking(chunkedMode),
+		crypto.WithChunkSize(chunkSize),
+		crypto.WithProvider("default"),
+		crypto.WithPBKDF2Iterations(cfg.Encryption.KDF.PBKDF2.Iterations),
 	)
 	// Zero the upstream password copy now that the engine owns its own defensive copy.
 	zeroBytes(activePassword)
@@ -517,10 +519,11 @@ func main() {
 	}
 
 	logger.WithFields(logrus.Fields{
-		"preferred_algorithm":  cfg.Encryption.PreferredAlgorithm,
-		"supported_algorithms": cfg.Encryption.SupportedAlgorithms,
-		"chunked_mode":         chunkedMode,
-		"chunk_size":           chunkSize,
+		"preferred_algorithm":   cfg.Encryption.PreferredAlgorithm,
+		"supported_algorithms":  cfg.Encryption.SupportedAlgorithms,
+		"chunked_mode":          chunkedMode,
+		"chunk_size":            chunkSize,
+		"kdf_pbkdf2_iterations": cfg.Encryption.KDF.PBKDF2.Iterations,
 	}).Info("Encryption configuration")
 
 	// Initialize cache if enabled (Phase 5 feature)
