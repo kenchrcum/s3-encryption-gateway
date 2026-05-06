@@ -6,6 +6,26 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.7.1] — 2026-05-06
+
+### Fixed
+
+- **MPU large-object restore timeout** (#135): the default 15-second HTTP
+  `WriteTimeout` caused the server to abort TCP connections mid-stream when
+  restoring large encrypted multipart-upload objects (e.g. CNPG backups with
+  multi-part data). The default `WriteTimeout` is now disabled (0) so the
+  gateway can stream arbitrarily large objects without artificial cut-offs.
+  Operators who rely on a hard deadline can still set `write_timeout` in the
+  server configuration.
+
+- **Misleading tamper-detection log on network errors**: when a client
+  disconnect or network timeout occurred during an MPU object stream, the
+  gateway logged it as `"MPU decrypt failed mid-stream after 200 OK"` and
+  emitted `mpu_tamper_detected_midstream` audit/metric events. The handler
+  now distinguishes `*net.OpError` timeouts, `ECONNRESET`, and `EPIPE` from
+  actual authentication failures, logging network aborts at Warn level with
+  no tamper side-effects.
+
 ## [0.7.0] — 2026-05-04
 
 ### Security
