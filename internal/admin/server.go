@@ -164,6 +164,11 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	// Signal the background refresh goroutine to exit.
 	s.stopRefreshOnce.Do(func() { close(s.stopRefresh) })
 
+	s.tokenMu.Lock()
+	zeroBytes(s.tokenCache)
+	s.tokenCache = nil
+	s.tokenMu.Unlock()
+
 	s.mu.Lock()
 	hs := s.httpServer
 	s.mu.Unlock()
@@ -280,4 +285,11 @@ func adminContextMiddleware(next http.Handler) http.Handler {
 		ctx := context.WithValue(r.Context(), ctxKeyAdmin, true)
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
+}
+
+// zeroBytes overwrites a byte slice with zeros for secure memory cleanup.
+func zeroBytes(b []byte) {
+	for i := range b {
+		b[i] = 0
+	}
 }

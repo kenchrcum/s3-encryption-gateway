@@ -767,6 +767,32 @@ func TestServer_Shutdown_BeforeStart(t *testing.T) {
 	}
 }
 
+// TestServer_Shutdown_ZeroesTokenCache verifies that Shutdown zeroes and nils
+// the in-memory token cache (V1.0-SEC-H05).
+func TestServer_Shutdown_ZeroesTokenCache(t *testing.T) {
+	cfg := config.AdminConfig{
+		Address: "127.0.0.1:0",
+		Auth: config.AdminAuthConfig{
+			Token: "test-token",
+		},
+	}
+	s := NewServer(cfg, testLogger())
+
+	// Set a known token cache value.
+	s.tokenCache = []byte("secret-token-cache")
+
+	// Shutdown should zero and nil the cache.
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if err := s.Shutdown(ctx); err != nil {
+		t.Fatalf("Shutdown() error: %v", err)
+	}
+
+	if s.tokenCache != nil {
+		t.Errorf("tokenCache should be nil after Shutdown, got %q", s.tokenCache)
+	}
+}
+
 // --- RateLimiter cleanup tests ---
 
 func TestRateLimiter_Cleanup_RemovesExpiredEntries(t *testing.T) {
