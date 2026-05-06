@@ -263,6 +263,45 @@ active. A backfill step is required **before** migration:
   supported.
 - **Cross-bucket migration** is planned for a future release.
 
+## Upgrading KDF parameters
+
+Objects written before V1.0-SEC-H03 were encrypted with PBKDF2-SHA256 at
+100,000 iterations. V1.0-SEC-H03 raises the default to 600,000 iterations and
+stores the KDF parameters in object metadata (`x-amz-meta-encryption-kdf-params`).
+
+**Objects encrypted with the old default (100k) are decrypted transparently via
+the KDF-params metadata fallback; no manual intervention is required.** The
+migration tool is only needed if the operator wants to actively upgrade old
+objects to the new iteration count.
+
+### Runbook: `s3eg-migrate --filter=kdf`
+
+1. Verify the new gateway is running with `encryption.kdf.pbkdf2.iterations: 600000`.
+2. Run a dry-run scan to count affected objects:
+   ```bash
+   s3eg-migrate \
+     --bucket my-bucket \
+     --filter kdf \
+     --dry-run \
+     --state-file /tmp/kdf-migration.json
+   ```
+
+3. When satisfied, run the actual migration:
+   ```bash
+   s3eg-migrate \
+     --bucket my-bucket \
+     --filter kdf \
+     --state-file /tmp/kdf-migration.json \
+     --workers 8 \
+     --verify
+   ```
+
+4. Optionally rerun with `--dry-run` to confirm 0 ClassD objects remain.
+
+Because `deriveKeyWithParams` reads iterations from metadata on decrypt, the
+source engine automatically handles both 100k and 600k objects during the
+migration window. No separate `--source-iterations` flag is strictly required.
+
 ## Future Work
 
 In v3.0, once all deployments have confirmed migration, the legacy read paths
