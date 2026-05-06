@@ -10,8 +10,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
+	"syscall"
 	"strconv"
 	"strings"
 	"time"
@@ -1059,23 +1061,31 @@ func (h *Handler) handleGetObject(w http.ResponseWriter, r *http.Request) {
 		if firstErr == nil { // more data to stream
 			extra, copyErr := io.Copy(w, decryptedReader)
 			if copyErr != nil {
-				// Can't change the status code after WriteHeader; log and
-				// record a tamper metric so operators see the integrity
-				// failure even though the client already got 200 headers.
-				h.logger.WithError(copyErr).WithFields(logrus.Fields{
-					"bucket": bucket,
-					"key":    key,
-				}).Error("MPU decrypt failed mid-stream after 200 OK; connection terminated")
-				h.metrics.RecordEncryptionError(r.Context(), "decrypt", "mpu_tamper_detected_midstream")
-				if h.auditLogger != nil {
-					h.auditLogger.Log(&audit.AuditEvent{
-						EventType: audit.EventTypeMPUTamperDetected,
-						Timestamp: time.Now().UTC(),
-						Bucket:    bucket,
-						Key:       key,
-						Success:   false,
-						Metadata:  map[string]interface{}{"status": "tamper_detected_midstream"},
-					})
+				if isNetworkError(copyErr) {
+					// Client disconnect or network timeout — not a tamper event.
+					h.logger.WithError(copyErr).WithFields(logrus.Fields{
+						"bucket": bucket,
+						"key":    key,
+					}).Warn("MPU stream aborted by network error after 200 OK")
+				} else {
+					// Can't change the status code after WriteHeader; log and
+					// record a tamper metric so operators see the integrity
+					// failure even though the client already got 200 headers.
+					h.logger.WithError(copyErr).WithFields(logrus.Fields{
+						"bucket": bucket,
+						"key":    key,
+					}).Error("MPU decrypt failed mid-stream after 200 OK; connection terminated")
+					h.metrics.RecordEncryptionError(r.Context(), "decrypt", "mpu_tamper_detected_midstream")
+					if h.auditLogger != nil {
+						h.auditLogger.Log(&audit.AuditEvent{
+							EventType: audit.EventTypeMPUTamperDetected,
+							Timestamp: time.Now().UTC(),
+							Bucket:    bucket,
+							Key:       key,
+							Success:   false,
+							Metadata:  map[string]interface{}{"status": "tamper_detected_midstream"},
+						})
+					}
 				}
 			}
 			written += int(extra)
@@ -2422,6 +2432,27 @@ func zeroBytes(b []byte) {
 	for i := range b {
 		b[i] = 0
 	}
+}
+
+// isNetworkError reports whether err is a client-side network error
+// (timeout, connection reset, broken pipe) rather than a decryption or
+// authentication failure.
+func isNetworkError(err error) bool {
+	if err == nil {
+		return false
+	}
+	// syscall-level connection errors.
+	if errors.Is(err, syscall.ECONNRESET) || errors.Is(err, syscall.EPIPE) {
+		return true
+	}
+	// net.OpError (includes TCP write/read timeouts).
+	var opErr *net.OpError
+	if errors.As(err, &opErr) {
+		if opErr.Timeout() || opErr.Temporary() {
+			return true
+		}
+	}
+	return false
 }
 
 // CompleteMultipartUpload represents the XML structure for completing multipart uploads.
