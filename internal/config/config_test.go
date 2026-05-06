@@ -143,6 +143,11 @@ func TestConfig_Validate(t *testing.T) {
 				},
 				Encryption: EncryptionConfig{
 					Password: "test-password",
+					KDF: KDFConfig{
+						PBKDF2: PBKDF2Config{
+							Iterations: 600000,
+						},
+					},
 				},
 			},
 			wantErr: false,
@@ -157,6 +162,11 @@ func TestConfig_Validate(t *testing.T) {
 				},
 				Encryption: EncryptionConfig{
 					Password: "test-password",
+					KDF: KDFConfig{
+						PBKDF2: PBKDF2Config{
+							Iterations: 600000,
+						},
+					},
 				},
 			},
 			wantErr: true,
@@ -171,6 +181,11 @@ func TestConfig_Validate(t *testing.T) {
 				},
 				Encryption: EncryptionConfig{
 					Password: "test-password",
+					KDF: KDFConfig{
+						PBKDF2: PBKDF2Config{
+							Iterations: 600000,
+						},
+					},
 				},
 			},
 			wantErr: false, // Endpoint is optional - empty means AWS default
@@ -199,6 +214,11 @@ func TestConfig_Validate(t *testing.T) {
 				},
 				Encryption: EncryptionConfig{
 					Password: "test-password",
+					KDF: KDFConfig{
+						PBKDF2: PBKDF2Config{
+							Iterations: 600000,
+						},
+					},
 				},
 			},
 			wantErr: false,
@@ -214,6 +234,11 @@ func TestConfig_Validate(t *testing.T) {
 				},
 				Encryption: EncryptionConfig{
 					Password: "test-password",
+					KDF: KDFConfig{
+						PBKDF2: PBKDF2Config{
+							Iterations: 600000,
+						},
+					},
 				},
 			},
 			wantErr: true,
@@ -526,6 +551,11 @@ func minValidConfig() *Config {
 		},
 		Encryption: EncryptionConfig{
 			Password: "test-password",
+			KDF: KDFConfig{
+				PBKDF2: PBKDF2Config{
+					Iterations: 600000,
+				},
+			},
 		},
 	}
 }
@@ -1106,6 +1136,11 @@ func TestValidateReloadSafety_Coverage(t *testing.T) {
 				SupportedAlgorithms: []string{"AES256-GCM"},
 				ChunkedMode:         false,
 				ChunkSize:           65536,
+				KDF: KDFConfig{
+					PBKDF2: PBKDF2Config{
+						Iterations: 600000,
+					},
+				},
 			},
 		}
 	}
@@ -1518,5 +1553,88 @@ func TestParseCosmianKeyRefs(t *testing.T) {
 				t.Errorf("parseCosmianKeyRefs(%q)[0].Version = %d, want %d", tt.input, refs[0].Version, tt.wantVer)
 			}
 		}
+	}
+}
+
+// ---- V1.0-SEC-H03 PBKDF2 iteration tests ---------------------------------
+
+func TestConfig_Default_PBKDF2Iterations(t *testing.T) {
+	// Set minimal required environment variables for LoadConfig
+	t.Setenv("BACKEND_ACCESS_KEY", "test-key")
+	t.Setenv("BACKEND_SECRET_KEY", "test-secret")
+	t.Setenv("ENCRYPTION_PASSWORD", "test-password")
+
+	config, err := LoadConfig("")
+	if err != nil {
+		t.Fatalf("LoadConfig failed: %v", err)
+	}
+
+	if config.Encryption.KDF.PBKDF2.Iterations != 600000 {
+		t.Errorf("expected default PBKDF2 iterations 600000, got %d", config.Encryption.KDF.PBKDF2.Iterations)
+	}
+}
+
+func TestConfig_Validate_TooFew(t *testing.T) {
+	cfg := minValidConfig()
+	cfg.Encryption.KDF.PBKDF2.Iterations = 99999
+
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("expected error for iterations < 100000, got nil")
+	}
+	if !strings.Contains(err.Error(), "encryption.kdf.pbkdf2.iterations") {
+		t.Errorf("error %q does not contain 'encryption.kdf.pbkdf2.iterations'", err.Error())
+	}
+}
+
+func TestConfig_Validate_ExactMinimum(t *testing.T) {
+	cfg := minValidConfig()
+	cfg.Encryption.KDF.PBKDF2.Iterations = 100000
+
+	err := cfg.Validate()
+	if err != nil {
+		t.Fatalf("expected no error for iterations == 100000, got: %v", err)
+	}
+}
+
+func TestConfig_Validate_Recommended(t *testing.T) {
+	cfg := minValidConfig()
+	cfg.Encryption.KDF.PBKDF2.Iterations = 600000
+
+	err := cfg.Validate()
+	if err != nil {
+		t.Fatalf("expected no error for iterations == 600000, got: %v", err)
+	}
+}
+
+func TestConfig_EnvOverride_PBKDF2Iterations(t *testing.T) {
+	t.Setenv("ENCRYPTION_KDF_PBKDF2_ITERATIONS", "750000")
+	t.Setenv("BACKEND_ACCESS_KEY", "test-key")
+	t.Setenv("BACKEND_SECRET_KEY", "test-secret")
+	t.Setenv("ENCRYPTION_PASSWORD", "test-password")
+
+	config, err := LoadConfig("")
+	if err != nil {
+		t.Fatalf("LoadConfig failed: %v", err)
+	}
+
+	if config.Encryption.KDF.PBKDF2.Iterations != 750000 {
+		t.Errorf("expected PBKDF2 iterations 750000 after env override, got %d", config.Encryption.KDF.PBKDF2.Iterations)
+	}
+}
+
+func TestConfig_EnvOverride_BelowMin_Ignored(t *testing.T) {
+	t.Setenv("ENCRYPTION_KDF_PBKDF2_ITERATIONS", "50000")
+	t.Setenv("BACKEND_ACCESS_KEY", "test-key")
+	t.Setenv("BACKEND_SECRET_KEY", "test-secret")
+	t.Setenv("ENCRYPTION_PASSWORD", "test-password")
+
+	config, err := LoadConfig("")
+	if err != nil {
+		t.Fatalf("LoadConfig failed: %v", err)
+	}
+
+	if config.Encryption.KDF.PBKDF2.Iterations != 600000 {
+		t.Errorf("expected default PBKDF2 iterations 600000 when env override is below min, got %d", config.Encryption.KDF.PBKDF2.Iterations)
 	}
 }

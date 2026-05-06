@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"io/fs"
+	"log/slog"
 	"net"
 	"os"
 	"os/signal"
@@ -206,6 +207,17 @@ func (r *BackendRetryConfig) Validate() error {
 }
 
 // EncryptionConfig holds encryption-related configuration.
+
+// KDFConfig is the top-level key-derivation configuration block.
+type KDFConfig struct {
+    PBKDF2 PBKDF2Config `yaml:"pbkdf2"`
+}
+
+// PBKDF2Config holds parameters specific to PBKDF2-SHA256 key derivation.
+type PBKDF2Config struct {
+    Iterations int `yaml:"iterations" env:"ENCRYPTION_KDF_PBKDF2_ITERATIONS"`
+}
+
 type EncryptionConfig struct {
 	Password            string           `yaml:"password" env:"ENCRYPTION_PASSWORD"`
 	KeyFile             string           `yaml:"key_file" env:"ENCRYPTION_KEY_FILE"`
@@ -215,6 +227,7 @@ type EncryptionConfig struct {
 	ChunkedMode         bool             `yaml:"chunked_mode" env:"ENCRYPTION_CHUNKED_MODE"` // Enable chunked/streaming encryption
 	ChunkSize           int              `yaml:"chunk_size" env:"ENCRYPTION_CHUNK_SIZE"`     // Size of each encryption chunk in bytes
 	Hardware            HardwareConfig   `yaml:"hardware"`
+	KDF                 KDFConfig        `yaml:"kdf"`
 }
 
 // HardwareConfig holds hardware acceleration configuration.
@@ -582,6 +595,11 @@ func LoadConfig(path string) (*Config, error) {
 				EnableAESNI:    true,
 				EnableARMv8AES: true,
 			},
+			KDF: KDFConfig{
+				PBKDF2: PBKDF2Config{
+					Iterations: 600000,
+				},
+			},
 		},
 		Backend: BackendConfig{
 			Endpoint: "", // Leave empty for AWS default, or set for any S3-compatible endpoint
@@ -796,6 +814,11 @@ func loadFromEnv(config *Config) {
 	}
 	if v := os.Getenv("HARDWARE_ENABLE_ARMV8_AES"); v != "" {
 		config.Encryption.Hardware.EnableARMv8AES = v == "true" || v == "1"
+	}
+	if v := os.Getenv("ENCRYPTION_KDF_PBKDF2_ITERATIONS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n >= 100000 {
+			config.Encryption.KDF.PBKDF2.Iterations = n
+		}
 	}
 	if v := os.Getenv("KEY_MANAGER_ENABLED"); v != "" {
 		config.Encryption.KeyManager.Enabled = v == "true" || v == "1"
@@ -1240,6 +1263,14 @@ func (c *Config) Validate() error {
 				return fmt.Errorf("invalid entry in encryption.supported_algorithms: %s", alg)
 			}
 		}
+	}
+
+	if c.Encryption.KDF.PBKDF2.Iterations < 100000 {
+		return fmt.Errorf("encryption.kdf.pbkdf2.iterations must be >= 100000 (got %d)", c.Encryption.KDF.PBKDF2.Iterations)
+	}
+	if c.Encryption.KDF.PBKDF2.Iterations < 600000 {
+		slog.Warn("encryption.kdf.pbkdf2.iterations is below NIST SP 800-132 (2023) recommendation of 600,000",
+			"iterations", c.Encryption.KDF.PBKDF2.Iterations)
 	}
 
 	if c.Encryption.KeyManager.Enabled {
