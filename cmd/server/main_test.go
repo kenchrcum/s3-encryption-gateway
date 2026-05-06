@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"io"
+	"os"
 	"testing"
 
 	"github.com/kenneth/s3-encryption-gateway/internal/config"
@@ -111,4 +113,50 @@ func TestInitTracing_Disabled(t *testing.T) {
 	// Just verify the struct is valid (no validation method on TracingConfig directly)
 	assert.False(t, cfg.Enabled)
 	assert.Equal(t, "", cfg.ServiceName)
+}
+
+func TestStringSlicesEqual(t *testing.T) {
+	assert.True(t, stringSlicesEqual(nil, nil))
+	assert.True(t, stringSlicesEqual([]string{}, []string{}))
+	assert.True(t, stringSlicesEqual([]string{"a", "b"}, []string{"a", "b"}))
+	assert.False(t, stringSlicesEqual([]string{"a"}, []string{"a", "b"}))
+	assert.False(t, stringSlicesEqual([]string{"a", "b"}, []string{"a", "c"}))
+	assert.False(t, stringSlicesEqual([]string{"a"}, nil))
+}
+
+func TestApplyConfigChanges_PolicyFiles(t *testing.T) {
+	logger := logrus.New()
+	logger.SetOutput(io.Discard)
+
+	// Create temporary policy files
+	tmpDir := t.TempDir()
+	policyFile1 := tmpDir + "/policy1.yaml"
+	policyFile2 := tmpDir + "/policy2.yaml"
+
+	require.NoError(t, os.WriteFile(policyFile1, []byte(`
+id: test-policy-1
+buckets:
+  - "test-*"
+`), 0600))
+	require.NoError(t, os.WriteFile(policyFile2, []byte(`
+id: test-policy-2
+buckets:
+  - "other-*"
+`), 0600))
+
+	oldCfg := &config.Config{
+		ListenAddr: ":8080",
+		PolicyFiles: []string{policyFile1},
+	}
+	newCfg := &config.Config{
+		ListenAddr: ":8080",
+		PolicyFiles: []string{policyFile1, policyFile2},
+	}
+
+	pm := config.NewPolicyManager()
+	applier := NewConfigChangeApplier(logger, nil, nil, nil, nil, oldCfg, pm)
+
+	err := applier.ApplyConfigChanges(oldCfg, newCfg)
+	require.NoError(t, err)
+	assert.NotNil(t, applier.policyManager)
 }

@@ -47,10 +47,11 @@ type ConfigChangeApplier struct {
 	cache          cache.Cache
 	auditLogger    audit.Logger
 	config         *config.Config
+	policyManager  *config.PolicyManager
 }
 
 // NewConfigChangeApplier creates a new applier for configuration changes
-func NewConfigChangeApplier(logger *logrus.Logger, tracerProvider *sdktrace.TracerProvider, rateLimiter *middleware.RateLimiter, cache cache.Cache, auditLogger audit.Logger, initialConfig *config.Config) *ConfigChangeApplier {
+func NewConfigChangeApplier(logger *logrus.Logger, tracerProvider *sdktrace.TracerProvider, rateLimiter *middleware.RateLimiter, cache cache.Cache, auditLogger audit.Logger, initialConfig *config.Config, policyManager *config.PolicyManager) *ConfigChangeApplier {
 	return &ConfigChangeApplier{
 		logger:         logger,
 		tracerProvider: tracerProvider,
@@ -58,7 +59,21 @@ func NewConfigChangeApplier(logger *logrus.Logger, tracerProvider *sdktrace.Trac
 		cache:          cache,
 		auditLogger:    auditLogger,
 		config:         initialConfig,
+		policyManager:  policyManager,
 	}
+}
+
+// stringSlicesEqual compares two string slices element-by-element.
+func stringSlicesEqual(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }
 
 // ApplyConfigChanges applies non-crypto configuration changes to running components
@@ -206,6 +221,24 @@ func (a *ConfigChangeApplier) ApplyConfigChanges(oldConfig, newConfig *config.Co
 			}).Warn("Logging configuration changed - restart required for changes to take effect")
 
 			changes = append(changes, "logging: configuration changed (restart required)")
+		}
+	}
+
+	// Update policy files
+	if !stringSlicesEqual(oldConfig.PolicyFiles, newConfig.PolicyFiles) {
+		if len(newConfig.PolicyFiles) > 0 {
+			if a.policyManager == nil {
+				a.policyManager = config.NewPolicyManager()
+			}
+			if err := a.policyManager.LoadPolicies(newConfig.PolicyFiles); err != nil {
+				a.logger.WithError(err).Warn("Failed to reload policy files during config change")
+				changes = append(changes, "policy_files: reload failed")
+			} else {
+				changes = append(changes, fmt.Sprintf("policy_files: reloaded (%d files)", len(newConfig.PolicyFiles)))
+			}
+		} else {
+			a.policyManager = nil
+			changes = append(changes, "policy_files: cleared")
 		}
 	}
 
@@ -608,7 +641,7 @@ func main() {
 			defer rateLimiterPtr.Stop()
 		}
 
-		configApplier = NewConfigChangeApplier(logger, tracerProvider, rateLimiterPtr, objectCache, auditLogger, cfg)
+		configApplier = NewConfigChangeApplier(logger, tracerProvider, rateLimiterPtr, objectCache, auditLogger, cfg, policyManager)
 
 		// Create and start config reloader
 		var err error
