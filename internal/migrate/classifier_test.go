@@ -171,14 +171,30 @@ func TestClassify_ClassD_LegacyKDF_Chunked(t *testing.T) {
 	}
 }
 
-func TestClassify_ClassD_LegacyKDF_WithLegacyKDFParams(t *testing.T) {
+func TestClassify_ClassModern_WithExplicitLowerKDFParams(t *testing.T) {
+	// An object with an explicit "pbkdf2-sha256:100000" KDF params value is
+	// ClassModern — the presence of any KDF params means the encryption
+	// algorithm is known and recorded. Migrating based on iteration count
+	// is handled by SourceIterations in the Migrator, not by class.
 	meta := map[string]string{
 		crypto.MetaEncrypted: "true",
 		crypto.MetaAlgorithm: crypto.AlgorithmAES256GCM,
 		crypto.MetaKDFParams: "pbkdf2-sha256:100000",
 	}
 	if got := ClassifyObject(meta); got != ClassModern {
-		t.Errorf("ClassifyObject(modern with legacy KDF params) = %v, want ClassModern", ClassToString(got))
+		t.Errorf("ClassifyObject(explicit 100k KDF params) = %v, want ClassModern", ClassToString(got))
+	}
+}
+
+func TestClassify_ClassModern_WithDefaultKDFParams(t *testing.T) {
+	// An object with the current default iteration count is ClassModern.
+	meta := map[string]string{
+		crypto.MetaEncrypted: "true",
+		crypto.MetaAlgorithm: crypto.AlgorithmAES256GCM,
+		crypto.MetaKDFParams: "pbkdf2-sha256:600000",
+	}
+	if got := ClassifyObject(meta); got != ClassModern {
+		t.Errorf("ClassifyObject(600k KDF params) = %v, want ClassModern", ClassToString(got))
 	}
 }
 

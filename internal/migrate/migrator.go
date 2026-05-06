@@ -453,6 +453,18 @@ func (m *Migrator) listObjects(ctx context.Context, bucket, prefix string, state
 			class := ClassifyObject(meta)
 			state.Stats.Total++
 
+			// ClassModern objects with an explicit SourceIterations KDF params
+			// value also need re-encryption when FilterKDF is active and
+			// SourceIterations is configured. This covers objects written by a
+			// gateway configured with a non-default (e.g. 100k) PBKDF2 count
+			// that stored MetaKDFParams explicitly.
+			if class == ClassModern && m.Filter == FilterKDF && m.SourceIterations > 0 {
+				srcParams := crypto.FormatKDFParams(crypto.DefaultKDFParams(m.SourceIterations))
+				if meta[crypto.MetaKDFParams] == srcParams {
+					class = ClassD_LegacyKDF
+				}
+			}
+
 			if !NeedsMigration(class) {
 				state.MarkSkipped()
 				continue

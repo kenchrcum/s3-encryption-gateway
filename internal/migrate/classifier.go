@@ -105,8 +105,12 @@ func ClassifyObject(meta map[string]string) ObjectClass {
 		return ClassA_XOR
 	}
 
-	// After existing class checks that did not match (ClassModern reached):
-	// A modern object without MetaKDFParams is Class D — legacy KDF.
+	// Class D — legacy KDF: MetaKDFParams is absent, meaning the object was
+	// encrypted before KDF params were recorded (legacy 100k PBKDF2, no
+	// explicit params stored). Objects with an explicit MetaKDFParams value
+	// (even one with a sub-default iteration count) are ClassModern — the
+	// iteration count is driven by SourceIterations in the Migrator, not by
+	// the pure class.
 	if meta[crypto.MetaKDFParams] == "" {
 		return ClassD_LegacyKDF
 	}
@@ -124,3 +128,5 @@ func NeedsMigration(c ObjectClass) bool {
 		return false
 	}
 }
+
+

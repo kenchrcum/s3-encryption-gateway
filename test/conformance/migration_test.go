@@ -876,10 +876,13 @@ func testMGMT2_KDF_FilterKDF_SkipsOtherClasses(t *testing.T, inst provider.Insta
 	bucket := inst.Bucket
 	prefix := fmt.Sprintf("mgmt2/filter/%s/", uniqueSuffix(t))
 
+	// Capture ClassA metadata before migration to detect any unwanted changes.
+	classAPreMigrate := make([]map[string]string, 2)
 	for i := 0; i < 2; i++ {
 		putEncryptedObject(t, client, eng600k, bucket, fmt.Sprintf("%sclassa-%d", prefix, i), []byte("classa"), func(meta map[string]string) {
 			delete(meta, crypto.MetaIVDerivation)
 		})
+		classAPreMigrate[i] = headMeta(t, client, bucket, fmt.Sprintf("%sclassa-%d", prefix, i))
 	}
 
 	eng100k := newEngine100k(t)
@@ -907,10 +910,17 @@ func testMGMT2_KDF_FilterKDF_SkipsOtherClasses(t *testing.T, inst provider.Insta
 		t.Fatalf("Migrate failed: %v", err)
 	}
 
+	// ClassA objects must be untouched: their metadata must be identical to
+	// what was recorded before the migration run.
 	for i := 0; i < 2; i++ {
-		meta := headMeta(t, client, bucket, fmt.Sprintf("%sclassa-%d", prefix, i))
-		if meta[crypto.MetaKDFParams] != "" {
-			t.Errorf("classa-%d: should not have been migrated, got MetaKDFParams=%q", i, meta[crypto.MetaKDFParams])
+		metaAfter := headMeta(t, client, bucket, fmt.Sprintf("%sclassa-%d", prefix, i))
+		pre := classAPreMigrate[i]
+		if metaAfter[crypto.MetaKDFParams] != pre[crypto.MetaKDFParams] {
+			t.Errorf("classa-%d: should not have been migrated, MetaKDFParams changed from %q to %q",
+				i, pre[crypto.MetaKDFParams], metaAfter[crypto.MetaKDFParams])
+		}
+		if metaAfter[crypto.MetaIV] != pre[crypto.MetaIV] {
+			t.Errorf("classa-%d: should not have been migrated, MetaIV changed", i)
 		}
 	}
 	for i := 0; i < 2; i++ {

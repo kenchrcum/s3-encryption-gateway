@@ -18,6 +18,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/aws/aws-sdk-go-v2/service/s3/types"
+	v4 "github.com/aws/aws-sdk-go-v2/aws/signer/v4"
 	"github.com/aws/smithy-go/middleware"
 	smithyhttp "github.com/aws/smithy-go/transport/http"
 
@@ -443,7 +444,20 @@ func (c *s3Client) PutObject(ctx context.Context, bucket, key string, reader io.
 		input.Tagging = aws.String(tags)
 	}
 
-	_, err := c.client.PutObject(ctx, input)
+	// For non-seekable readers (e.g. streaming chunked encrypted data), the
+	// SigV4 ComputePayloadSHA256 middleware would fail because it reads the
+	// entire body to hash it then seeks back to the start.  Swap in the
+	// UnsignedPayload middleware so the SDK uses "UNSIGNED-PAYLOAD" instead.
+	// This is safe for S3-compatible backends (MinIO, Garage, SeaweedFS, etc.)
+	// which do not enforce payload hash verification.
+	var putOpts []func(*s3.Options)
+	if _, seekable := reader.(io.Seeker); !seekable {
+		putOpts = append(putOpts, s3.WithAPIOptions(
+			v4.SwapComputePayloadSHA256ForUnsignedPayloadMiddleware,
+		))
+	}
+
+	_, err := c.client.PutObject(ctx, input, putOpts...)
 	if err != nil {
 		span.SetStatus(codes.Error, err.Error())
 		return fmt.Errorf("failed to put object %s/%s: %w", bucket, key, err)

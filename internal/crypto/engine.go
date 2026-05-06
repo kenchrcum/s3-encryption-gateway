@@ -679,13 +679,14 @@ func (e *engine) Decrypt(ctx context.Context, reader io.Reader, metadata map[str
 		)
 	}
 
-	// Build AAD from expanded metadata
-	// Use Content-Type from encryption metadata (MetaContentType) if available,
-	// otherwise fall back to Content-Type from S3 response
+	// Build AAD from expanded metadata.
+	// We MUST use only MetaContentType (the value stored at encryption time).
+	// Do NOT fall back to expandedMetadata["Content-Type"]: the S3 backend
+	// may inject a non-empty Content-Type (e.g. "application/octet-stream")
+	// that was never included in the AAD during encryption, causing AEAD
+	// authentication to fail.  If MetaContentType is absent, the object was
+	// encrypted with contentType="" and we reconstruct that exact AAD.
 	contentType := expandedMetadata[MetaContentType]
-	if contentType == "" {
-		contentType = expandedMetadata["Content-Type"]
-	}
 	aadMeta := map[string]string{
 		MetaKeyVersion:   expandedMetadata[MetaKeyVersion],
 		MetaOriginalSize: expandedMetadata[MetaOriginalSize],
