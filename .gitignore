@@ -36,6 +36,7 @@ Thumbs.db
 # Build artifacts
 dist/
 build/
+*.out
 
 # Configuration files with secrets
 config.local.yaml
