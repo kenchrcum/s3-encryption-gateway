@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -80,14 +81,21 @@ func (m *mpuMockS3Client) GetObject(ctx context.Context, bucket, key string, ver
 	// Serve byte-range on GET — required for ranged-GET tests.
 	if rangeHeader != nil && *rangeHeader != "" {
 		var first, last int64
-		if _, err := fmt.Sscanf(*rangeHeader, "bytes=%d-%d", &first, &last); err == nil {
-			if last >= int64(len(data)) {
-				last = int64(len(data)) - 1
+		parts := strings.Split(strings.TrimPrefix(*rangeHeader, "bytes="), "-")
+		if len(parts) == 2 {
+			f, err1 := strconv.Atoi(parts[0])
+			l, err2 := strconv.Atoi(parts[1])
+			if err1 == nil && err2 == nil {
+				first = int64(f)
+				last = int64(l)
+				if last >= int64(len(data)) {
+					last = int64(len(data)) - 1
+				}
+				if first < 0 || first > last {
+					return nil, nil, fmt.Errorf("invalid range %q", *rangeHeader)
+				}
+				return io.NopCloser(bytes.NewReader(data[first : last+1])), metaCopy, nil
 			}
-			if first < 0 || first > last {
-				return nil, nil, fmt.Errorf("invalid range %q", *rangeHeader)
-			}
-			return io.NopCloser(bytes.NewReader(data[first : last+1])), metaCopy, nil
 		}
 	}
 	return io.NopCloser(bytes.NewReader(data)), metaCopy, nil
