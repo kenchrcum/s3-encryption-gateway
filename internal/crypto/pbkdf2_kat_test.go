@@ -74,3 +74,30 @@ func TestPBKDF2StringPassword(t *testing.T) {
 		t.Errorf("key length mismatch: expected %d, got %d", keyLen, len(key))
 	}
 }
+
+
+// TestPBKDF2KAT_600k verifies PBKDF2-HMAC-SHA256 with 600000 iterations.
+func TestPBKDF2KAT_600k(t *testing.T) {
+	const (
+		password   = "testpassword"
+		iterations = 600000
+		keyLen     = 32
+	)
+
+	salt := make([]byte, 32)
+	for i := range salt {
+		salt[i] = 0x01
+	}
+
+	expectedHex := "6172973d78018899fcecd7ba5c454a977f87cd72ea1ce124dfa6cef6fa819108"
+
+	key, err := pbkdf2.Key(sha256.New, password, salt, iterations, keyLen)
+	if err != nil {
+		t.Fatalf("pbkdf2.Key() failed: %v", err)
+	}
+
+	actualHex := hex.EncodeToString(key)
+	if actualHex != expectedHex {
+		t.Errorf("PBKDF2 output mismatch\nexpected: %s\nactual:   %s", expectedHex, actualHex)
+	}
+}
