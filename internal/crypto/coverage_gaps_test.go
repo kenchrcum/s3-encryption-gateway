@@ -83,7 +83,7 @@ func TestChunkedDecryptReader_Close(t *testing.T) {
 // ---- passwordKeyManager.Provider -------------------------------------------
 
 func TestPasswordKeyManager_Provider(t *testing.T) {
-	km, err := NewPasswordKeyManager([]byte("test-password-long-enough"))
+	km, err := NewPasswordKeyManager([]byte("test-password-long-enough"), DefaultPBKDF2Iterations)
 	if err != nil {
 		t.Fatalf("NewPasswordKeyManager: %v", err)
 	}
@@ -137,7 +137,7 @@ func TestGetRotationState_InitialisesIfNil(t *testing.T) {
 
 func TestNewEngineWithChunkingAndProvider(t *testing.T) {
 	eng, err := NewEngineWithChunkingAndProvider(
-		[]byte("test-password-chunk-provider123"), nil, "", nil, true, DefaultChunkSize, "default",
+		[]byte("test-password-chunk-provider123"), nil, "", nil, true, DefaultChunkSize, "default", DefaultPBKDF2Iterations,
 	)
 	if err != nil {
 		t.Fatalf("NewEngineWithChunkingAndProvider: %v", err)

@@ -23,12 +23,13 @@ import (
 )
 
 const (
-	// Key derivation parameters
-	pbkdf2Iterations = 100000
-	aesKeySize       = 32 // 256 bits
-	saltSize         = 32 // 256 bits
-	nonceSize        = 12 // 96 bits for GCM
-	tagSize          = 16 // 128 bits authentication tag
+	// Key derivation parameters — per-object iteration count is now configurable
+	// via engine.pbkdf2Iterations; the legacy constant is kept in kdf.go as
+	// LegacyPBKDF2Iterations for decrypt fallback.
+	aesKeySize = 32 // 256 bits
+	saltSize   = 32 // 256 bits
+	nonceSize  = 12 // 96 bits for GCM
+	tagSize    = 16 // 128 bits authentication tag
 
 	// Metadata keys for encryption information
 	MetaEncrypted               = "x-amz-meta-encrypted"
@@ -46,6 +47,11 @@ const (
 	MetaKMSKeyID                = "x-amz-meta-encryption-kms-id"
 	MetaKMSProvider             = "x-amz-meta-encryption-kms-provider"
 	MetaContentType             = "x-amz-meta-encryption-content-type"
+	// MetaKDFParams stores the KDF algorithm and parameters used to derive the
+	// per-object encryption key. Format: "pbkdf2-sha256:<iterations>" or
+	// "argon2id:<time>:<memory_kib>:<threads>".
+	// Absent on objects written before V1.0-SEC-H03.
+	MetaKDFParams = "x-amz-meta-encryption-kdf-params"
 
 	// Fallback metadata storage keys
 	MetaFallbackMode    = "x-amz-meta-encryption-fallback"
@@ -86,7 +92,8 @@ type EncryptionEngine interface {
 
 // engine implements the EncryptionEngine interface.
 type engine struct {
-	password            []byte
+	password         []byte
+	pbkdf2Iterations int // configurable, default DefaultPBKDF2Iterations
 	compressionEngine   CompressionEngine
 	preferredAlgorithm  string
 	supportedAlgorithms []string
@@ -109,7 +116,7 @@ type engine struct {
 // NewEngine creates a new encryption engine with the given password.
 //
 // The password is used to derive encryption keys using PBKDF2 with
-// 100,000 iterations and a random salt per object.
+// the default iteration count (600,000) and a random salt per object.
 func NewEngine(password []byte) (EncryptionEngine, error) {
 	return NewEngineWithCompression(password, nil)
 }
@@ -126,16 +133,16 @@ func NewEngineWithOptions(password []byte, compressionEngine CompressionEngine, 
 
 // NewEngineWithProvider creates a new encryption engine with provider-specific settings.
 func NewEngineWithProvider(password []byte, compressionEngine CompressionEngine, preferredAlgorithm string, supportedAlgorithms []string, provider string) (EncryptionEngine, error) {
-	return NewEngineWithChunkingAndProvider(password, compressionEngine, preferredAlgorithm, supportedAlgorithms, false, DefaultChunkSize, provider)
+	return NewEngineWithChunkingAndProvider(password, compressionEngine, preferredAlgorithm, supportedAlgorithms, false, DefaultChunkSize, provider, DefaultPBKDF2Iterations)
 }
 
 // NewEngineWithChunking creates a new encryption engine with chunked mode support.
 func NewEngineWithChunking(password []byte, compressionEngine CompressionEngine, preferredAlgorithm string, supportedAlgorithms []string, chunkedMode bool, chunkSize int) (EncryptionEngine, error) {
-	return NewEngineWithChunkingAndProvider(password, compressionEngine, preferredAlgorithm, supportedAlgorithms, chunkedMode, chunkSize, "default")
+	return NewEngineWithChunkingAndProvider(password, compressionEngine, preferredAlgorithm, supportedAlgorithms, chunkedMode, chunkSize, "default", DefaultPBKDF2Iterations)
 }
 
 // NewEngineWithChunkingAndProvider creates a new encryption engine with chunked mode and provider support.
-func NewEngineWithChunkingAndProvider(password []byte, compressionEngine CompressionEngine, preferredAlgorithm string, supportedAlgorithms []string, chunkedMode bool, chunkSize int, provider string) (EncryptionEngine, error) {
+func NewEngineWithChunkingAndProvider(password []byte, compressionEngine CompressionEngine, preferredAlgorithm string, supportedAlgorithms []string, chunkedMode bool, chunkSize int, provider string, pbkdf2Iterations int) (EncryptionEngine, error) {
 	if len(password) == 0 {
 		return nil, fmt.Errorf("encryption password cannot be empty")
 	}
@@ -186,6 +193,7 @@ func NewEngineWithChunkingAndProvider(password []byte, compressionEngine Compres
 
 	return &engine{
 		password:            passwordBytes,
+		pbkdf2Iterations:    pbkdf2Iterations,
 		compressionEngine:   compressionEngine,
 		preferredAlgorithm:  preferredAlgorithm,
 		supportedAlgorithms: supportedAlgorithms,
@@ -229,19 +237,29 @@ func GetRotationState(enc EncryptionEngine) *RotationState {
 	return NewRotationState()
 }
 
-// deriveKey derives an AES-256 key from the password using PBKDF2.
-func (e *engine) deriveKey(salt []byte) ([]byte, error) {
+// deriveKeyWithParams derives a key using the given KDFParams.
+func (e *engine) deriveKeyWithParams(salt []byte, params KDFParams) ([]byte, error) {
 	if len(salt) != saltSize {
 		return nil, fmt.Errorf("invalid salt size: expected %d bytes, got %d", saltSize, len(salt))
 	}
 
-	key, err := pbkdf2.Key(sha256.New, string(e.password), salt, pbkdf2Iterations, aesKeySize)
-	if err != nil {
-		// This error path should be statically unreachable with compile-time constant parameters,
-		// but we handle it to prevent silent failures in future refactors.
-		return nil, fmt.Errorf("failed to derive key with PBKDF2: %w", err)
+	switch params.Algorithm {
+	case KDFAlgPBKDF2SHA256:
+		key, err := pbkdf2.Key(sha256.New, string(e.password), salt, params.Iterations, aesKeySize)
+		if err != nil {
+			return nil, fmt.Errorf("failed to derive key with PBKDF2: %w", err)
+		}
+		return key, nil
+	case KDFAlgArgon2id:
+		return deriveKeyArgon2id(salt, params)
+	default:
+		return nil, fmt.Errorf("unsupported KDF algorithm: %s", params.Algorithm)
 	}
-	return key, nil
+}
+
+// deriveKey derives a key for new objects using the engine's configured iterations.
+func (e *engine) deriveKey(salt []byte) ([]byte, error) {
+	return e.deriveKeyWithParams(salt, DefaultKDFParams(e.pbkdf2Iterations))
 }
 
 // generateSalt generates a cryptographically secure random salt.
@@ -451,6 +469,7 @@ func (e *engine) Encrypt(ctx context.Context, reader io.Reader, metadata map[str
 	encMetadata[MetaIV] = encodeBase64(nonce)
 	encMetadata[MetaOriginalSize] = fmt.Sprintf("%d", originalSize)
 	encMetadata[MetaOriginalETag] = originalETag
+	encMetadata[MetaKDFParams] = FormatKDFParams(DefaultKDFParams(e.pbkdf2Iterations))
 	if contentType != "" {
 		encMetadata[MetaContentType] = contentType
 	}
@@ -621,7 +640,12 @@ func (e *engine) Decrypt(ctx context.Context, reader io.Reader, metadata map[str
 			return nil, nil, fmt.Errorf("failed to unwrap data key: KMS returned key of size %d, expected %d", len(key), keySize)
 		}
 	} else {
-		key, err = e.deriveKey(salt)
+		// Read KDF params; absent -> legacy 100k PBKDF2.
+		kdfParams, err := ParseKDFParams(expandedMetadata[MetaKDFParams])
+		if err != nil {
+			return nil, nil, fmt.Errorf("failed to parse KDF params: %w", err)
+		}
+		key, err = e.deriveKeyWithParams(salt, kdfParams)
 		if err != nil {
 			return nil, nil, fmt.Errorf("failed to derive key: %w", err)
 		}
@@ -896,6 +920,7 @@ func (e *engine) encryptChunked(ctx context.Context, reader io.Reader, metadata 
 	encMetadata[MetaChunkSize] = fmt.Sprintf("%d", e.chunkSize)
 	encMetadata[MetaManifest] = manifestEncoded
 	encMetadata[MetaIVDerivation] = "hkdf-sha256"
+	encMetadata[MetaKDFParams] = FormatKDFParams(DefaultKDFParams(e.pbkdf2Iterations))
 	if originalETag != "" {
 		encMetadata[MetaOriginalETag] = originalETag
 	}
@@ -1018,6 +1043,7 @@ func (e *engine) encryptChunkedWithMetadataFallback(ctx context.Context, reader 
 	fullMetadata[MetaChunkSize] = fmt.Sprintf("%d", e.chunkSize)
 	fullMetadata[MetaManifest] = manifestEncoded
 	fullMetadata[MetaIVDerivation] = "hkdf-sha256"
+	fullMetadata[MetaKDFParams] = FormatKDFParams(DefaultKDFParams(e.pbkdf2Iterations))
 	if originalETag != "" {
 		fullMetadata[MetaOriginalETag] = originalETag
 	}
@@ -1150,7 +1176,12 @@ func (e *engine) decryptChunked(ctx context.Context, reader io.Reader, metadata 
 			return nil, nil, fmt.Errorf("failed to unwrap data key: KMS returned key of size %d, expected %d", len(key), keySize)
 		}
 	} else {
-		key, err = e.deriveKey(salt)
+		// Read KDF params; absent -> legacy 100k PBKDF2.
+		kdfParams, err := ParseKDFParams(metadata[MetaKDFParams])
+		if err != nil {
+			return nil, nil, fmt.Errorf("failed to parse KDF params: %w", err)
+		}
+		key, err = e.deriveKeyWithParams(salt, kdfParams)
 		if err != nil {
 			return nil, nil, fmt.Errorf("failed to derive key: %w", err)
 		}
@@ -1311,7 +1342,12 @@ func (e *engine) DecryptRange(ctx context.Context, reader io.Reader, metadata ma
 			return nil, nil, fmt.Errorf("failed to unwrap data key: KMS returned key of size %d, expected %d", len(key), keySize)
 		}
 	} else {
-		key, err = e.deriveKey(salt)
+		// Read KDF params; absent -> legacy 100k PBKDF2.
+		kdfParams, err := ParseKDFParams(expandedMetadata[MetaKDFParams])
+		if err != nil {
+			return nil, nil, fmt.Errorf("failed to parse KDF params: %w", err)
+		}
+		key, err = e.deriveKeyWithParams(salt, kdfParams)
 		if err != nil {
 			return nil, nil, fmt.Errorf("failed to derive key: %w", err)
 		}
@@ -1478,6 +1514,7 @@ func (e *engine) encryptWithMetadataFallback(plaintext []byte, fullMetadata map[
 		MetaIV:           encodeBase64(nonce),
 		MetaOriginalSize: fmt.Sprintf("%d", originalSize),
 		MetaOriginalETag: originalETag,
+		MetaKDFParams:    FormatKDFParams(DefaultKDFParams(e.pbkdf2Iterations)),
 	}
 
 	// Copy original user metadata
@@ -1580,8 +1617,13 @@ func (e *engine) decryptFallbackV1(reader io.Reader, metadata map[string]string)
 		return nil, nil, fmt.Errorf("unsupported algorithm %s (not in supported list)", algorithm)
 	}
 
+	// Read KDF params; absent -> legacy 100k PBKDF2.
+	kdfParams, err := ParseKDFParams(metadata[MetaKDFParams])
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to parse KDF params: %w", err)
+	}
 	// Derive key
-	key, err := e.deriveKey(salt)
+	key, err := e.deriveKeyWithParams(salt, kdfParams)
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to derive key: %w", err)
 	}
@@ -1734,7 +1776,8 @@ func IsEncryptionMetadata(key string) bool {
 		key == MetaFallbackPointer ||
 		key == MetaFallbackVersion ||
 		key == MetaIVDerivation ||
-		key == MetaLegacyNoAAD
+		key == MetaLegacyNoAAD ||
+		key == MetaKDFParams
 }
 
 // IsCompressionMetadata checks if a metadata key is related to compression.

@@ -7,6 +7,7 @@ import (
 	"crypto/pbkdf2"
 	"crypto/rand"
 	"crypto/sha256"
+	"encoding/binary"
 	"fmt"
 	"io"
 	"time"
@@ -27,25 +28,29 @@ const passwordKMProvider = "password"
 // backend companion objects are opaque to any party that doesn't hold the
 // password. This is equivalent security to the existing object encryption.
 type passwordKeyManager struct {
-	password []byte
-	closed   bool
+	password         []byte
+	pbkdf2Iterations int
+	closed           bool
 }
 
 // NewPasswordKeyManager creates a KeyManager that wraps DEKs using
-// PBKDF2-SHA256 (100 000 iterations) + AES-256-GCM. This is the fallback
+// PBKDF2-SHA256 + AES-256-GCM. This is the fallback
 // for deployments that do not configure an external KMS; it provides the
 // same confidentiality guarantee as the existing single-PUT encryption.
 //
 // The password must be the gateway's configured encryption password — the same
 // value used for all other object encryption in the deployment.
-func NewPasswordKeyManager(password []byte) (KeyManager, error) {
+func NewPasswordKeyManager(password []byte, pbkdf2Iterations int) (KeyManager, error) {
 	if len(password) < 12 {
 		return nil, fmt.Errorf("password_keymanager: password must be at least 12 characters")
+	}
+	if pbkdf2Iterations < MinPBKDF2Iterations {
+		pbkdf2Iterations = DefaultPBKDF2Iterations
 	}
 	// Defensive copy so the caller can zero their slice after construction.
 	pw := make([]byte, len(password))
 	copy(pw, password)
-	return &passwordKeyManager{password: pw}, nil
+	return &passwordKeyManager{password: pw, pbkdf2Iterations: pbkdf2Iterations}, nil
 }
 
 func (m *passwordKeyManager) Provider() string { return passwordKMProvider }
@@ -65,8 +70,8 @@ func (m *passwordKeyManager) WrapKey(ctx context.Context, plaintext []byte, _ ma
 		return nil, fmt.Errorf("password_keymanager: generate salt: %w", err)
 	}
 
-	// Derive wrapping key using the same PBKDF2 parameters as the engine.
-	wk, err := pbkdf2.Key(sha256.New, string(m.password), salt, pbkdf2Iterations, aesKeySize)
+	// Derive wrapping key using the configured PBKDF2 parameters.
+	wk, err := pbkdf2.Key(sha256.New, string(m.password), salt, m.pbkdf2Iterations, aesKeySize)
 	if err != nil {
 		return nil, fmt.Errorf("password_keymanager: derive wrapping key: %w", err)
 	}
@@ -88,8 +93,11 @@ func (m *passwordKeyManager) WrapKey(ctx context.Context, plaintext []byte, _ ma
 
 	sealed := gcm.Seal(nil, nonce, plaintext, nil)
 
-	// Concatenate: salt || nonce || sealed
-	payload := make([]byte, 0, len(salt)+len(nonce)+len(sealed))
+	// New format: [4-byte BE iterations][salt][nonce][sealed]
+	payload := make([]byte, 0, 4+len(salt)+len(nonce)+len(sealed))
+	iterBuf := make([]byte, 4)
+	binary.BigEndian.PutUint32(iterBuf, uint32(m.pbkdf2Iterations))
+	payload = append(payload, iterBuf...)
 	payload = append(payload, salt...)
 	payload = append(payload, nonce...)
 	payload = append(payload, sealed...)
@@ -115,36 +123,86 @@ func (m *passwordKeyManager) UnwrapKey(ctx context.Context, envelope *KeyEnvelop
 	}
 
 	payload := envelope.Ciphertext
-	// Minimum: salt(32) + nonce(12) + tag(16) = 60 bytes (with zero-length DEK).
+	// Minimum old format: salt(32) + nonce(12) + tag(16) = 60 bytes (with zero-length DEK).
+	// Minimum new format: 4-byte iterations + old format = 64 bytes.
 	const minPayload = saltSize + nonceSize + tagSize
 	if len(payload) < minPayload {
 		return nil, fmt.Errorf("%w: payload too short (%d bytes)", ErrInvalidEnvelope, len(payload))
 	}
 
+	// Determine format.
+	//
+	// New format: [4-byte BE iterations][salt(32)][nonce(12)][sealed(...)]
+	// Old format: [salt(32)][nonce(12)][sealed(...)]
+	//
+	// Because both formats have the same overall length for a given DEK size,
+	// we cannot distinguish by length alone.  We use the 4-byte prefix as a
+	// discriminant, but we must NOT blindly run PBKDF2 with that value:
+	// old-format envelopes have random salt bytes in those positions, which
+	// can decode to a uint32 >= MinPBKDF2Iterations (~99.8 % of the time) or
+	// even to billions, which would hang the process.
+	//
+	// Safe strategy:
+	//   1. If the prefix is in the realistic range [MinPBKDF2Iterations,
+	//      MaxPBKDF2Iterations], try new format first (fast if correct).
+	//   2. Otherwise skip the new-format attempt and try old format.
+	//   3. If the first attempt fails, try the other format.
+	//   4. Only return an error when BOTH attempts have failed.
+	var newFormatErr error
+	if len(payload) >= minPayload+4 {
+		candidateIter := int(binary.BigEndian.Uint32(payload[:4]))
+		if candidateIter >= MinPBKDF2Iterations && candidateIter <= MaxPBKDF2Iterations {
+			saltNew := payload[4 : 4+saltSize]
+			nonceNew := payload[4+saltSize : 4+saltSize+nonceSize]
+			sealedNew := payload[4+saltSize+nonceSize:]
+			plaintext, err := m.tryUnwrap(saltNew, nonceNew, sealedNew, candidateIter)
+			if err == nil {
+				return plaintext, nil
+			}
+			newFormatErr = err // remember for final error message
+		}
+	}
+
+	// Try old format (no iteration prefix; always LegacyPBKDF2Iterations).
 	salt := payload[:saltSize]
 	nonce := payload[saltSize : saltSize+nonceSize]
 	sealed := payload[saltSize+nonceSize:]
 
-	wk, err := pbkdf2.Key(sha256.New, string(m.password), salt, pbkdf2Iterations, aesKeySize)
+	plaintext, err := m.tryUnwrap(salt, nonce, sealed, LegacyPBKDF2Iterations)
+	if err == nil {
+		return plaintext, nil
+	}
+
+	// Both formats failed.  Prefer the new-format error when we actually
+	// attempted it (the envelope likely is new format but ciphertext was
+	// tampered or the password is wrong).
+	if newFormatErr != nil {
+		return nil, fmt.Errorf("%w: %v", ErrUnwrapFailed, newFormatErr)
+	}
+	return nil, fmt.Errorf("%w: %v", ErrUnwrapFailed, err)
+}
+
+// tryUnwrap derives a wrapping key and attempts AES-GCM Open.  It returns the
+// plaintext on success or a non-nil error on any failure (derive, cipher
+// creation, or authentication).  The caller is responsible for trying a
+// different format/iteration count on failure.
+func (m *passwordKeyManager) tryUnwrap(salt, nonce, sealed []byte, iterations int) ([]byte, error) {
+	wk, err := pbkdf2.Key(sha256.New, string(m.password), salt, iterations, aesKeySize)
 	if err != nil {
-		return nil, fmt.Errorf("password_keymanager: derive wrapping key: %w", err)
+		return nil, err
 	}
 	defer zeroBytes(wk)
 
 	block, err := aes.NewCipher(wk)
 	if err != nil {
-		return nil, fmt.Errorf("password_keymanager: create cipher: %w", err)
+		return nil, err
 	}
 	gcm, err := cipher.NewGCM(block)
 	if err != nil {
-		return nil, fmt.Errorf("password_keymanager: create GCM: %w", err)
+		return nil, err
 	}
 
-	plaintext, err := gcm.Open(nil, nonce, sealed, nil)
-	if err != nil {
-		return nil, fmt.Errorf("%w: %v", ErrUnwrapFailed, err)
-	}
-	return plaintext, nil
+	return gcm.Open(nil, nonce, sealed, nil)
 }
 
 func (m *passwordKeyManager) ActiveKeyVersion(_ context.Context) (int, error) {

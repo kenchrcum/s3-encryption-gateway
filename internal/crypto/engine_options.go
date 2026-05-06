@@ -17,6 +17,59 @@ func WithKeyManager(km KeyManager) Option {
 	}
 }
 
+// WithPBKDF2Iterations sets the PBKDF2 iteration count for the engine.
+func WithPBKDF2Iterations(n int) Option {
+	return func(e *engine) {
+		if n >= MinPBKDF2Iterations {
+			e.pbkdf2Iterations = n
+		}
+	}
+}
+
+// WithPreferredAlgorithm sets the preferred encryption algorithm for new objects.
+func WithPreferredAlgorithm(alg string) Option {
+	return func(e *engine) {
+		if alg != "" {
+			e.preferredAlgorithm = alg
+		}
+	}
+}
+
+// WithSupportedAlgorithms sets the list of supported encryption algorithms.
+func WithSupportedAlgorithms(algs []string) Option {
+	return func(e *engine) {
+		if len(algs) > 0 {
+			e.supportedAlgorithms = algs
+		}
+	}
+}
+
+// WithChunking enables or disables chunked/streaming encryption mode.
+func WithChunking(enabled bool) Option {
+	return func(e *engine) {
+		e.chunkedMode = enabled
+	}
+}
+
+// WithChunkSize sets the size of each encryption chunk.
+func WithChunkSize(size int) Option {
+	return func(e *engine) {
+		if size > 0 {
+			e.chunkSize = size
+		}
+	}
+}
+
+// WithProvider sets the provider profile used for metadata compaction.
+func WithProvider(provider string) Option {
+	return func(e *engine) {
+		if provider != "" {
+			e.providerProfile = GetProviderProfile(provider)
+			e.compactor = NewMetadataCompactor(e.providerProfile)
+		}
+	}
+}
+
 // NewEngineWithOpts creates a new encryption engine with full options and zero or
 // more functional Option values. This is the preferred constructor for new callers.
 //
@@ -26,7 +79,7 @@ func WithKeyManager(km KeyManager) Option {
 //	    crypto.WithKeyManager(myKeyManager),
 //	)
 func NewEngineWithOpts(password []byte, compressionEngine CompressionEngine, opts ...Option) (EncryptionEngine, error) {
-	eng, err := NewEngineWithChunkingAndProvider(password, compressionEngine, "", nil, false, DefaultChunkSize, "default")
+	eng, err := NewEngineWithChunkingAndProvider(password, compressionEngine, "", nil, false, DefaultChunkSize, "default", DefaultPBKDF2Iterations)
 	if err != nil {
 		return nil, err
 	}

@@ -393,3 +393,332 @@ func TestEngine_OriginalETagPreservation(t *testing.T) {
 		t.Errorf("Decrypt() data mismatch")
 	}
 }
+
+
+func TestEncryptDecrypt_DefaultIterations(t *testing.T) {
+	eng, err := NewEngineWithOpts([]byte("test-password-12345"), nil)
+	if err != nil {
+		t.Fatalf("Failed to create engine: %v", err)
+	}
+	data := []byte("test data for default iterations")
+	encryptedReader, encMetadata, err := eng.Encrypt(context.Background(), bytes.NewReader(data), nil)
+	if err != nil {
+		t.Fatalf("Encrypt() error: %v", err)
+	}
+	encryptedData, err := io.ReadAll(encryptedReader)
+	if err != nil {
+		t.Fatalf("Failed to read encrypted data: %v", err)
+	}
+	decryptedReader, _, err := eng.Decrypt(context.Background(), bytes.NewReader(encryptedData), encMetadata)
+	if err != nil {
+		t.Fatalf("Decrypt() error: %v", err)
+	}
+	decryptedData, err := io.ReadAll(decryptedReader)
+	if err != nil {
+		t.Fatalf("Failed to read decrypted data: %v", err)
+	}
+	if !bytes.Equal(decryptedData, data) {
+		t.Errorf("Decrypt() data mismatch")
+	}
+}
+
+func TestEncryptDecrypt_ExplicitIterations_100k(t *testing.T) {
+	eng, err := NewEngineWithOpts([]byte("test-password-12345"), nil, WithPBKDF2Iterations(100000))
+	if err != nil {
+		t.Fatalf("Failed to create engine: %v", err)
+	}
+	data := []byte("test data for 100k iterations")
+	encryptedReader, encMetadata, err := eng.Encrypt(context.Background(), bytes.NewReader(data), nil)
+	if err != nil {
+		t.Fatalf("Encrypt() error: %v", err)
+	}
+	encryptedData, err := io.ReadAll(encryptedReader)
+	if err != nil {
+		t.Fatalf("Failed to read encrypted data: %v", err)
+	}
+	decryptedReader, _, err := eng.Decrypt(context.Background(), bytes.NewReader(encryptedData), encMetadata)
+	if err != nil {
+		t.Fatalf("Decrypt() error: %v", err)
+	}
+	decryptedData, err := io.ReadAll(decryptedReader)
+	if err != nil {
+		t.Fatalf("Failed to read decrypted data: %v", err)
+	}
+	if !bytes.Equal(decryptedData, data) {
+		t.Errorf("Decrypt() data mismatch")
+	}
+}
+
+func TestEncryptDecrypt_ExplicitIterations_600k(t *testing.T) {
+	eng, err := NewEngineWithOpts([]byte("test-password-12345"), nil, WithPBKDF2Iterations(600000))
+	if err != nil {
+		t.Fatalf("Failed to create engine: %v", err)
+	}
+	data := []byte("test data for 600k iterations")
+	encryptedReader, encMetadata, err := eng.Encrypt(context.Background(), bytes.NewReader(data), nil)
+	if err != nil {
+		t.Fatalf("Encrypt() error: %v", err)
+	}
+	encryptedData, err := io.ReadAll(encryptedReader)
+	if err != nil {
+		t.Fatalf("Failed to read encrypted data: %v", err)
+	}
+	decryptedReader, _, err := eng.Decrypt(context.Background(), bytes.NewReader(encryptedData), encMetadata)
+	if err != nil {
+		t.Fatalf("Decrypt() error: %v", err)
+	}
+	decryptedData, err := io.ReadAll(decryptedReader)
+	if err != nil {
+		t.Fatalf("Failed to read decrypted data: %v", err)
+	}
+	if !bytes.Equal(decryptedData, data) {
+		t.Errorf("Decrypt() data mismatch")
+	}
+}
+
+func TestDecrypt_LegacyAbsentKDFParams(t *testing.T) {
+	eng, err := NewEngineWithOpts([]byte("test-password-12345"), nil, WithPBKDF2Iterations(100000))
+	if err != nil {
+		t.Fatalf("Failed to create engine: %v", err)
+	}
+	data := []byte("test data for legacy fallback")
+	encryptedReader, encMetadata, err := eng.Encrypt(context.Background(), bytes.NewReader(data), nil)
+	if err != nil {
+		t.Fatalf("Encrypt() error: %v", err)
+	}
+	encryptedData, err := io.ReadAll(encryptedReader)
+	if err != nil {
+		t.Fatalf("Failed to read encrypted data: %v", err)
+	}
+	// Strip KDF params to simulate legacy object
+	delete(encMetadata, MetaKDFParams)
+	decryptedReader, _, err := eng.Decrypt(context.Background(), bytes.NewReader(encryptedData), encMetadata)
+	if err != nil {
+		t.Fatalf("Decrypt() error: %v", err)
+	}
+	decryptedData, err := io.ReadAll(decryptedReader)
+	if err != nil {
+		t.Fatalf("Failed to read decrypted data: %v", err)
+	}
+	if !bytes.Equal(decryptedData, data) {
+		t.Errorf("Decrypt() data mismatch")
+	}
+}
+
+func TestDecrypt_CrossIteration_100k_to_600k(t *testing.T) {
+	eng100k, err := NewEngineWithOpts([]byte("test-password-12345"), nil, WithPBKDF2Iterations(100000))
+	if err != nil {
+		t.Fatalf("Failed to create engine: %v", err)
+	}
+	eng600k, err := NewEngineWithOpts([]byte("test-password-12345"), nil, WithPBKDF2Iterations(600000))
+	if err != nil {
+		t.Fatalf("Failed to create engine: %v", err)
+	}
+	data := []byte("test data for cross iteration")
+	encryptedReader, encMetadata, err := eng100k.Encrypt(context.Background(), bytes.NewReader(data), nil)
+	if err != nil {
+		t.Fatalf("Encrypt() error: %v", err)
+	}
+	encryptedData, err := io.ReadAll(encryptedReader)
+	if err != nil {
+		t.Fatalf("Failed to read encrypted data: %v", err)
+	}
+	decryptedReader, _, err := eng600k.Decrypt(context.Background(), bytes.NewReader(encryptedData), encMetadata)
+	if err != nil {
+		t.Fatalf("Decrypt() error: %v", err)
+	}
+	decryptedData, err := io.ReadAll(decryptedReader)
+	if err != nil {
+		t.Fatalf("Failed to read decrypted data: %v", err)
+	}
+	if !bytes.Equal(decryptedData, data) {
+		t.Errorf("Decrypt() data mismatch")
+	}
+}
+
+func TestDecrypt_CrossIteration_600k_to_100k(t *testing.T) {
+	eng100k, err := NewEngineWithOpts([]byte("test-password-12345"), nil, WithPBKDF2Iterations(100000))
+	if err != nil {
+		t.Fatalf("Failed to create engine: %v", err)
+	}
+	eng600k, err := NewEngineWithOpts([]byte("test-password-12345"), nil, WithPBKDF2Iterations(600000))
+	if err != nil {
+		t.Fatalf("Failed to create engine: %v", err)
+	}
+	data := []byte("test data for cross iteration")
+	encryptedReader, encMetadata, err := eng600k.Encrypt(context.Background(), bytes.NewReader(data), nil)
+	if err != nil {
+		t.Fatalf("Encrypt() error: %v", err)
+	}
+	encryptedData, err := io.ReadAll(encryptedReader)
+	if err != nil {
+		t.Fatalf("Failed to read encrypted data: %v", err)
+	}
+	decryptedReader, _, err := eng100k.Decrypt(context.Background(), bytes.NewReader(encryptedData), encMetadata)
+	if err != nil {
+		t.Fatalf("Decrypt() error: %v", err)
+	}
+	decryptedData, err := io.ReadAll(decryptedReader)
+	if err != nil {
+		t.Fatalf("Failed to read decrypted data: %v", err)
+	}
+	if !bytes.Equal(decryptedData, data) {
+		t.Errorf("Decrypt() data mismatch")
+	}
+}
+
+func TestEncrypt_WritesKDFParamsMetadata(t *testing.T) {
+	eng, err := NewEngineWithOpts([]byte("test-password-12345"), nil)
+	if err != nil {
+		t.Fatalf("Failed to create engine: %v", err)
+	}
+	data := []byte("test data")
+	_, encMetadata, err := eng.Encrypt(context.Background(), bytes.NewReader(data), nil)
+	if err != nil {
+		t.Fatalf("Encrypt() error: %v", err)
+	}
+	if encMetadata[MetaKDFParams] != "pbkdf2-sha256:600000" {
+		t.Errorf("MetaKDFParams = %q, want %q", encMetadata[MetaKDFParams], "pbkdf2-sha256:600000")
+	}
+}
+
+func TestEncrypt_WritesKDFParamsMetadata_CustomIter(t *testing.T) {
+	eng, err := NewEngineWithOpts([]byte("test-password-12345"), nil, WithPBKDF2Iterations(750000))
+	if err != nil {
+		t.Fatalf("Failed to create engine: %v", err)
+	}
+	data := []byte("test data")
+	_, encMetadata, err := eng.Encrypt(context.Background(), bytes.NewReader(data), nil)
+	if err != nil {
+		t.Fatalf("Encrypt() error: %v", err)
+	}
+	if encMetadata[MetaKDFParams] != "pbkdf2-sha256:750000" {
+		t.Errorf("MetaKDFParams = %q, want %q", encMetadata[MetaKDFParams], "pbkdf2-sha256:750000")
+	}
+}
+
+func TestChunked_EncryptDecrypt_KDFParams(t *testing.T) {
+	eng, err := NewEngineWithOpts([]byte("test-password-12345"), nil, WithChunking(true))
+	if err != nil {
+		t.Fatalf("Failed to create engine: %v", err)
+	}
+	data := []byte("test data for chunked kdf params")
+	encryptedReader, encMetadata, err := eng.Encrypt(context.Background(), bytes.NewReader(data), nil)
+	if err != nil {
+		t.Fatalf("Encrypt() error: %v", err)
+	}
+	if encMetadata[MetaChunkedFormat] != "true" {
+		t.Error("Expected chunked format marker")
+	}
+	encryptedData, err := io.ReadAll(encryptedReader)
+	if err != nil {
+		t.Fatalf("Failed to read encrypted data: %v", err)
+	}
+	decryptedReader, _, err := eng.Decrypt(context.Background(), bytes.NewReader(encryptedData), encMetadata)
+	if err != nil {
+		t.Fatalf("Decrypt() error: %v", err)
+	}
+	decryptedData, err := io.ReadAll(decryptedReader)
+	if err != nil {
+		t.Fatalf("Failed to read decrypted data: %v", err)
+	}
+	if !bytes.Equal(decryptedData, data) {
+		t.Errorf("Decrypt() data mismatch")
+	}
+}
+
+func TestDecrypt_AbsentMetadata_FallbackIs100k(t *testing.T) {
+	eng100k, err := NewEngineWithOpts([]byte("test-password-12345"), nil, WithPBKDF2Iterations(100000))
+	if err != nil {
+		t.Fatalf("Failed to create engine: %v", err)
+	}
+	eng600k, err := NewEngineWithOpts([]byte("test-password-12345"), nil, WithPBKDF2Iterations(600000))
+	if err != nil {
+		t.Fatalf("Failed to create engine: %v", err)
+	}
+	data := []byte("test data for absent metadata fallback")
+	encryptedReader, encMetadata, err := eng100k.Encrypt(context.Background(), bytes.NewReader(data), nil)
+	if err != nil {
+		t.Fatalf("Encrypt() error: %v", err)
+	}
+	encryptedData, err := io.ReadAll(encryptedReader)
+	if err != nil {
+		t.Fatalf("Failed to read encrypted data: %v", err)
+	}
+	// Strip KDF params to simulate legacy object
+	delete(encMetadata, MetaKDFParams)
+	decryptedReader, _, err := eng600k.Decrypt(context.Background(), bytes.NewReader(encryptedData), encMetadata)
+	if err != nil {
+		t.Fatalf("Decrypt() error: %v", err)
+	}
+	decryptedData, err := io.ReadAll(decryptedReader)
+	if err != nil {
+		t.Fatalf("Failed to read decrypted data: %v", err)
+	}
+	if !bytes.Equal(decryptedData, data) {
+		t.Errorf("Decrypt() data mismatch")
+	}
+}
+
+func TestChunked_CrossIteration(t *testing.T) {
+	eng100k, err := NewEngineWithOpts([]byte("test-password-12345"), nil, WithChunking(true), WithChunkSize(DefaultChunkSize), WithPBKDF2Iterations(100000))
+	if err != nil {
+		t.Fatalf("Failed to create engine: %v", err)
+	}
+	eng600k, err := NewEngineWithOpts([]byte("test-password-12345"), nil, WithChunking(true), WithChunkSize(DefaultChunkSize), WithPBKDF2Iterations(600000))
+	if err != nil {
+		t.Fatalf("Failed to create engine: %v", err)
+	}
+	data := []byte("test data for chunked cross iteration")
+	encryptedReader, encMetadata, err := eng100k.Encrypt(context.Background(), bytes.NewReader(data), nil)
+	if err != nil {
+		t.Fatalf("Encrypt() error: %v", err)
+	}
+	if encMetadata[MetaChunkedFormat] != "true" {
+		t.Error("Expected chunked format marker")
+	}
+	encryptedData, err := io.ReadAll(encryptedReader)
+	if err != nil {
+		t.Fatalf("Failed to read encrypted data: %v", err)
+	}
+	decryptedReader, _, err := eng600k.Decrypt(context.Background(), bytes.NewReader(encryptedData), encMetadata)
+	if err != nil {
+		t.Fatalf("Decrypt() error: %v", err)
+	}
+	decryptedData, err := io.ReadAll(decryptedReader)
+	if err != nil {
+		t.Fatalf("Failed to read decrypted data: %v", err)
+	}
+	if !bytes.Equal(decryptedData, data) {
+		t.Errorf("Decrypt() data mismatch")
+	}
+}
+
+func TestChunked_LegacyAbsentKDFParams(t *testing.T) {
+	eng, err := NewEngineWithOpts([]byte("test-password-12345"), nil, WithChunking(true), WithPBKDF2Iterations(100000))
+	if err != nil {
+		t.Fatalf("Failed to create engine: %v", err)
+	}
+	data := []byte("test data for chunked legacy fallback")
+	encryptedReader, encMetadata, err := eng.Encrypt(context.Background(), bytes.NewReader(data), nil)
+	if err != nil {
+		t.Fatalf("Encrypt() error: %v", err)
+	}
+	encryptedData, err := io.ReadAll(encryptedReader)
+	if err != nil {
+		t.Fatalf("Failed to read encrypted data: %v", err)
+	}
+	// Strip KDF params to simulate legacy object
+	delete(encMetadata, MetaKDFParams)
+	decryptedReader, _, err := eng.Decrypt(context.Background(), bytes.NewReader(encryptedData), encMetadata)
+	if err != nil {
+		t.Fatalf("Decrypt() error: %v", err)
+	}
+	decryptedData, err := io.ReadAll(decryptedReader)
+	if err != nil {
+		t.Fatalf("Failed to read decrypted data: %v", err)
+	}
+	if !bytes.Equal(decryptedData, data) {
+		t.Errorf("Decrypt() data mismatch")
+	}
+}
