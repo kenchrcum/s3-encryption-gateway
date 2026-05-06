@@ -629,7 +629,7 @@ func main() {
 	var configReloader *config.ConfigReloader
 	var configApplier *ConfigChangeApplier
 
-	if configPath != "" && configPath != "config.yaml" { // Only enable if explicit config file is provided
+	if configPath != "" { // Enable hot-reload for any non-empty config path
 		// Create config change applier
 		var rateLimiterPtr *middleware.RateLimiter
 		if cfg.RateLimit.Enabled {
