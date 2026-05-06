@@ -9,6 +9,7 @@ import (
 	"crypto/x509/pkix"
 	"encoding/hex"
 	"encoding/pem"
+	"fmt"
 	"io"
 	"math/big"
 	"net"
@@ -272,6 +273,33 @@ func TestRateLimiter_CleanupEvery100(t *testing.T) {
 	rl.mu.Unlock()
 	if exists {
 		t.Error("cleanup should have removed stale-ip")
+	}
+}
+
+// TestRateLimiter_MaxMapSizeCap verifies that when the buckets map is at
+// capacity, new unseen IPs are rejected while existing IPs still work.
+func TestRateLimiter_MaxMapSizeCap(t *testing.T) {
+	rl := NewRateLimiter(100, testLogger())
+
+	// Manually fill the map to capacity.
+	rl.mu.Lock()
+	for i := 0; i < maxAdminRateLimitClients; i++ {
+		key := fmt.Sprintf("ip-%d", i)
+		rl.buckets[key] = &bucket{
+			tokens:    1,
+			lastCheck: time.Now(),
+		}
+	}
+	rl.mu.Unlock()
+
+	// A new unseen IP should be rejected.
+	if rl.allow("new-ip") {
+		t.Error("expected Allow to return false when map is at capacity")
+	}
+
+	// An existing IP should still be allowed (within limit).
+	if !rl.allow("ip-0") {
+		t.Error("expected existing IP to still be allowed")
 	}
 }
 

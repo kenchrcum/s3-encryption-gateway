@@ -46,6 +46,8 @@ func SecurityHeadersMiddleware() func(http.Handler) http.Handler {
 	}
 }
 
+const maxRateLimitClients = 100_000
+
 // minAllowTime is the minimum execution time for RateLimiter.Allow to mitigate
 // timing side-channels that could reveal token-bucket state.
 const minAllowTime = 50 * time.Microsecond
@@ -128,6 +130,10 @@ func (rl *RateLimiter) Allow(key string) bool {
 
 	rl.mu.Lock()
 	defer rl.mu.Unlock()
+
+	if _, exists := rl.requests[key]; !exists && len(rl.requests) >= maxRateLimitClients {
+		return false
+	}
 
 	now := time.Now()
 	bucket, exists := rl.requests[key]

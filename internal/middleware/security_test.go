@@ -2,6 +2,7 @@ package middleware
 
 import (
 	"crypto/tls"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"sort"
@@ -220,6 +221,37 @@ func TestRateLimiter_AllowTiming(t *testing.T) {
 
 	if p99 > maxAllowed {
 		t.Fatalf("P99 latency %v exceeds allowed bound %v", p99, maxAllowed)
+	}
+}
+
+// TestRateLimiter_MaxMapSizeCap verifies that when the requests map is at
+// capacity, new unseen keys are rejected while existing keys still work.
+func TestRateLimiter_MaxMapSizeCap(t *testing.T) {
+	logger := logrus.New()
+	logger.SetLevel(logrus.ErrorLevel)
+
+	limiter := NewRateLimiter(1, 1*time.Hour, logger)
+	defer limiter.Stop()
+
+	// Manually fill the map to capacity.
+	limiter.mu.Lock()
+	for i := 0; i < maxRateLimitClients; i++ {
+		key := fmt.Sprintf("client-%d", i)
+		limiter.requests[key] = &tokenBucket{
+			tokens:     1,
+			lastUpdate: time.Now(),
+		}
+	}
+	limiter.mu.Unlock()
+
+	// A new unseen key should be rejected.
+	if limiter.Allow("new-client") {
+		t.Error("expected Allow to return false when map is at capacity")
+	}
+
+	// An existing key should still be allowed (within limit).
+	if !limiter.Allow("client-0") {
+		t.Error("expected existing key to still be allowed")
 	}
 }
 

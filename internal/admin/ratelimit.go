@@ -27,6 +27,8 @@ type bucket struct {
 	lastCheck time.Time
 }
 
+const maxAdminRateLimitClients = 10_000
+
 // NewRateLimiter creates a new per-IP rate limiter.
 func NewRateLimiter(requestsPerMinute int, logger *logrus.Logger) *RateLimiter {
 	return &RateLimiter{
@@ -54,6 +56,11 @@ func (rl *RateLimiter) allow(ip string) bool {
 	defer rl.mu.Unlock()
 
 	now := time.Now()
+
+	// Map-size cap to prevent memory exhaustion under IP-churn DDoS.
+	if _, exists := rl.buckets[ip]; !exists && len(rl.buckets) >= maxAdminRateLimitClients {
+		return false
+	}
 
 	// Check global rate limit
 	if now.After(rl.globalReset) {
