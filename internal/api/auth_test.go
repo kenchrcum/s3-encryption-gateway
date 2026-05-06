@@ -650,3 +650,53 @@ func TestValidateSignatureV4_PresignedURL_Expired(t *testing.T) {
 		// Either "expired" message or a signature mismatch (computed before expiry check) is acceptable
 	}
 }
+
+// TestValidateSignatureV4_PresignedURL_ExceedsMaxDuration verifies that a
+// presigned URL with X-Amz-Expires > 604800 (7 days) is rejected immediately.
+func TestValidateSignatureV4_PresignedURL_ExceedsMaxDuration(t *testing.T) {
+	secretKey := "test-presign-secret"
+	now := time.Now().UTC()
+	timestamp := now.Format("20060102T150405Z")
+	date := now.Format("20060102")
+	region := "us-east-1"
+	service := "s3"
+	accessKey := "AKIATEST"
+	credScope := fmt.Sprintf("%s/%s/%s/aws4_request", date, region, service)
+
+	// Build minimal presigned query params (without signature)
+	q := url.Values{}
+	q.Set("X-Amz-Algorithm", "AWS4-HMAC-SHA256")
+	q.Set("X-Amz-Credential", accessKey+"/"+credScope)
+	q.Set("X-Amz-Date", timestamp)
+	q.Set("X-Amz-Expires", "604801") // 1 second over the 7-day maximum
+	q.Set("X-Amz-SignedHeaders", "host")
+
+	reqURL := "/bucket/key?" + q.Encode()
+	req := httptest.NewRequest("GET", reqURL, nil)
+	req.Host = "localhost"
+
+	// Compute a valid signature so we reach the expiry check.
+	canonicalReq, err := createCanonicalRequest(req, true, []string{"host"})
+	if err != nil {
+		t.Fatalf("createCanonicalRequest() error: %v", err)
+	}
+	stringToSign := createStringToSign(timestamp, credScope, canonicalReq)
+	kDate := buildHMAC([]byte("AWS4"+secretKey), date)
+	kRegion := buildHMAC(kDate, region)
+	kService := buildHMAC(kRegion, service)
+	kSigning := buildHMAC(kService, "aws4_request")
+	sig := hex.EncodeToString(buildHMAC(kSigning, stringToSign))
+
+	q.Set("X-Amz-Signature", sig)
+	reqURL = "/bucket/key?" + q.Encode()
+	req = httptest.NewRequest("GET", reqURL, nil)
+	req.Host = "localhost"
+
+	err = ValidateSignatureV4(req, secretKey, defaultClockSkew)
+	if err == nil {
+		t.Fatal("ValidateSignatureV4() expected error for presigned URL exceeding max duration, got nil")
+	}
+	if !strings.Contains(err.Error(), "exceeds maximum allowed duration") {
+		t.Errorf("ValidateSignatureV4() error = %v, want 'exceeds maximum allowed duration'", err)
+	}
+}

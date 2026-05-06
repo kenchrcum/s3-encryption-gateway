@@ -178,6 +178,9 @@ func ValidateSignatureV4(r *http.Request, secretKey string, clockSkew time.Durat
 			if err != nil {
 				return fmt.Errorf("invalid expires format")
 			}
+			if expires > 604800 {
+				return fmt.Errorf("presigned url expiry exceeds maximum allowed duration")
+			}
 			if now.After(t.Add(time.Duration(expires) * time.Second)) {
 				return fmt.Errorf("presigned url expired")
 			}
