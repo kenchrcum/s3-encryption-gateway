@@ -194,3 +194,47 @@ func testEncryptedMPUAbortCleansState(t *testing.T, inst provider.Instance) {
 		t.Errorf("GET after encrypted MPU abort: status %d, want 404", resp.StatusCode)
 	}
 }
+
+
+// testEncryptedMPU_LargeObject uploads a large MPU object (8 parts × 5 MiB =
+// ~40 MiB) and downloads it back end-to-end.  This is the conformance
+// golden-path for issue #135: large encrypted restores that must survive the
+// streaming decrypt-and-write path without hitting any hard write deadlines.
+func testEncryptedMPU_LargeObject(t *testing.T, inst provider.Instance) {
+	t.Helper()
+	ctx := context.Background()
+
+	vk := provider.StartValkey(ctx, t)
+	gw := harness.StartGateway(t, inst,
+		harness.WithValkeyAddr(vk.Addr),
+		harness.WithEncryptedMPUForBucket(inst.Bucket),
+	)
+
+	key := uniqueKey(t)
+	uploadID := initiateMultipartUpload(t, gw, inst.Bucket, key)
+	t.Cleanup(func() { abortMultipartUpload(t, gw, inst.Bucket, key, uploadID) })
+
+	// Upload 8 parts × 5 MiB = 40 MiB total.
+	const partCount = 8
+	const partSize = 5 * 1024 * 1024
+	var etags []string
+	var want []byte
+	for i := 0; i < partCount; i++ {
+		pattern := byte('A' + i%26)
+		partData := bytes.Repeat([]byte{pattern}, partSize)
+		want = append(want, partData...)
+		etags = append(etags, uploadPart(t, gw, inst.Bucket, key, uploadID, i+1, partData))
+	}
+
+	var parts []mpuPart
+	for i, etag := range etags {
+		parts = append(parts, mpuPart{i + 1, etag})
+	}
+	completeMultipartUpload(t, gw, inst.Bucket, key, uploadID, parts)
+
+	// Stream the full object back.
+	got := get(t, gw, inst.Bucket, key)
+	if !bytes.Equal(got, want) {
+		t.Fatalf("encrypted MPU large object round-trip mismatch: want %d bytes, got %d bytes", len(want), len(got))
+	}
+}
