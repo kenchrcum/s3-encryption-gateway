@@ -48,12 +48,12 @@ migrate-multiarch:
 # Run tests
 test:
 	@echo "Running tests..."
-	@go test -v -race -coverprofile=coverage.out ./...
+	@go test -count=1 -v -race -coverprofile=coverage.out ./...
 
 # Run tests with FIPS build tag
 test-fips:
 	@echo "Running tests with FIPS build tag..."
-	@GOFIPS140=v1.0.0 go test -v -race -tags=fips ./...
+	@GOFIPS140=v1.0.0 go test -count=1 -v -race -tags=fips ./...
 
 # ── Tier-2 conformance targets (require Docker via Testcontainers) ──────────
 #
@@ -73,22 +73,22 @@ test-fips:
 
 test-conformance:
 	@echo "Running conformance tests (all registered providers)..."
-	@go test -tags=conformance -race -v ./test/conformance/...
+	@go test -tags=conformance -count=1 -race -v ./test/conformance/...
 
 test-conformance-local:
 	@echo "Running conformance tests (local providers only: MinIO + Garage + RustFS + SeaweedFS)..."
 	@GATEWAY_TEST_SKIP_EXTERNAL=1 \
-		go test -tags=conformance -race -v ./test/conformance/...
+		go test -count=1 -tags=conformance -race -v ./test/conformance/...
 
 test-conformance-minio:
 	@echo "Running conformance tests (MinIO only)..."
 	@GATEWAY_TEST_SKIP_GARAGE=1 GATEWAY_TEST_SKIP_RUSTFS=1 GATEWAY_TEST_SKIP_SEAWEEDFS=1 GATEWAY_TEST_SKIP_EXTERNAL=1 \
-		go test -tags=conformance -race -v ./test/conformance/...
+		go test -count=1 -tags=conformance -race -v ./test/conformance/...
 
 test-conformance-external:
 	@echo "Running conformance tests (external providers with credentials)..."
 	@GATEWAY_TEST_SKIP_MINIO=1 GATEWAY_TEST_SKIP_GARAGE=1 GATEWAY_TEST_SKIP_RUSTFS=1 GATEWAY_TEST_SKIP_SEAWEEDFS=1 \
-		go test -tags=conformance -race -v ./test/conformance/...
+		go test -count=1 -tags=conformance -race -v ./test/conformance/...
 
 # KMS integration conformance test — starts a Cosmian KMS container alongside
 # the S3 backend and exercises the full DEK wrap/unwrap path.
@@ -97,7 +97,7 @@ test-conformance-external:
 test-conformance-kms:
 	@echo "Running KMS integration conformance tests (MinIO + Cosmian KMS)..."
 	@GATEWAY_TEST_SKIP_GARAGE=1 GATEWAY_TEST_SKIP_RUSTFS=1 GATEWAY_TEST_SKIP_SEAWEEDFS=1 GATEWAY_TEST_SKIP_EXTERNAL=1 \
-		go test -tags=conformance -race -v \
+		go test -count=1 -tags=conformance -race -v \
 		-run 'TestConformance/.*/KMS_' ./test/conformance/...
 
 # Mechanical enforcement of the Docker-only deployment model.
@@ -136,12 +136,12 @@ SOAK_ENV = \
 
 test-load-range:
 	@echo "Running range load tests (conformance suite, local providers, CI scale)..."
-	@go test -tags=conformance -race -v -timeout 120s \
+	@go test -count=1 -tags=conformance -race -v -timeout 120s \
 		-run 'TestConformance/.*/Load_RangeRead' ./test/conformance/...
 
 test-load-multipart:
 	@echo "Running multipart load tests (conformance suite, local providers, CI scale)..."
-	@go test -tags=conformance -race -v -timeout 120s \
+	@go test -count=1 -tags=conformance -race -v -timeout 120s \
 		-run 'TestConformance/.*/Load_Multipart' ./test/conformance/...
 
 test-load: test-load-range test-load-multipart
@@ -149,49 +149,49 @@ test-load: test-load-range test-load-multipart
 # Full-scale soak: same tests, soak-scale parameters, no timeout limit.
 test-load-soak:
 	@echo "Running full-scale soak load tests (all local providers, 60 s, 10 workers, 50 MiB objects)..."
-	@$(SOAK_ENV) go test -tags=conformance -v -timeout 0 \
+	@$(SOAK_ENV) go test -count=1 -tags=conformance -v -timeout 0 \
 		-run 'TestConformance/.*/Load_' ./test/conformance/...
 
 # Soak MinIO only.
 test-load-minio:
 	@echo "Running full-scale soak load tests (MinIO only)..."
 	@GATEWAY_TEST_SKIP_GARAGE=1 GATEWAY_TEST_SKIP_RUSTFS=1 GATEWAY_TEST_SKIP_SEAWEEDFS=1 GATEWAY_TEST_SKIP_EXTERNAL=1 \
-		$(SOAK_ENV) go test -tags=conformance -v -timeout 0 \
+		$(SOAK_ENV) go test -count=1 -tags=conformance -v -timeout 0 \
 		-run 'TestConformance/minio/Load_' ./test/conformance/...
 
 # Soak Garage only.
 test-load-garage:
 	@echo "Running full-scale soak load tests (Garage only)..."
 	@GATEWAY_TEST_SKIP_MINIO=1 GATEWAY_TEST_SKIP_RUSTFS=1 GATEWAY_TEST_SKIP_SEAWEEDFS=1 GATEWAY_TEST_SKIP_EXTERNAL=1 \
-		$(SOAK_ENV) go test -tags=conformance -v -timeout 0 \
+		$(SOAK_ENV) go test -count=1 -tags=conformance -v -timeout 0 \
 		-run 'TestConformance/garage/Load_' ./test/conformance/...
 
 # Soak RustFS only.
 test-load-rustfs:
 	@echo "Running full-scale soak load tests (RustFS only)..."
 	@GATEWAY_TEST_SKIP_MINIO=1 GATEWAY_TEST_SKIP_GARAGE=1 GATEWAY_TEST_SKIP_SEAWEEDFS=1 GATEWAY_TEST_SKIP_EXTERNAL=1 \
-		$(SOAK_ENV) go test -tags=conformance -v -timeout 0 \
+		$(SOAK_ENV) go test -count=1 -tags=conformance -v -timeout 0 \
 		-run 'TestConformance/rustfs/Load_' ./test/conformance/...
 
 # Soak SeaweedFS only.
 test-load-seaweedfs:
 	@echo "Running full-scale soak load tests (SeaweedFS only)..."
 	@GATEWAY_TEST_SKIP_MINIO=1 GATEWAY_TEST_SKIP_GARAGE=1 GATEWAY_TEST_SKIP_RUSTFS=1 GATEWAY_TEST_SKIP_EXTERNAL=1 \
-		$(SOAK_ENV) go test -tags=conformance -v -timeout 0 \
+		$(SOAK_ENV) go test -count=1 -tags=conformance -v -timeout 0 \
 		-run 'TestConformance/seaweedfs/Load_' ./test/conformance/...
 
 # Soak with custom duration override.
 # Usage: make test-load-prometheus SOAK_DURATION=5m
 test-load-prometheus:
 	@echo "Running soak load tests (custom duration; set SOAK_DURATION to override)..."
-	@$(SOAK_ENV) go test -tags=conformance -v -timeout 0 \
+	@$(SOAK_ENV) go test -count=1 -tags=conformance -v -timeout 0 \
 		-run 'TestConformance/.*/Load_' ./test/conformance/...
 
 # Update baselines by running soak and capturing output.
 # The soak tests log throughput/latency data; redirect to a file for tracking.
 test-load-baseline:
 	@echo "Running soak load tests for baseline capture..."
-	@$(SOAK_ENV) go test -tags=conformance -v -timeout 0 \
+	@$(SOAK_ENV) go test -count=1 -tags=conformance -v -timeout 0 \
 		-run 'TestConformance/.*/Load_' ./test/conformance/... \
 		2>&1 | tee testdata/baselines/soak_$(shell date +%Y%m%d_%H%M%S).log
 	@echo "Baseline log written to testdata/baselines/"
@@ -234,19 +234,19 @@ bench-baseline: bench-micro-baseline bench-macro-minio bench-macro-garage bench-
 # Run key rotation conformance tests (tier-2, all registered providers).
 test-rotation:
 	@echo "Running key rotation conformance tests (all registered providers)..."
-	@go test -tags=conformance -race -v -run 'TestConformance/.*/Rotation_' ./test/conformance/...
+	@go test -count=1 -tags=conformance -race -v -run 'TestConformance/.*/Rotation_' ./test/conformance/...
 
 # Run fuzz tests (as regression tests)
 test-fuzz:
 	@echo "Running fuzz tests (regression mode)..."
-	@go test -v ./internal/crypto -run=Fuzz -fuzztime=1s
+	@go test -count=1 -v ./internal/crypto -run=Fuzz -fuzztime=1s
 
 # Run comprehensive test suite.
 # Requires only Docker (no docker-compose up, no pre-existing binaries).
 test-comprehensive:
 	@echo "Running comprehensive test suite..."
 	@echo "1. Running tier-1 unit tests..."
-	@go test -race -short ./...
+	@go test -count=1 -race -short ./...
 	@echo "2. Running conformance tests (local providers via Testcontainers)..."
 	@$(MAKE) test-conformance-local
 	@echo "3. Checking test isolation (Docker-only model)..."
@@ -341,7 +341,7 @@ install-tools:
 
 # Generate test coverage report (legacy target)
 coverage:
-	@go test -coverprofile=coverage.out ./...
+	@go test -count=1 -coverprofile=coverage.out ./...
 	@go tool cover -func=coverage.out
 
 # ── V0.6-QA-2 Coverage Gate targets ─────────────────────────────────────────
