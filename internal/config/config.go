@@ -456,7 +456,7 @@ type TracingConfig struct {
 	Enabled         bool    `yaml:"enabled" env:"TRACING_ENABLED"`                   // Enable/disable tracing
 	ServiceName     string  `yaml:"service_name" env:"TRACING_SERVICE_NAME"`         // Service name for traces
 	ServiceVersion  string  `yaml:"service_version" env:"TRACING_SERVICE_VERSION"`   // Service version
-	Exporter        string  `yaml:"exporter" env:"TRACING_EXPORTER"`                 // Exporter type: stdout, jaeger, otlp
+	Exporter        string  `yaml:"exporter" env:"TRACING_EXPORTER"`                 // Exporter type: none, stdout, jaeger, otlp
 	JaegerEndpoint  string  `yaml:"jaeger_endpoint" env:"TRACING_JAEGER_ENDPOINT"`   // Jaeger collector endpoint
 	OtlpEndpoint    string  `yaml:"otlp_endpoint" env:"TRACING_OTLP_ENDPOINT"`       // OTLP gRPC endpoint
 	SamplingRatio   float64 `yaml:"sampling_ratio" env:"TRACING_SAMPLING_RATIO"`     // Sampling ratio (0.0-1.0)
@@ -660,7 +660,7 @@ func LoadConfig(path string) (*Config, error) {
 			Enabled:         false,
 			ServiceName:     "s3-encryption-gateway",
 			ServiceVersion:  "dev",
-			Exporter:        "stdout",
+			Exporter:        "none",
 			SamplingRatio:   1.0,
 			RedactSensitive: true,
 		},
@@ -1330,12 +1330,13 @@ func (c *Config) Validate() error {
 			return fmt.Errorf("tracing.service_name is required when tracing is enabled")
 		}
 		validExporters := map[string]bool{
+			"none":   true,
 			"stdout": true,
 			"jaeger": true,
 			"otlp":   true,
 		}
 		if !validExporters[c.Tracing.Exporter] {
-			return fmt.Errorf("invalid tracing.exporter: %s (must be stdout, jaeger, or otlp)", c.Tracing.Exporter)
+			return fmt.Errorf("invalid tracing.exporter: %s (must be none, stdout, jaeger, or otlp)", c.Tracing.Exporter)
 		}
 		if c.Tracing.SamplingRatio < 0.0 || c.Tracing.SamplingRatio > 1.0 {
 			return fmt.Errorf("tracing.sampling_ratio must be between 0.0 and 1.0")

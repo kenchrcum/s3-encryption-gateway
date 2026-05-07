@@ -271,6 +271,10 @@ func InitTracing(cfg config.TracingConfig, logger *logrus.Logger) (*sdktrace.Tra
 	// Create exporter based on configuration
 	var exporter sdktrace.SpanExporter
 	switch cfg.Exporter {
+	case "none":
+		return sdktrace.NewTracerProvider(
+			sdktrace.WithSampler(sdktrace.NeverSample()),
+		), nil
 	case "stdout":
 		exporter, err = stdouttrace.New(stdouttrace.WithPrettyPrint())
 		if err != nil {
