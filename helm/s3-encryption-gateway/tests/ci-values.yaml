@@ -37,9 +37,9 @@ config:
       value: "false"
   server:
     readTimeout:
-      value: "15s"
+      value: "0s"
     writeTimeout:
-      value: "15s"
+      value: "0s"
     idleTimeout:
       value: "60s"
     readHeaderTimeout:

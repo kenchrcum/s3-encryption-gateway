@@ -235,8 +235,8 @@ Encrypted multipart uploads (enabled per-bucket via policy files) require a Valk
 
 | Parameter | Description | Default |
 |-----------|-------------|---------|
-| `config.server.readTimeout` | HTTP read timeout | `"15s"` |
-| `config.server.writeTimeout` | HTTP write timeout | `"15s"` |
+| `config.server.readTimeout` | HTTP read timeout (0 = disabled; use readHeaderTimeout for slow-loris protection) | `"0s"` |
+| `config.server.writeTimeout` | HTTP write timeout (0 = disabled; required for large object streaming) | `"0s"` |
 | `config.server.idleTimeout` | HTTP idle connection timeout | `"60s"` |
 | `config.server.readHeaderTimeout` | HTTP read header timeout | `"10s"` |
 | `config.server.maxHeaderBytes` | Maximum request header size (bytes) | `"1048576"` |

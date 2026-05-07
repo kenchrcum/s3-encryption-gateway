@@ -602,7 +602,7 @@ func LoadConfig(path string) (*Config, error) {
 			Level:     6,
 		},
 		Server: ServerConfig{
-			ReadTimeout:              15 * time.Second,
+			ReadTimeout:              0, // Disable; ReadHeaderTimeout (10s) guards against slow-loris; ReadTimeout would kill long response streams
 			WriteTimeout:             0, // S3 object streaming can be unbounded; disable by default
 			IdleTimeout:              60 * time.Second,
 			ReadHeaderTimeout:        10 * time.Second,
