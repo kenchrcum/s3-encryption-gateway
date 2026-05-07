@@ -116,6 +116,7 @@ func TestConformance(t *testing.T) {
 		{"EncryptedMPU_RoundTrip", provider.CapEncryptedMPU, testEncryptedMPURoundTrip},
 		{"EncryptedMPU_AtRest", provider.CapEncryptedMPU, testEncryptedMPU_AtRest},
 		{"EncryptedMPU_AbortCleansState", provider.CapEncryptedMPU, testEncryptedMPUAbortCleansState},
+		{"EncryptedMPU_LargeObject", provider.CapEncryptedMPU, testEncryptedMPU_LargeObject},
 
 			// KMS envelope encryption integration test.
 			// Starts a Cosmian KMS container and verifies the full wrap/unwrap path

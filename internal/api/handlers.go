@@ -556,10 +556,14 @@ func (h *Handler) forwardSignatureV4Request(w http.ResponseWriter, r *http.Reque
 	w.WriteHeader(backendResp.StatusCode)
 
 	// Write response body
+	var proxyWriteTimeout time.Duration
+	if h.config != nil {
+		proxyWriteTimeout = h.config.Server.WriteTimeout
+	}
 	if isEncrypted && decryptedReader != nil {
-		io.Copy(w, decryptedReader)
+		copyWithDeadlineRefresh(w, decryptedReader, proxyWriteTimeout)
 	} else {
-		io.Copy(w, backendResp.Body)
+		copyWithDeadlineRefresh(w, backendResp.Body, proxyWriteTimeout)
 	}
 
 	// Record metrics - use 0 if ContentLength is unknown (-1)
@@ -1059,7 +1063,11 @@ func (h *Handler) handleGetObject(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		written, _ := w.Write(firstChunk)
 		if firstErr == nil { // more data to stream
-			extra, copyErr := io.Copy(w, decryptedReader)
+			var writeTimeout time.Duration
+			if h.config != nil {
+				writeTimeout = h.config.Server.WriteTimeout
+			}
+			extra, copyErr := copyWithDeadlineRefresh(w, decryptedReader, writeTimeout)
 			if copyErr != nil {
 				if isNetworkError(copyErr) {
 					// Client disconnect or network timeout — not a tamper event.
@@ -1316,10 +1324,25 @@ func (h *Handler) handleGetObject(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("x-amz-version-id", *versionID)
 		}
 		w.WriteHeader(http.StatusOK)
-		n64, err := io.Copy(w, decryptedReader)
+		var writeTimeout time.Duration
+		if h.config != nil {
+			writeTimeout = h.config.Server.WriteTimeout
+		}
+		n64, err := copyWithDeadlineRefresh(w, decryptedReader, writeTimeout)
 		if err != nil {
-			h.logger.WithError(err).Error("Failed to write response")
-			h.metrics.RecordHTTPRequest(r.Context(), "GET", r.URL.Path, http.StatusInternalServerError, time.Since(start), n64)
+			if isNetworkError(err) {
+				h.logger.WithError(err).WithFields(logrus.Fields{
+					"bucket": bucket,
+					"key":    key,
+				}).Warn("Object stream aborted by network error after 200 OK")
+			} else {
+				h.logger.WithError(err).WithFields(logrus.Fields{
+					"bucket": bucket,
+					"key":    key,
+				}).Error("Failed to write response")
+			}
+			// Can't change status code after WriteHeader; still record the bytes sent.
+			h.metrics.RecordHTTPRequest(r.Context(), "GET", r.URL.Path, http.StatusOK, time.Since(start), n64)
 			return
 		}
 		h.metrics.RecordS3Operation(r.Context(), "GetObject", bucket, time.Since(start))
@@ -2453,6 +2476,37 @@ func isNetworkError(err error) bool {
 		}
 	}
 	return false
+}
+
+// copyWithDeadlineRefresh wraps io.Copy and, when timeout > 0, extends the
+// HTTP write deadline every timeout/2 interval while the copy is active.
+// This prevents a fixed Server.WriteTimeout from killing long-running S3
+// object streams.
+func copyWithDeadlineRefresh(w http.ResponseWriter, src io.Reader, timeout time.Duration) (int64, error) {
+	if timeout <= 0 {
+		return io.Copy(w, src)
+	}
+	rc := http.NewResponseController(w)
+	// Pre-flight: ensure the controller supports write deadlines.
+	if err := rc.SetWriteDeadline(time.Now().Add(timeout)); err != nil {
+		// Fallback: the underlying writer doesn't support deadline control.
+		return io.Copy(w, src)
+	}
+	done := make(chan struct{})
+	defer close(done)
+	go func() {
+		ticker := time.NewTicker(timeout / 2)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				rc.SetWriteDeadline(time.Now().Add(timeout))
+			case <-done:
+				return
+			}
+		}
+	}()
+	return io.Copy(w, src)
 }
 
 // CompleteMultipartUpload represents the XML structure for completing multipart uploads.

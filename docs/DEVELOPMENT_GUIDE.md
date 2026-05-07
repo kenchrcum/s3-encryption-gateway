@@ -246,8 +246,8 @@ HTTP server settings and timeouts.
 
 | Field | Type | Default | Environment Variable | Description |
 |-------|------|---------|---------------------|-------------|
-| `read_timeout` | duration | `15s` | `SERVER_READ_TIMEOUT` | Maximum time to read entire request |
-| `write_timeout` | duration | `15s` | `SERVER_WRITE_TIMEOUT` | Maximum time to write response |
+| `read_timeout` | duration | `0` (disabled) | `SERVER_READ_TIMEOUT` | Max time to read entire request; keep disabled — use `read_header_timeout` for slow-loris protection |
+| `write_timeout` | duration | `0` (disabled) | `SERVER_WRITE_TIMEOUT` | Max time to write response; keep disabled for large object streaming |
 | `idle_timeout` | duration | `60s` | `SERVER_IDLE_TIMEOUT` | Maximum idle connection time |
 | `read_header_timeout` | duration | `10s` | `SERVER_READ_HEADER_TIMEOUT` | Time to read request headers |
 | `max_header_bytes` | int | `1048576` | `SERVER_MAX_HEADER_BYTES` | Maximum header size (bytes) |
@@ -258,8 +258,8 @@ HTTP server settings and timeouts.
 ```yaml
 # Production server settings
 server:
-  read_timeout: "30s"
-  write_timeout: "30s"
+  read_timeout: "0s"   # Disabled; read_header_timeout guards slow-loris; non-zero kills large object streams
+  write_timeout: "0s"  # Disabled; gateway streams arbitrarily large S3 objects
   idle_timeout: "120s"
   read_header_timeout: "10s"
   max_header_bytes: 1048576  # 1MB
@@ -437,8 +437,8 @@ compression:
   level: 6
 
 server:
-  read_timeout: "30s"
-  write_timeout: "30s"
+  read_timeout: "0s"   # Disabled; read_header_timeout guards slow-loris
+  write_timeout: "0s"  # Disabled; required for large object streaming
   idle_timeout: "120s"
   read_header_timeout: "10s"
   max_header_bytes: 1048576

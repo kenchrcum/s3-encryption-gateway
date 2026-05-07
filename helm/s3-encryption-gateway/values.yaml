@@ -337,9 +337,9 @@ config:
   # Server timeout configuration
   server:
     readTimeout:
-      value: "15s"
+      value: "0s"  # Disabled; readHeaderTimeout guards slow-loris; ReadTimeout kills long object streams
     writeTimeout:
-      value: "15s"
+      value: "0s"  # Disabled; gateway streams arbitrarily large S3 objects
     idleTimeout:
       value: "60s"
     readHeaderTimeout:

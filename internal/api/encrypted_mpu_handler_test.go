@@ -507,6 +507,76 @@ func TestMPU_Issue4_FullGETStreaming(t *testing.T) {
 	// crypto package level (internal/crypto/mpu_encrypter_test.go).
 }
 
+// TestMPU_LargeObjectGoldenPath verifies that a large MPU object (many parts,
+// totalling ~400 MiB) can be uploaded and downloaded successfully.
+// This is the golden-path / best-case regression test for issue #135 where
+// large encrypted multipart-upload restores failed mid-stream.
+func TestMPU_LargeObjectGoldenPath(t *testing.T) {
+	handler, _, _ := newMPUTestHandler(t, "lg-*")
+	router := mux.NewRouter()
+	handler.RegisterRoutes(router)
+
+	bucket, key := "lg-bucket", "large-obj.bin"
+
+	// Create multipart upload.
+	req := httptest.NewRequest("POST", "/"+bucket+"/"+key+"?uploads=", nil)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("Create: %d %s", w.Code, w.Body.String())
+	}
+	uploadID := extractUploadID(t, w.Body.String())
+
+	// Upload 80 parts of 5 MiB each = ~400 MiB total.  Each part uses a
+	// distinct byte pattern so a cross-part corruption is detectable.
+	const partCount = 80
+	const partSize = 5 * 1024 * 1024 // 5 MiB, S3 minimum per part
+	var etags []string
+	var want []byte
+	for i := 0; i < partCount; i++ {
+		pattern := byte('A' + i%26)
+		partData := bytes.Repeat([]byte{pattern}, partSize)
+		want = append(want, partData...)
+
+		req := httptest.NewRequest("PUT",
+			fmt.Sprintf("/%s/%s?partNumber=%d&uploadId=%s", bucket, key, i+1, uploadID),
+			bytes.NewReader(partData))
+		req.Header.Set("Content-Length", fmt.Sprintf("%d", len(partData)))
+		w := httptest.NewRecorder()
+		router.ServeHTTP(w, req)
+		if w.Code != http.StatusOK {
+			t.Fatalf("UploadPart %d: %d %s", i+1, w.Code, w.Body.String())
+		}
+		etags = append(etags, w.Header().Get("ETag"))
+	}
+
+	// Complete upload.
+	var partsXML strings.Builder
+	partsXML.WriteString(`<?xml version="1.0"?><CompleteMultipartUpload>`)
+	for i, etag := range etags {
+		partsXML.WriteString(fmt.Sprintf(`<Part><PartNumber>%d</PartNumber><ETag>%s</ETag></Part>`, i+1, etag))
+	}
+	partsXML.WriteString(`</CompleteMultipartUpload>`)
+	req = httptest.NewRequest("POST", "/"+bucket+"/"+key+"?uploadId="+uploadID, strings.NewReader(partsXML.String()))
+	w = httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("Complete: %d %s", w.Code, w.Body.String())
+	}
+
+	// Download the full object — must decrypt all parts sequentially.
+	req = httptest.NewRequest("GET", "/"+bucket+"/"+key, nil)
+	w = httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("GET: %d %s", w.Code, w.Body.String())
+	}
+	got := w.Body.Bytes()
+	if !bytes.Equal(got, want) {
+		t.Fatalf("large object MPU round-trip mismatch: want %d bytes, got %d bytes", len(want), len(got))
+	}
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Additional coverage: tamper detection end-to-end.
 // ─────────────────────────────────────────────────────────────────────────────

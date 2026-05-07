@@ -6,6 +6,27 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- **Default `ReadTimeout` disabled** (#135 follow-up): the default 15-second
+  `ReadTimeout` set a hard TCP connection deadline that fired mid-stream on
+  large object downloads regardless of `WriteTimeout` settings.  `ReadTimeout`
+  now defaults to `0` (disabled); `ReadHeaderTimeout` (10s) continues to guard
+  against slow-loris attacks.  Helm values `config.server.readTimeout` and
+  `config.server.writeTimeout` are both updated to `"0s"`.
+
+- **Active streaming write-deadline refresh** (#135 follow-up): even when
+  `WriteTimeout` is set to a non-zero value (either explicitly in config or
+  via `SERVER_WRITE_TIMEOUT`), the gateway now extends the HTTP write deadline
+  every `timeout/2` interval while bytes are actively flowing. This prevents
+  long-running S3 object downloads from being killed mid-stream, regardless of
+  the configured timeout value.
+
+- **Network-error handling on standard encrypted GET path**: the non-MPU
+  `GetObject` streaming path now also distinguishes network aborts from
+  decryption failures and logs them at Warn level rather than Error, matching
+  the MPU path introduced in 0.7.1.
+
 ## [0.7.1] — 2026-05-06
 
 ### Fixed
@@ -16,7 +37,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   multi-part data). The default `WriteTimeout` is now disabled (0) so the
   gateway can stream arbitrarily large objects without artificial cut-offs.
   Operators who rely on a hard deadline can still set `write_timeout` in the
-  server configuration.
+  server configuration. (Note: `ReadTimeout` also required disabling — see 0.7.2.)
 
 - **Misleading tamper-detection log on network errors**: when a client
   disconnect or network timeout occurred during an MPU object stream, the
