@@ -6,8 +6,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
-## [0.7.2] — 2026-05-06
-
 ### Fixed
 
 - **Default `ReadTimeout` disabled** (#135 follow-up): the default 15-second
