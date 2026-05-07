@@ -1127,6 +1127,11 @@ func (e *engine) encryptChunkedWithMetadataFallback(ctx context.Context, reader 
 		}
 	}
 
+	// Preserve MetaContentType in minimal headers for AAD reconstruction.
+	if ct := fullMetadata[MetaContentType]; ct != "" {
+		minimalMetadata[MetaContentType] = ct
+	}
+
 	return streamingReader, minimalMetadata, nil
 }
 
@@ -1532,6 +1537,12 @@ func (e *engine) encryptWithMetadataFallback(plaintext []byte, fullMetadata map[
 		}
 	}
 
+	// Preserve MetaContentType in minimal headers so the decrypt path can
+	// reconstruct AAD without falling back to the S3 Content-Type header.
+	if ct := fullMetadata[MetaContentType]; ct != "" {
+		minimalMetadata[MetaContentType] = ct
+	}
+
 	return bytes.NewReader(ciphertext), minimalMetadata, nil
 }
 
@@ -1661,9 +1672,19 @@ func (e *engine) decryptFallbackV1(reader io.Reader, metadata map[string]string)
 		return nil, nil, fmt.Errorf("failed to read encrypted data: %w", err)
 	}
 
-	// Build AAD from available metadata
-	// Use Content-Type from encryption metadata (MetaContentType) if available,
-	// otherwise fall back to Content-Type from S3 response
+	// Build AAD from available metadata.
+	//
+	// For legacy fallback-v1 objects the full metadata (including MetaContentType)
+	// is stored inside the encrypted body, so it is not available until after
+	// decryption.  The only Content-Type value we have in the header metadata is
+	// the "Content-Type" key that was copied to the minimal headers (it is not
+	// classified as encryption metadata).  We therefore fall back to it when
+	// MetaContentType is absent.  This is safe for objects created through the
+	// gateway because the gateway always stores a deterministic Content-Type with
+	// S3, so the value returned in a GetObject response matches the value that
+	// was fed into the AAD at encryption time.  New fallback objects set
+	// MetaContentType explicitly in the minimal headers, so the fallback is only
+	// required for objects created before that change.
 	contentType := metadata[MetaContentType]
 	if contentType == "" {
 		contentType = metadata["Content-Type"]
