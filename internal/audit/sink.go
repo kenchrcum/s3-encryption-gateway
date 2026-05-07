@@ -183,7 +183,7 @@ func (s *BatchSink) writeWithRetry(events []*AuditEvent) error {
 		}
 	}
 	
-	fmt.Fprintf(os.Stderr, "Failed to flush audit events after %d retries: %v\n", s.retryCount, err)
+	slog.Error("audit: failed to flush events", "retries", s.retryCount, "error", err)
 	return err
 }
 
