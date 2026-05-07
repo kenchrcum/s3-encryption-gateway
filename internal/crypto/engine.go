@@ -903,7 +903,7 @@ func (e *engine) encryptChunked(ctx context.Context, reader io.Reader, metadata 
 
 	// Create chunked encrypt reader directly from the source stream.
 	// No io.ReadAll — memory usage is bounded by the chunk pipeline.
-	chunkedReader, manifest := newChunkedEncryptReader(reader, aead, baseIV, e.chunkSize, e.bufferPool)
+	chunkedReader, manifest := newChunkedEncryptReaderWithContext(ctx, reader, aead, baseIV, e.chunkSize, e.bufferPool)
 
 	// Encode manifest for storage
 	manifestEncoded, err := encodeManifest(manifest)
@@ -1035,7 +1035,7 @@ func (e *engine) encryptChunkedWithMetadataFallback(ctx context.Context, reader 
 	// fallback-v1 format is eliminated here. Each chunk is already authenticated
 	// by the chunked AEAD, so a second full-object Seal is both redundant and
 	// forces 2× peak memory allocation (chunkedBuf + Seal output).
-	chunkedReader, manifest := newChunkedEncryptReader(reader, aead, baseIV, e.chunkSize, e.bufferPool)
+	chunkedReader, manifest := newChunkedEncryptReaderWithContext(ctx, reader, aead, baseIV, e.chunkSize, e.bufferPool)
 
 	// Encode manifest
 	manifestEncoded, err := encodeManifest(manifest)
@@ -1210,7 +1210,7 @@ func (e *engine) decryptChunked(ctx context.Context, reader io.Reader, metadata 
 	aead := aeadCipher.(cipher.AEAD)
 
 	// Create chunked decrypt reader
-	chunkedReader, err := newChunkedDecryptReader(reader, aead, manifest, e.bufferPool)
+	chunkedReader, err := newChunkedDecryptReaderWithContext(ctx, reader, aead, manifest, e.bufferPool)
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to create chunked decrypt reader: %w", err)
 	}
