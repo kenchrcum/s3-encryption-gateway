@@ -34,6 +34,12 @@ RUN if [ "${STRIP_SYMBOLS}" = "false" ]; then \
     -o /bin/s3-encryption-gateway \
     ./cmd/server
 
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build \
+    -trimpath \
+    -ldflags="${LDFLAGS}" \
+    -o /bin/s3-encryption-gateway-healthcheck \
+    ./cmd/healthcheck
+
 # Runtime stage
 FROM alpine:3.23
 
@@ -48,6 +54,7 @@ WORKDIR /app
 
 # Copy binary from builder
 COPY --from=builder /bin/s3-encryption-gateway /app/s3-encryption-gateway
+COPY --from=builder /bin/s3-encryption-gateway-healthcheck /app/healthcheck
 
 # Change ownership
 RUN chown -R gateway:gateway /app
@@ -60,7 +67,7 @@ EXPOSE 8080
 
 # Health check
 HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
-    CMD wget --no-verbose --tries=1 --spider http://localhost:8080/health || exit 1
+    CMD ["/app/healthcheck"]
 
 # Run the binary
 CMD ["/app/s3-encryption-gateway"]
