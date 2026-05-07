@@ -1,5 +1,6 @@
 # Deep Security Analysis — S3 Encryption Gateway (_post-v1.0-MAINT-1, 2026-05-04_)
 
+**Status:** CLOSED — All 23 findings verified remediated on 2026-05-07  
 **Analysis Date:** 2026-05-04  
 **Scope:** Full repository HEAD; all packages under `internal/`, `cmd/server/`, `Dockerfile`, `Dockerfile.fips`, `.github/workflows/`  
 **Methodology:** Static code analysis with symbolic resolution; cross-reference with prior findings in `docs/security/DEEP_ANALYSIS_2026-04-29.md`; best-practice comparison against OWASP ASVS L3, NIST SP 800-132 (2023), NIST SP 800-204, CIS Docker Benchmark  
@@ -579,3 +580,37 @@ The two Critical findings are **design gaps, not exploitable vulnerabilities in 
 The High findings (V1.0-SEC-H01 through V1.0-SEC-H07) represent defence-in-depth gaps. V1.0-SEC-H02 (no-AAD two-oracle) is the most concerning because it allows backend write access to bypass AAD integrity; it should be addressed before any multi-tenant deployment.
 
 **Recommended action before next major release:** resolve V1.0-SEC-C02 (context propagation), V1.0-SEC-L03 (`/health` route), V1.0-SEC-H02 (legacy no-AAD + keyResolver), and V1.0-SEC-H04 (double time.Now + credential-date cross-check).
+
+---
+
+## 8. Verification Record — STATUS: CLOSED ✓
+
+**Verification Date:** 2026-05-07  
+**Verified By:** OpenCode (automated deep-verification session)  
+**Result:** All 23 findings confirmed remediated in HEAD. Analysis closed.
+
+| ID | Severity | Status | Verification Evidence |
+|---|---|---|---|
+| V1.0-SEC-C01 | Critical | **FIXED** | `defaultWriter` type removed entirely; `StdoutSink` is the fallback in `internal/audit/` |
+| V1.0-SEC-C02 | Critical | **FIXED** | `Encrypt(ctx context.Context, ...)` signature at `internal/crypto/engine.go:324`; no `context.Background()` in engine methods |
+| V1.0-SEC-H01 | High | **FIXED** | `buildAAD` uses length-prefixed TLV (`writeLengthPrefixed`) at `engine.go:1834-1852`; legacy format isolated to `buildAADLegacy` |
+| V1.0-SEC-H02 | High | **FIXED** | `keyResolver` feature removed entirely (struct field, constructors, `SetKeyResolver`, `WithKeyResolver`); `MetaLegacyNoAAD` single-key fallback retained as documented intentional backward-compat path |
+| V1.0-SEC-H03 | High | **FIXED** | `DefaultPBKDF2Iterations = 600000` at `internal/crypto/kdf.go:19`; config default `600000` at `internal/config/config.go:611` |
+| V1.0-SEC-H04 | High | **FIXED** | `now := time.Now().UTC()` captured once at `auth.go:127`; credential-date cross-validated at lines 137-142; presigned `expires > 604800` guard at line 180 |
+| V1.0-SEC-H05 | High | **FIXED** | `zeroBytes(s.tokenCache)` + `s.tokenCache = nil` in `Shutdown()` at `internal/admin/server.go:167-168` |
+| V1.0-SEC-H06 | High | **FIXED** | `const maxRateLimitClients = 100_000` + cap check at `internal/middleware/security.go:48,133` |
+| V1.0-SEC-H07 | High | **FIXED** | `SinkTLSConfig` struct (CAFile, CertFile, KeyFile, InsecureSkipVerify, MinVersion) implemented; `buildSinkTLSConfig` validates MinVersion; `TLSClientConfig` wired at `internal/audit/sink.go:252-260` |
+| V1.0-SEC-M01 | Medium | **FIXED** | No `fmt.Sscanf` found anywhere in codebase; replaced with `strconv.Atoi`/`strconv.ParseInt` |
+| V1.0-SEC-M02 | Medium | **FIXED** | `slog.Error("audit: failed to flush events", ...)` at `internal/audit/sink.go:185` |
+| V1.0-SEC-M03 | Medium | **FIXED** | Hot-reload condition is `if configPath != ""` at `cmd/server/main.go:635`; no `configPath != "config.yaml"` guard |
+| V1.0-SEC-M04 | Medium | **FIXED** | `if expires > 604800 { return error }` at `internal/api/auth.go:180` |
+| V1.0-SEC-M05 | Medium | **FIXED** | `io.LimitReader` applied after `Decompress` at both decrypt call sites; limit = `MetaCompressionOriginalSize + 65536` |
+| V1.0-SEC-M06 | Medium | **FIXED** | `policyManager.LoadPolicies` called in `ApplyConfigChanges` at `cmd/server/main.go:229-237` |
+| V1.0-SEC-M07 | Medium | **FIXED** | `buildTLSConfig` in `internal/mpu/state.go` validates MinVersion via switch; unknown values return error |
+| V1.0-SEC-L01 | Low | **FIXED** | Metrics on authenticated admin mux: `adminServer.Mux().Handle("/metrics", ...)` at `cmd/server/main.go:796` |
+| V1.0-SEC-L02 | Low | **FIXED** | `Dockerfile.fips` has `HEALTHCHECK` using compiled Go binary `/app/healthcheck` at lines 65-67 |
+| V1.0-SEC-L03 | Low | **FIXED** | `router.HandleFunc("/health", ...)` registered at `cmd/server/main.go:669` |
+| V1.0-SEC-L04 | Low | **FIXED** | `dec.KnownFields(true)` at `internal/config/config.go:718` |
+| V1.0-SEC-L05 | Low | **FIXED** | `ClockSkewTolerance: 5 * time.Minute` at `internal/config/config.go:674` |
+| V1.0-SEC-L06 | Low | **FIXED** | `Exporter: "none"` at `internal/config/config.go:662` |
+| V1.0-SEC-L07 | Low | **FIXED** | Both Dockerfiles use compiled Go healthcheck binary; no `wget` dependency |

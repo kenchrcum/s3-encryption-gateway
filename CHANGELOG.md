@@ -6,6 +6,163 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Security
+
+This release addresses all 23 findings from the 2026-05-04 deep security
+analysis. As documented in that report (§7), **none of the findings
+represent immediately exploitable remote vulnerabilities in a correctly
+deployed instance**. They are defence-in-depth gaps, design-level
+correctness improvements, and hardening measures. The gateway was safe to
+run before this release; these changes raise the security floor further.
+
+#### Defence-in-Depth & Design Correctness
+
+- **`context.Context` propagation through `EncryptionEngine`** (V1.0-SEC-C02):
+  `Encrypt`, `Decrypt`, `DecryptRange`, and the fallback v2 decoder now
+  accept a `context.Context` as their first argument. KMS wrap/unwrap
+  operations (KMIP over TLS) are now cancellable when the originating HTTP
+  request is cancelled or times out, preventing goroutine leaks under KMS
+  outage. OpenTelemetry spans created inside the engine are now children of
+  the HTTP request span, restoring distributed trace continuity.
+
+- **Remove `defaultWriter` audit fallback** (V1.0-SEC-C01): the
+  `defaultWriter` type — which emitted raw audit events via `fmt.Printf`
+  without applying field redaction — has been removed. `StdoutSink` (which
+  correctly applies `redactMetadata`) is now the fallback when no explicit
+  sink is configured. Sensitive metadata fields (object keys, algorithm
+  identifiers, KMS key IDs) can no longer appear unredacted in container
+  log streams via this path.
+
+- **Length-prefixed AAD canonicalization** (V1.0-SEC-H01): `buildAAD` now
+  uses a length-prefixed TLV encoding (`writeLengthPrefixed`) instead of
+  a bare pipe-delimited concatenation. The previous format allowed a crafted
+  metadata value containing a pipe character to produce an AAD collision
+  between two distinct objects. The new format is injection-proof. Legacy
+  objects continue to decrypt via the retained `buildAADLegacy` path;
+  `s3eg-migrate --migration-class sec-h01` re-seals objects under the new
+  AAD scheme.
+
+- **Remove `keyResolver` two-oracle path** (V1.0-SEC-H02): the
+  `keyResolver` feature (struct field, both constructors, `SetKeyResolver`,
+  `WithKeyResolver` option) has been removed entirely. It created a
+  second GCM oracle that could be queried without AAD verification when
+  an attacker had S3 backend write access. The single-key
+  `MetaLegacyNoAAD` fallback for explicitly tagged legacy objects is
+  retained as a documented backward-compatibility path.
+
+- **Configurable PBKDF2 iteration count, default raised to 600 000**
+  (V1.0-SEC-H03): the default PBKDF2 iteration count is raised from
+  100 000 to 600 000 (NIST SP 800-132 §5.3, 2023 guidance). The count
+  is now operator-configurable via `crypto.kdf.pbkdf2.iterations` and is
+  recorded in per-object metadata so mixed-iteration deployments decrypt
+  correctly. An Argon2id compile-time gate is included for future
+  migration. KDF parameters are propagated by the migration tool
+  (`s3eg-migrate --migration-class sec-h03`). New config key:
+  `crypto.kdf.pbkdf2.iterations` (default `600000`).
+
+- **Decompression bomb protection** (V1.0-SEC-M05): `io.LimitReader` is
+  now applied immediately after `Decompress` returns on both the primary
+  and fallback decrypt paths. The limit is
+  `MetaCompressionOriginalSize + 65536` bytes (64 KiB format-overhead
+  tolerance). Objects without a recorded original size are still decompressed
+  without a limit (as before), but objects that carry the size metadata are
+  now bounded.
+
+#### Hardening & Operational Correctness
+
+- **Single `time.Now()` capture + credential-date cross-check**
+  (V1.0-SEC-H04): `ValidateSignatureV4` now captures a single
+  `now := time.Now().UTC()` at entry and reuses it for all time-based
+  checks. The credential-date component of the scope string is
+  cross-validated against `now` (±1 day) to prevent attackers from
+  constructing a credential scope that maps to a different signing key.
+  Presigned URLs with `X-Amz-Expires` values exceeding 7 days (604 800
+  seconds) are now rejected with `400 AuthorizationQueryParametersError`
+  (V1.0-SEC-M04).
+
+- **Admin token zeroized on shutdown** (V1.0-SEC-H05): `AdminServer.Shutdown()`
+  now calls `zeroBytes(s.tokenCache)` and sets `s.tokenCache = nil` before
+  returning, ensuring the bearer token is cleared from memory when the
+  process is shutting down.
+
+- **Rate limiter client map cap** (V1.0-SEC-H06): the in-memory per-client
+  token-bucket map is now bounded by `maxRateLimitClients = 100 000`
+  entries. Requests from clients beyond that limit are served without
+  rate limiting rather than expanding the map without bound, preventing
+  a slow-path memory exhaustion attack.
+
+- **TLS config for audit HTTP sink** (V1.0-SEC-H07): the audit HTTP sink
+  now accepts a `SinkTLSConfig` block (`ca_file`, `cert_file`, `key_file`,
+  `insecure_skip_verify`, `min_version`). `min_version` is validated at
+  startup and only `"1.2"` and `"1.3"` are accepted. The configured
+  `tls.Config` is wired into the sink's `http.Transport`, replacing the
+  previous default (system CA pool, TLS 1.0 minimum). New config keys:
+  `audit.http.tls.*`.
+
+- **Policy manager reloaded on hot-reload** (V1.0-SEC-M06):
+  `ApplyConfigChanges` now calls `policyManager.LoadPolicies` after
+  successfully applying a config file update. Previously, policy files
+  were only read at startup; a hot-reload could silently leave stale
+  policy in effect.
+
+- **Hot-reload config path guard corrected** (V1.0-SEC-M03): the
+  `configPath != "config.yaml"` string comparison that prevented
+  hot-reload from triggering for any config file named something other
+  than the default has been removed. Hot-reload now triggers for any
+  non-empty `configPath`.
+
+- **Valkey TLS `min_version` validated** (V1.0-SEC-M07): `buildTLSConfig`
+  for the Valkey connection now validates the configured `min_version`
+  string via an explicit switch. Unknown values return an error at
+  startup rather than silently defaulting to the Go TLS minimum. Empty
+  string and `"1.3"` default to TLS 1.3; `"1.2"` is accepted explicitly.
+
+- **Batch-sink flush errors routed through `slog`** (V1.0-SEC-M02):
+  `BatchSink` flush errors are now emitted via `slog.Error(...)` instead
+  of being written to `os.Stderr` with `fmt.Fprintf`. Audit infrastructure
+  errors now appear in structured log output alongside all other server
+  errors, and are visible in log aggregation pipelines.
+
+- **Unknown YAML config keys rejected** (V1.0-SEC-L04): the config YAML
+  decoder now calls `dec.KnownFields(true)`. Typos and unrecognised keys
+  in `config.yaml` are rejected at startup rather than silently ignored,
+  preventing misconfiguration from going undetected.
+
+#### Metrics, Observability & Containers
+
+- **`/metrics` moved to authenticated admin port** (V1.0-SEC-L01):
+  the Prometheus metrics handler is no longer registered on the
+  data-plane listener. It is now served exclusively on the admin mux
+  (`adminServer.Mux().Handle("/metrics", ...)`), inheriting admin
+  bearer-token authentication and TLS. Operators using an external
+  scraper should point it at the admin port.
+
+- **`/health` route registered on data-plane listener** (V1.0-SEC-L03):
+  `GET /health` is now explicitly registered on the main router,
+  returning `200 OK` with a JSON body. Kubernetes liveness probes
+  pointed at the data-plane port previously received `404`; they now
+  work without requiring an admin-port probe.
+
+- **Default clock-skew tolerance reduced to 5 minutes** (V1.0-SEC-L05):
+  `auth.sigv4_clock_skew` default is reduced from 15 minutes to
+  5 minutes, matching the AWS SDK and standard SigV4 implementations.
+  Deployments with known clock-drift issues should set the value
+  explicitly.
+
+- **Default tracing exporter changed to `"none"`** (V1.0-SEC-L06):
+  the default value of `tracing.exporter` is changed from `"stdout"` to
+  `"none"`. The previous default caused every trace span to be written to
+  stdout on installations that had not explicitly configured a tracing
+  backend, polluting container logs with OTLP-format output.
+
+- **HEALTHCHECK replaced with compiled Go binary in both Dockerfiles**
+  (V1.0-SEC-L02, V1.0-SEC-L07): the `wget`-based `HEALTHCHECK`
+  instruction has been replaced in both `Dockerfile` and `Dockerfile.fips`
+  with a minimal compiled Go healthcheck binary (`/app/healthcheck`). This
+  removes the dependency on `wget` being present in the container image
+  and provides a consistent, reliable health probe in both standard and
+  FIPS images.
+
 ## [0.7.2] — 2026-05-07
 
 ### Fixed
