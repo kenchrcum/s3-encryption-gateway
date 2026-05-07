@@ -508,7 +508,7 @@ func TestMPU_Issue4_FullGETStreaming(t *testing.T) {
 }
 
 // TestMPU_LargeObjectGoldenPath verifies that a large MPU object (many parts,
-// totalling ~100 MiB) can be uploaded and downloaded successfully.
+// totalling ~400 MiB) can be uploaded and downloaded successfully.
 // This is the golden-path / best-case regression test for issue #135 where
 // large encrypted multipart-upload restores failed mid-stream.
 func TestMPU_LargeObjectGoldenPath(t *testing.T) {
@@ -527,9 +527,9 @@ func TestMPU_LargeObjectGoldenPath(t *testing.T) {
 	}
 	uploadID := extractUploadID(t, w.Body.String())
 
-	// Upload 20 parts of 5 MiB each = ~100 MiB total.  Each part uses a
+	// Upload 80 parts of 5 MiB each = ~400 MiB total.  Each part uses a
 	// distinct byte pattern so a cross-part corruption is detectable.
-	const partCount = 20
+	const partCount = 80
 	const partSize = 5 * 1024 * 1024 // 5 MiB, S3 minimum per part
 	var etags []string
 	var want []byte

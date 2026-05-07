@@ -196,8 +196,8 @@ func testEncryptedMPUAbortCleansState(t *testing.T, inst provider.Instance) {
 }
 
 
-// testEncryptedMPU_LargeObject uploads a large MPU object (20 parts × 5 MiB =
-// ~100 MiB) and downloads it back end-to-end.  This is the conformance
+// testEncryptedMPU_LargeObject uploads a large MPU object (80 parts × 5 MiB =
+// ~400 MiB) and downloads it back end-to-end.  This is the conformance
 // golden-path for issue #135: large encrypted restores that must survive the
 // streaming decrypt-and-write path for long enough to exercise any
 // write-deadline refresh logic (the download alone should take ≥ 15 s on
@@ -216,8 +216,8 @@ func testEncryptedMPU_LargeObject(t *testing.T, inst provider.Instance) {
 	uploadID := initiateMultipartUpload(t, gw, inst.Bucket, key)
 	t.Cleanup(func() { abortMultipartUpload(t, gw, inst.Bucket, key, uploadID) })
 
-	// Upload 20 parts × 5 MiB = 100 MiB total.
-	const partCount = 20
+	// Upload 80 parts × 5 MiB = 400 MiB total.
+	const partCount = 80
 	const partSize = 5 * 1024 * 1024
 	var etags []string
 	var want []byte

@@ -394,7 +394,10 @@ ready:
 }
 
 // HTTPClient returns a plain *http.Client suitable for issuing requests to the
-// gateway. The client has a 30-second timeout and follows redirects.
+// gateway. The client has a 5-minute timeout so large-object conformance tests
+// (e.g. 400 MiB encrypted MPU downloads over slower public backends) do not
+// abort mid-stream because of a client-side deadline.  The overall test-run
+// timeout is still governed by go test's -timeout flag.
 func (g *Gateway) HTTPClient() *http.Client {
-	return &http.Client{Timeout: 30 * time.Second}
+	return &http.Client{Timeout: 5 * time.Minute}
 }
