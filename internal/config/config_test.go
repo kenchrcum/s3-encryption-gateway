@@ -9,6 +9,8 @@ import (
 	"time"
 
 	"github.com/sirupsen/logrus"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestLoadConfig_Defaults(t *testing.T) {
@@ -1095,6 +1097,18 @@ func TestValidate_AuditConfig(t *testing.T) {
 			t.Errorf("expected no error, got %v", err)
 		}
 	})
+}
+
+// TestValidate_InvalidValkeyMinVersion verifies that an invalid Valkey TLS
+// min_version is rejected when Valkey is configured.
+func TestValidate_InvalidValkeyMinVersion(t *testing.T) {
+	cfg := minValidConfig()
+	cfg.MultipartState.Valkey.Addr = "valkey.internal:6379"
+	cfg.MultipartState.Valkey.TLS.MinVersion = "1.4"
+
+	err := cfg.Validate()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "min_version")
 }
 
 func TestValidate_LoggingFormat(t *testing.T) {

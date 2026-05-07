@@ -174,8 +174,10 @@ func buildTLSConfig(cfg config.ValkeyTLSConfig) (*tls.Config, error) {
 	switch cfg.MinVersion {
 	case "1.2":
 		tc.MinVersion = tls.VersionTLS12
-	default:
+	case "", "1.3":
 		tc.MinVersion = tls.VersionTLS13
+	default:
+		return nil, fmt.Errorf("invalid valkey TLS min_version: %q (must be 1.2 or 1.3)", cfg.MinVersion)
 	}
 
 	if cfg.CAFile != "" {

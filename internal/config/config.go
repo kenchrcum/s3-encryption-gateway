@@ -1378,6 +1378,16 @@ func (c *Config) Validate() error {
 		}
 	}
 
+	// Validate multipart state / Valkey TLS min_version when Valkey is configured.
+	if c.MultipartState.Valkey.Addr != "" {
+		switch c.MultipartState.Valkey.TLS.MinVersion {
+		case "", "1.2", "1.3":
+			// valid
+		default:
+			return fmt.Errorf("invalid multipart_state.valkey.tls.min_version: %q (must be 1.2 or 1.3)", c.MultipartState.Valkey.TLS.MinVersion)
+		}
+	}
+
 	// Validate backend retry configuration (V0.6-PERF-2).
 	// Normalize first so that empty-string defaults are resolved before validation.
 	c.Backend.Retry.Normalize()

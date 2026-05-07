@@ -2,6 +2,7 @@ package mpu
 
 import (
 	"context"
+	"crypto/tls"
 	"fmt"
 	"os"
 	"strings"
@@ -300,6 +301,27 @@ func TestBuildTLSConfig_TLS12(t *testing.T) {
 	})
 	require.NoError(t, err)
 	require.NotNil(t, cfg)
+}
+
+// TestBuildTLSConfig_TLS13 verifies TLS 1.3 minimum version is accepted.
+func TestBuildTLSConfig_TLS13(t *testing.T) {
+	cfg, err := buildTLSConfig(config.ValkeyTLSConfig{
+		Enabled:    true,
+		MinVersion: "1.3",
+	})
+	require.NoError(t, err)
+	require.NotNil(t, cfg)
+	assert.Equal(t, uint16(tls.VersionTLS13), cfg.MinVersion)
+}
+
+// TestBuildTLSConfig_InvalidMinVersion verifies an invalid min_version returns an error.
+func TestBuildTLSConfig_InvalidMinVersion(t *testing.T) {
+	_, err := buildTLSConfig(config.ValkeyTLSConfig{
+		Enabled:    true,
+		MinVersion: "1.4",
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "min_version")
 }
 
 // TestWrapRedisErr_Nil verifies redis.Nil maps to ErrUploadNotFound.
