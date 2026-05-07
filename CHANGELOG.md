@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.7.2] — 2026-05-07
+
 ### Fixed
 
 - **Default `ReadTimeout` disabled** (#135 follow-up): the default 15-second
@@ -26,6 +28,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `GetObject` streaming path now also distinguishes network aborts from
   decryption failures and logs them at Warn level rather than Error, matching
   the MPU path introduced in 0.7.1.
+
+### Dependencies
+
+- Updated `github.com/aws/aws-sdk-go-v2/service/s3` to v1.101.0
 
 ## [0.7.1] — 2026-05-06
 

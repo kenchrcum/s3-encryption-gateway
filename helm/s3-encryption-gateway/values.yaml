@@ -17,7 +17,7 @@ track: ""
 image:
   repository: kenchrcum/s3-encryption-gateway
   pullPolicy: IfNotPresent
-  tag: "0.7.1"
+  tag: "0.7.2"
 
 imagePullSecrets: []
 nameOverride: ""
