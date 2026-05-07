@@ -671,9 +671,6 @@ func main() {
 		w.WriteHeader(http.StatusOK)
 	}).Methods("GET", "HEAD")
 
-	// Register metrics endpoint
-	router.Handle("/metrics", m.Handler()).Methods("GET")
-
 	// Register API routes
 	handler.RegisterRoutes(router)
 
@@ -795,6 +792,9 @@ func main() {
 				"max_concurrent": cfg.Admin.Profiling.MaxConcurrentProfiles,
 			}).Warn("admin_profiling_enabled") // WARN — this surface widens blast radius
 		}
+
+		// V1.0-SEC-L01 — register metrics on the authenticated admin mux.
+		adminServer.Mux().Handle("/metrics", m.Handler())
 
 		// Set admin API enabled metric
 		m.SetAdminAPIEnabled(true)
