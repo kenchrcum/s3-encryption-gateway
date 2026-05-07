@@ -672,7 +672,7 @@ func LoadConfig(path string) (*Config, error) {
 			RedactHeaders:   []string{"authorization", "x-amz-security-token", "x-amz-signature", "x-encryption-key", "x-encryption-password"},
 		},
 		Auth: AuthConfig{
-			ClockSkewTolerance: 15 * time.Minute,
+			ClockSkewTolerance: 5 * time.Minute,
 		},
 		Admin: AdminConfig{
 			Enabled:        false,

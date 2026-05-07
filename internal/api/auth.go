@@ -50,14 +50,14 @@ var (
 	ErrSigV4NotSupportedWithPassthrough = errors.New("signature v4 not supported with credential passthrough")
 )
 
-const defaultClockSkew = 15 * time.Minute
+const defaultClockSkew = 5 * time.Minute
 
 // ValidateSignatureV4 validates the AWS Signature V4 in the request.
 // It supports both Authorization header and Presigned URL (query param).
 // secretKey is the shared secret used to sign the request.
 // clockSkew is the maximum acceptable difference between the request
 // timestamp and server time; zero or negative values fall back to
-// defaultClockSkew (15 minutes).
+// defaultClockSkew (5 minutes).
 func ValidateSignatureV4(r *http.Request, secretKey string, clockSkew time.Duration) error {
 	if clockSkew <= 0 {
 		clockSkew = defaultClockSkew

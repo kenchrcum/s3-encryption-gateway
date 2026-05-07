@@ -293,7 +293,7 @@ func TestValidateSignatureV4_Valid(t *testing.T) {
 }
 
 // TestValidateSignatureV4_ClockSkew_Past verifies that a header-auth request
-// with a timestamp more than 15 minutes in the past is rejected.
+// with a timestamp more than 5 minutes in the past is rejected.
 func TestValidateSignatureV4_ClockSkew_Past(t *testing.T) {
 	secretKey := "test-secret"
 	// Timestamp 20 minutes in the past
@@ -321,7 +321,7 @@ func TestValidateSignatureV4_ClockSkew_Past(t *testing.T) {
 }
 
 // TestValidateSignatureV4_ClockSkew_Future verifies that a header-auth request
-// with a timestamp more than 15 minutes in the future is rejected.
+// with a timestamp more than 5 minutes in the future is rejected.
 func TestValidateSignatureV4_ClockSkew_Future(t *testing.T) {
 	secretKey := "test-secret"
 	// Timestamp 20 minutes in the future
@@ -349,11 +349,11 @@ func TestValidateSignatureV4_ClockSkew_Future(t *testing.T) {
 }
 
 // TestValidateSignatureV4_ClockSkew_WithinWindow verifies that a header-auth
-// request with a timestamp inside the 15-minute window is accepted.
+// request with a timestamp inside the 5-minute window is accepted.
 func TestValidateSignatureV4_ClockSkew_WithinWindow(t *testing.T) {
 	secretKey := "wJalrXUtnFEMI/K7MDENG+bPxRfiCYEXAMPLEKEY"
-	// Timestamp 5 minutes in the past — within the skew window
-	now := time.Now().UTC().Add(-5 * time.Minute)
+	// Timestamp 2 minutes in the past — comfortably within the skew window
+	now := time.Now().UTC().Add(-2 * time.Minute)
 	timestamp := now.Format("20060102T150405Z")
 	date := now.Format("20060102")
 	region := "us-east-1"
@@ -619,9 +619,9 @@ func TestValidateSignatureV4_CredentialDateMismatch_Presigned(t *testing.T) {
 // presigned URL is rejected.
 func TestValidateSignatureV4_PresignedURL_Expired(t *testing.T) {
 	secretKey := "test-secret"
-	// Use a timestamp 10 minutes ago with a 5-minute expiry so the URL is
-	// expired but still within the 15-minute clock-skew window.
-	now := time.Now().UTC().Add(-10 * time.Minute)
+	// Use a timestamp 3 minutes ago with a 1-minute expiry so the URL is
+	// expired but still within the 5-minute clock-skew window.
+	now := time.Now().UTC().Add(-3 * time.Minute)
 	timestamp := now.Format("20060102T150405Z")
 	date := now.Format("20060102")
 	region := "us-east-1"
@@ -633,7 +633,7 @@ func TestValidateSignatureV4_PresignedURL_Expired(t *testing.T) {
 	q.Set("X-Amz-Algorithm", "AWS4-HMAC-SHA256")
 	q.Set("X-Amz-Credential", accessKey+"/"+credScope)
 	q.Set("X-Amz-Date", timestamp)
-	q.Set("X-Amz-Expires", "300") // 5 minutes — expired 5 minutes ago
+	q.Set("X-Amz-Expires", "60") // 1 minute — expired 2 minutes ago
 	q.Set("X-Amz-SignedHeaders", "host")
 	q.Set("X-Amz-Signature", strings.Repeat("a", 64))
 
