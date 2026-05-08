@@ -184,6 +184,48 @@ data:
 - **SERVER_READ_HEADER_TIMEOUT**: Header read timeout (default: 10s)
 - **SERVER_MAX_HEADER_BYTES**: Maximum header size in bytes (default: 1048576)
 
+## Multipart Upload State Store (Valkey)
+
+When encrypted multipart uploads are enabled (`encrypt_multipart_uploads: true`
+in bucket policy), the gateway persists per-upload encryption state (DEK,
+IV prefix, part metadata) in a Valkey (Redis-compatible) store.
+
+### Environment Variables
+
+- **VALKEY_ADDR**: Valkey server address (e.g., "valkey.internal:6379")
+- **VALKEY_USERNAME**: Valkey ACL username (optional)
+- **VALKEY_PASSWORD_ENV**: Name of the env var holding the Valkey password
+- **VALKEY_DB**: Valkey database index (default: 0)
+- **VALKEY_TLS_ENABLED**: Enable TLS for Valkey connections (default: true)
+- **VALKEY_TLS_CA_FILE**: Path to CA certificate for Valkey TLS
+- **VALKEY_TLS_CERT_FILE**: Path to client certificate (for mTLS)
+- **VALKEY_TLS_KEY_FILE**: Path to client key (for mTLS)
+- **VALKEY_INSECURE_ALLOW_PLAINTEXT**: Allow non-TLS Valkey connection
+- **VALKEY_TTL_SECONDS**: TTL for in-flight upload state in seconds (default: 604800 = 7 days)
+
+> ⚠️ **WARNING:** `VALKEY_INSECURE_ALLOW_PLAINTEXT=true` exposes WrappedDEKs
+> and all multipart-upload metadata on the network in plaintext. The DEK
+> itself is already wrapped by the KeyManager, but the wrapped envelope,
+> IV prefixes, bucket names, object keys, and part metadata are all readable
+> by anyone on the wire. This flag is intended for **development/testing only**.
+> Production deployments **must** set `VALKEY_TLS_ENABLED=true` with
+> `tls.MinVersion = TLS1.3`.
+
+### Configuration Example
+
+```yaml
+# In ConfigMap or environment variables
+VALKEY_ADDR: "valkey.internal:6379"
+VALKEY_TLS_ENABLED: "true"
+VALKEY_TLS_CA_FILE: "/etc/gateway/valkey-ca.pem"
+VALKEY_TTL_SECONDS: "604800"
+```
+
+For Helm deployments, the chart can deploy an in-cluster Valkey subchart
+(`valkey.enabled: true`) or connect to an external cluster. Blue/green and
+canary deployments **must** share a single external Valkey cluster — see
+`docs/OPS_DEPLOYMENT.md` §6.
+
 ## Health Checks and Monitoring
 
 ### Health Endpoints

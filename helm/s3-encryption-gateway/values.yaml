@@ -451,8 +451,14 @@ config:
           value: ""
         keyFile:
           value: ""
-      # insecureAllowPlaintext: set to "true" to allow plaintext Valkey in
-      # development ONLY. Production deployments should set tls.enabled=true.
+      # insecureAllowPlaintext permits a non-TLS Valkey connection.
+      #
+      # WARNING: Enabling this in production exposes WrappedDEKs (and all
+      # multipart-upload metadata) on the network in plaintext. The DEK itself
+      # is already wrapped by the KeyManager, but the wrapped envelope, IV
+      # prefixes, bucket names, object keys, and part metadata are all readable
+      # by anyone on the wire. This flag is intended for development/testing
+      # only. Production deployments must set tls.enabled=true.
       insecureAllowPlaintext:
         value: ""
       # ttlSeconds: how long an in-flight MPU state record lives in Valkey

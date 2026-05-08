@@ -563,7 +563,13 @@ type ValkeyConfig struct {
 	DB          int             `yaml:"db" env:"VALKEY_DB"`
 	TLS         ValkeyTLSConfig `yaml:"tls"`
 	// InsecureAllowPlaintext permits a non-TLS Valkey connection.
-	// Development only. A startup warning and metric are emitted when true.
+	//
+	// WARNING: Enabling this in production exposes WrappedDEKs (and all
+	// multipart-upload metadata) on the network in plaintext. The DEK itself
+	// is already wrapped by the KeyManager, but the wrapped envelope, IV
+	// prefixes, bucket names, object keys, and part metadata are all readable
+	// by anyone on the wire. This flag is intended for development/testing
+	// only and emits a startup warning + metric when true.
 	InsecureAllowPlaintext bool          `yaml:"insecure_allow_plaintext" env:"VALKEY_INSECURE_ALLOW_PLAINTEXT"`
 	TTLSeconds             int           `yaml:"ttl_seconds" env:"VALKEY_TTL_SECONDS"`
 	DialTimeout            time.Duration `yaml:"dial_timeout" env:"VALKEY_DIAL_TIMEOUT"`
