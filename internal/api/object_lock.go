@@ -174,6 +174,13 @@ func (h *Handler) handlePutObjectRetention(w http.ResponseWriter, r *http.Reques
 	bucket := vars["bucket"]
 	key := vars["key"]
 
+	s3Client, err := h.getS3Client(r)
+	if err != nil {
+		h.logger.WithError(err).Error("Failed to get S3 client")
+		h.writeS3ClientError(w, r, err, "PUT", start)
+		return
+	}
+
 	if refuseBypassGovernanceRetention(w, r, h, bucket, key, start) {
 		return
 	}
@@ -207,7 +214,7 @@ func (h *Handler) handlePutObjectRetention(w http.ResponseWriter, r *http.Reques
 		vidPtr = &versionID
 	}
 
-	if err := h.s3Client.PutObjectRetention(r.Context(), bucket, key, vidPtr, &req); err != nil {
+	if err := s3Client.PutObjectRetention(r.Context(), bucket, key, vidPtr, &req); err != nil {
 		s3Err := TranslateError(err, bucket, key)
 		s3Err.WriteXML(w)
 		return
@@ -229,13 +236,20 @@ func (h *Handler) handleGetObjectRetention(w http.ResponseWriter, r *http.Reques
 	bucket := vars["bucket"]
 	key := vars["key"]
 
+	s3Client, err := h.getS3Client(r)
+	if err != nil {
+		h.logger.WithError(err).Error("Failed to get S3 client")
+		h.writeS3ClientError(w, r, err, "GET", start)
+		return
+	}
+
 	versionID := r.URL.Query().Get("versionId")
 	var vidPtr *string
 	if versionID != "" {
 		vidPtr = &versionID
 	}
 
-	ret, err := h.s3Client.GetObjectRetention(r.Context(), bucket, key, vidPtr)
+	ret, err := s3Client.GetObjectRetention(r.Context(), bucket, key, vidPtr)
 	if err != nil {
 		s3Err := TranslateError(err, bucket, key)
 		s3Err.WriteXML(w)
@@ -265,6 +279,13 @@ func (h *Handler) handlePutObjectLegalHold(w http.ResponseWriter, r *http.Reques
 	bucket := vars["bucket"]
 	key := vars["key"]
 
+	s3Client, err := h.getS3Client(r)
+	if err != nil {
+		h.logger.WithError(err).Error("Failed to get S3 client")
+		h.writeS3ClientError(w, r, err, "PUT", start)
+		return
+	}
+
 	body, errBody := readLimitedBody(r)
 	if errBody != nil {
 		errBody.WriteXML(w)
@@ -289,7 +310,7 @@ func (h *Handler) handlePutObjectLegalHold(w http.ResponseWriter, r *http.Reques
 		vidPtr = &versionID
 	}
 
-	if err := h.s3Client.PutObjectLegalHold(r.Context(), bucket, key, vidPtr, req.Status); err != nil {
+	if err := s3Client.PutObjectLegalHold(r.Context(), bucket, key, vidPtr, req.Status); err != nil {
 		s3Err := TranslateError(err, bucket, key)
 		s3Err.WriteXML(w)
 		return
@@ -311,13 +332,20 @@ func (h *Handler) handleGetObjectLegalHold(w http.ResponseWriter, r *http.Reques
 	bucket := vars["bucket"]
 	key := vars["key"]
 
+	s3Client, err := h.getS3Client(r)
+	if err != nil {
+		h.logger.WithError(err).Error("Failed to get S3 client")
+		h.writeS3ClientError(w, r, err, "GET", start)
+		return
+	}
+
 	versionID := r.URL.Query().Get("versionId")
 	var vidPtr *string
 	if versionID != "" {
 		vidPtr = &versionID
 	}
 
-	status, err := h.s3Client.GetObjectLegalHold(r.Context(), bucket, key, vidPtr)
+	status, err := s3Client.GetObjectLegalHold(r.Context(), bucket, key, vidPtr)
 	if err != nil {
 		s3Err := TranslateError(err, bucket, key)
 		s3Err.WriteXML(w)
@@ -345,6 +373,13 @@ func (h *Handler) handlePutObjectLockConfiguration(w http.ResponseWriter, r *htt
 	start := time.Now()
 	vars := mux.Vars(r)
 	bucket := vars["bucket"]
+
+	s3Client, err := h.getS3Client(r)
+	if err != nil {
+		h.logger.WithError(err).Error("Failed to get S3 client")
+		h.writeS3ClientError(w, r, err, "PUT", start)
+		return
+	}
 
 	body, errBody := readLimitedBody(r)
 	if errBody != nil {
@@ -380,7 +415,7 @@ func (h *Handler) handlePutObjectLockConfiguration(w http.ResponseWriter, r *htt
 		}
 	}
 
-	if err := h.s3Client.PutObjectLockConfiguration(r.Context(), bucket, &req); err != nil {
+	if err := s3Client.PutObjectLockConfiguration(r.Context(), bucket, &req); err != nil {
 		s3Err := TranslateError(err, bucket, "")
 		s3Err.WriteXML(w)
 		return
@@ -401,7 +436,14 @@ func (h *Handler) handleGetObjectLockConfiguration(w http.ResponseWriter, r *htt
 	vars := mux.Vars(r)
 	bucket := vars["bucket"]
 
-	cfg, err := h.s3Client.GetObjectLockConfiguration(r.Context(), bucket)
+	s3Client, err := h.getS3Client(r)
+	if err != nil {
+		h.logger.WithError(err).Error("Failed to get S3 client")
+		h.writeS3ClientError(w, r, err, "GET", start)
+		return
+	}
+
+	cfg, err := s3Client.GetObjectLockConfiguration(r.Context(), bucket)
 	if err != nil {
 		s3Err := TranslateError(err, bucket, "")
 		s3Err.WriteXML(w)
