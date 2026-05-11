@@ -111,6 +111,11 @@ func StartGateway(t *testing.T, inst provider.Instance, opts ...Option) *Gateway
 		},
 	}
 
+	// Apply WithAuth credentials before extraConfig so extraConfig can override.
+	if len(o.authCredentials) > 0 {
+		cfg.Auth.Credentials = o.authCredentials
+	}
+
 	// Apply optional config mutator last.
 	if o.extraConfig != nil {
 		o.extraConfig(cfg)
@@ -264,6 +269,21 @@ func StartGateway(t *testing.T, inst provider.Instance, opts ...Option) *Gateway
 	// Middleware.
 	httpHandler := middleware.RecoveryMiddleware(logger)(router)
 	httpHandler = middleware.LoggingMiddleware(logger, &cfg.Logging)(httpHandler)
+
+	// Wire auth middleware if credentials are configured (V1.0-AUTH-1).
+	if len(cfg.Auth.Credentials) > 0 {
+		credStore, credErr := api.NewStaticCredentialStore(cfg.Auth.Credentials)
+		if credErr != nil {
+			listener.Close()
+			t.Fatalf("harness.StartGateway: create credential store: %v", credErr)
+		}
+		httpHandler = api.AuthMiddleware(credStore, cfg.Auth.ClockSkewTolerance, logger)(httpHandler)
+	}
+
+	// Wire bucket validation middleware if proxied_bucket is configured.
+	if cfg.ProxiedBucket != "" {
+		httpHandler = middleware.BucketValidationMiddleware(cfg.ProxiedBucket, logger)(httpHandler)
+	}
 
 	// HTTP server.
 	server := &http.Server{

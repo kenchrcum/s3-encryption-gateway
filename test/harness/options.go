@@ -41,6 +41,9 @@ type options struct {
 	// faults at the gateway→backend layer without an external proxy.
 	// See WithBackendTransport and FaultyRoundTripper.
 	backendTransport    http.RoundTripper
+	// authCredentials holds credentials configured via WithAuth.
+	authCredentials []config.GatewayCredential
+
 	// adminEnabled, when true, starts an admin listener alongside the gateway.
 	// The bearer token is adminToken (plain inline — test-only). The admin
 	// listener binds to a random loopback port; its address is accessible via
@@ -157,6 +160,16 @@ func WithPBKDF2Iterations(n int) Option {
 // gateway's encryption engine.
 func WithChunking(enabled bool) Option {
 	return func(o *options) { o.chunkedMode = enabled }
+}
+
+// WithAuth enables gateway authentication with the given credentials.
+// When at least one credential is provided, AuthMiddleware is wired into
+// the gateway and every inbound S3 request must present a valid AWS
+// Signature (V4 or V2) using one of the configured access keys.
+func WithAuth(creds ...config.GatewayCredential) Option {
+	return func(o *options) {
+		o.authCredentials = append(o.authCredentials, creds...)
+	}
 }
 
 // WithAdminServer starts an admin listener alongside the gateway. The listener

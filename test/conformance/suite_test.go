@@ -185,6 +185,15 @@ func TestConformance(t *testing.T) {
 			{"KDF_Chunked_600k_RoundTrip", 0, testKDF_Chunked_600k_RoundTrip},
 			{"KDF_Chunked_LegacyRead", 0, testKDF_Chunked_LegacyRead},
 
+			// V1.0-AUTH-1 — Gateway-managed authentication. Runs on every provider.
+			{"Auth_V4_PutGetDelete", 0, testAuth_V4_PutGetDelete},
+			{"Auth_Unauthenticated_Rejected", 0, testAuth_Unauthenticated_Rejected},
+			{"Auth_WrongSecret_Rejected", 0, testAuth_WrongSecret_Rejected},
+			{"Auth_PresignedURL_Valid", 0, testAuth_PresignedURL_Valid},
+			{"Auth_PresignedURL_Expired", 0, testAuth_PresignedURL_Expired},
+			{"Auth_MultiCredential", 0, testAuth_MultiCredential},
+			{"Auth_ProxiedBucketFilter", 0, testAuth_ProxiedBucketFilter},
+
 			// V1.0-MGMT-2 KDF iteration migration.
 			{"MGMT2_KDF_DryRun_DetectsClassD", 0, testMGMT2_KDF_DryRun_DetectsClassD},
 			{"MGMT2_KDF_Migrate_100k_to_600k", 0, testMGMT2_KDF_Migrate_100k_to_600k},

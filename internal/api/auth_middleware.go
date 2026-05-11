@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/sirupsen/logrus"
@@ -45,6 +46,15 @@ func writeS3ClientError(w http.ResponseWriter, r *http.Request, err error, metho
 func AuthMiddleware(store CredentialStore, clockSkew time.Duration, logger *logrus.Logger) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			// Allow health check, readiness, liveness, and metrics endpoints
+			// without authentication so Kubernetes probes and Prometheus
+			// scraping work without credentials.
+			path := r.URL.Path
+			if path == "/health" || path == "/ready" || path == "/live" || path == "/metrics" || strings.HasPrefix(path, "/metrics") {
+				next.ServeHTTP(w, r)
+				return
+			}
+
 			// 1. Extract credentials
 			creds, err := ExtractCredentials(r)
 			if err != nil {
