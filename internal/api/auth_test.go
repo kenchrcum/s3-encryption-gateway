@@ -3,9 +3,11 @@ package api
 import (
 	"crypto/hmac"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"strings"
@@ -698,5 +700,172 @@ func TestValidateSignatureV4_PresignedURL_ExceedsMaxDuration(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "exceeds maximum allowed duration") {
 		t.Errorf("ValidateSignatureV4() error = %v, want 'exceeds maximum allowed duration'", err)
+	}
+}
+
+
+// TestValidateSignatureV2_HeaderAuth verifies that a valid V2 Authorization
+// header is accepted.
+func TestValidateSignatureV2_HeaderAuth(t *testing.T) {
+	secretKey := "test-secret-key"
+	accessKey := "AKIATEST"
+	req := httptest.NewRequest("GET", "/bucket/key", nil)
+	req.Header.Set("Date", "Mon, 11 May 2026 12:00:00 GMT")
+
+	stringToSign := buildV2StringToSign(req)
+	sig := base64.StdEncoding.EncodeToString(hmacSHA1([]byte(secretKey), []byte(stringToSign)))
+	req.Header.Set("Authorization", "AWS "+accessKey+":"+sig)
+
+	err := ValidateSignatureV2(req, secretKey)
+	if err != nil {
+		t.Fatalf("ValidateSignatureV2() expected nil for valid header auth, got: %v", err)
+	}
+}
+
+// TestValidateSignatureV2_QueryParam verifies that a valid V2 query-parameter
+// request is accepted.
+func TestValidateSignatureV2_QueryParam(t *testing.T) {
+	secretKey := "test-secret-key"
+	accessKey := "AKIATEST"
+	expires := "Mon, 11 May 2026 12:00:00 GMT"
+	q := url.Values{}
+	q.Set("AWSAccessKeyId", accessKey)
+	q.Set("Expires", expires)
+
+	req := httptest.NewRequest("GET", "/bucket/key?"+q.Encode(), nil)
+	// No Date header; date comes from Expires query param.
+	stringToSign := buildV2StringToSign(req)
+	sig := base64.StdEncoding.EncodeToString(hmacSHA1([]byte(secretKey), []byte(stringToSign)))
+	q.Set("Signature", sig)
+
+	req = httptest.NewRequest("GET", "/bucket/key?"+q.Encode(), nil)
+	err := ValidateSignatureV2(req, secretKey)
+	if err != nil {
+		t.Fatalf("ValidateSignatureV2() expected nil for valid query-param auth, got: %v", err)
+	}
+}
+
+// TestValidateSignatureV2_BadSignature verifies that a wrong signature returns
+// ErrSignatureMismatch.
+func TestValidateSignatureV2_BadSignature(t *testing.T) {
+	secretKey := "correct-secret"
+	req := httptest.NewRequest("GET", "/bucket/key", nil)
+	req.Header.Set("Date", "Mon, 11 May 2026 12:00:00 GMT")
+	req.Header.Set("Authorization", "AWS AKIATEST:badsignature")
+
+	err := ValidateSignatureV2(req, secretKey)
+	if err == nil {
+		t.Fatal("ValidateSignatureV2() expected error for bad signature, got nil")
+	}
+	if !errors.Is(err, ErrSignatureMismatch) {
+		t.Errorf("ValidateSignatureV2() error = %v, want errors.Is(err, ErrSignatureMismatch)", err)
+	}
+}
+
+// TestIsSignatureV4Request verifies that IsSignatureV4Request only matches
+// AWS4-HMAC-SHA256 and not the legacy "AWS " prefix.
+func TestIsSignatureV4Request(t *testing.T) {
+	tests := []struct {
+		name   string
+		setup  func(*http.Request)
+		want   bool
+	}{
+		{
+			name: "SigV4 header",
+			setup: func(r *http.Request) {
+				r.Header.Set("Authorization", "AWS4-HMAC-SHA256 Credential=AKIA/.../..., SignedHeaders=host, Signature=abc")
+			},
+			want: true,
+		},
+		{
+			name: "SigV4 presigned query",
+			setup: func(r *http.Request) {
+				r.URL.RawQuery = "X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Signature=abc"
+			},
+			want: true,
+		},
+		{
+			name: "legacy AWS header",
+			setup: func(r *http.Request) {
+				r.Header.Set("Authorization", "AWS AKIA:signature")
+			},
+			want: false,
+		},
+		{
+			name: "Bearer token",
+			setup: func(r *http.Request) {
+				r.Header.Set("Authorization", "Bearer sometoken")
+			},
+			want: false,
+		},
+		{
+			name: "no auth",
+			setup: func(r *http.Request) {},
+			want: false,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			req := httptest.NewRequest("GET", "/", nil)
+			tc.setup(req)
+			if got := IsSignatureV4Request(req); got != tc.want {
+				t.Errorf("IsSignatureV4Request() = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestIsSignatureV2Request verifies that IsSignatureV2Request matches the
+// "AWS " Authorization header and AWSAccessKeyId+Signature query params.
+func TestIsSignatureV2Request(t *testing.T) {
+	tests := []struct {
+		name   string
+		setup  func(*http.Request)
+		want   bool
+	}{
+		{
+			name: "V2 header",
+			setup: func(r *http.Request) {
+				r.Header.Set("Authorization", "AWS AKIA:signature")
+			},
+			want: true,
+		},
+		{
+			name: "V2 query params",
+			setup: func(r *http.Request) {
+				r.URL.RawQuery = "AWSAccessKeyId=AKIA&Signature=abc"
+			},
+			want: true,
+		},
+		{
+			name: "SigV4 header",
+			setup: func(r *http.Request) {
+				r.Header.Set("Authorization", "AWS4-HMAC-SHA256 Credential=AKIA/.../..., SignedHeaders=host, Signature=abc")
+			},
+			want: false,
+		},
+		{
+			name: "SigV4 query params",
+			setup: func(r *http.Request) {
+				r.URL.RawQuery = "X-Amz-Algorithm=AWS4-HMAC-SHA256"
+			},
+			want: false,
+		},
+		{
+			name: "no auth",
+			setup: func(r *http.Request) {},
+			want: false,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			req := httptest.NewRequest("GET", "/", nil)
+			tc.setup(req)
+			if got := IsSignatureV2Request(req); got != tc.want {
+				t.Errorf("IsSignatureV2Request() = %v, want %v", got, tc.want)
+			}
+		})
 	}
 }

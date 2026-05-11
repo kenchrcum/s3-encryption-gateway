@@ -2,7 +2,9 @@ package api
 
 import (
 	"crypto/hmac"
+	"crypto/sha1"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -44,10 +46,6 @@ var (
 	// were incomplete (missing access key or secret key).
 	ErrMissingCredentials = errors.New("missing or incomplete credentials")
 
-	// ErrSigV4NotSupportedWithPassthrough indicates a SigV4 request was
-	// received while use_client_credentials is enabled, which cannot be
-	// forwarded because the Host header is part of the signature.
-	ErrSigV4NotSupportedWithPassthrough = errors.New("signature v4 not supported with credential passthrough")
 )
 
 const defaultClockSkew = 5 * time.Minute
@@ -188,6 +186,111 @@ func ValidateSignatureV4(r *http.Request, secretKey string, clockSkew time.Durat
 	}
 
 	return nil
+}
+
+// ValidateSignatureV2 validates an AWS Signature Version 2 request.
+// It supports both the Authorization header and query-parameter styles.
+// secretKey is the stored secret for the access key identified in the request.
+func ValidateSignatureV2(r *http.Request, secretKey string) error {
+	// Query-parameter style
+	q := r.URL.Query()
+	if q.Get("AWSAccessKeyId") != "" && q.Get("Signature") != "" {
+		signature := q.Get("Signature")
+		date := q.Get("Expires")
+		if date == "" {
+			date = q.Get("Date")
+		}
+		if date == "" {
+			return fmt.Errorf("missing Date/Expires parameter")
+		}
+		// Build string-to-sign
+		stringToSign := buildV2StringToSign(r)
+		expectedSig := base64.StdEncoding.EncodeToString(hmacSHA1([]byte(secretKey), []byte(stringToSign)))
+		if !hmac.Equal([]byte(signature), []byte(expectedSig)) {
+			return ErrSignatureMismatch
+		}
+		return nil
+	}
+
+	// Authorization header style: "AWS ACCESS_KEY:SIGNATURE"
+	authHeader := r.Header.Get("Authorization")
+	if strings.HasPrefix(authHeader, "AWS ") {
+		parts := strings.SplitN(authHeader[4:], ":", 2)
+		if len(parts) != 2 {
+			return fmt.Errorf("invalid V2 authorization header format")
+		}
+		signature := parts[1]
+		date := r.Header.Get("Date")
+		if date == "" {
+			date = r.Header.Get("X-Amz-Date")
+		}
+		if date == "" {
+			return fmt.Errorf("missing Date header")
+		}
+		stringToSign := buildV2StringToSign(r)
+		expectedSig := base64.StdEncoding.EncodeToString(hmacSHA1([]byte(secretKey), []byte(stringToSign)))
+		if !hmac.Equal([]byte(signature), []byte(expectedSig)) {
+			return ErrSignatureMismatch
+		}
+		return nil
+	}
+
+	return fmt.Errorf("no V2 signature found")
+}
+
+// buildV2StringToSign builds the AWS SigV2 string-to-sign.
+func buildV2StringToSign(r *http.Request) string {
+	var buf strings.Builder
+	buf.WriteString(r.Method)
+	buf.WriteByte('\n')
+	// Content-MD5 (empty if not present)
+	if md5 := r.Header.Get("Content-MD5"); md5 != "" {
+		buf.WriteString(md5)
+	}
+	buf.WriteByte('\n')
+	// Content-Type (empty if not present)
+	if ct := r.Header.Get("Content-Type"); ct != "" {
+		buf.WriteString(ct)
+	}
+	buf.WriteByte('\n')
+	// Date
+	date := r.Header.Get("Date")
+	if date == "" {
+		date = r.Header.Get("X-Amz-Date")
+	}
+	if date == "" {
+		date = r.URL.Query().Get("Expires")
+	}
+	buf.WriteString(date)
+	buf.WriteByte('\n')
+	// CanonicalizedAmzHeaders (V2 only includes x-amz-* headers)
+	amzHeaders := make([]string, 0)
+	for k, v := range r.Header {
+		lk := strings.ToLower(k)
+		if strings.HasPrefix(lk, "x-amz-") {
+			val := strings.Join(v, ",")
+			amzHeaders = append(amzHeaders, lk+":"+strings.TrimSpace(val))
+		}
+	}
+	sort.Strings(amzHeaders)
+	for _, h := range amzHeaders {
+		buf.WriteString(h)
+		buf.WriteByte('\n')
+	}
+	// CanonicalizedResource
+	resource := r.URL.Path
+	if resource == "" {
+		resource = "/"
+	}
+	buf.WriteString(resource)
+	return buf.String()
+}
+
+// hmacSHA1 computes HMAC-SHA1.
+func hmacSHA1(key, data []byte) []byte {
+	h := hmac.New(sha1.New, key)
+	h.Write(data)
+	return h.Sum(nil)
 }
 
 func createCanonicalRequest(r *http.Request, isPresigned bool, signedHeaders []string) (string, error) {

@@ -116,26 +116,28 @@ func HasCredentials(r *http.Request) bool {
 	return false
 }
 
-// IsSignatureV4Request checks if the request uses AWS Signature V4 authentication.
-// Signature V4 requests include an Authorization header but the secret key is not
-// transmitted (it's used to sign the request).
+// IsSignatureV4Request reports whether the request carries a SigV4
+// Authorization header ("AWS4-HMAC-SHA256 ...") or SigV4 query parameters
+// (X-Amz-Algorithm=AWS4-HMAC-SHA256).
 func IsSignatureV4Request(r *http.Request) bool {
-	// Check Presigned URL V4
 	if r.URL.Query().Get("X-Amz-Algorithm") == "AWS4-HMAC-SHA256" {
 		return true
 	}
-
 	authHeader := r.Header.Get("Authorization")
 	if authHeader == "" {
 		return false
 	}
-	// Check if it's Signature V4 format
-	if strings.HasPrefix(authHeader, "AWS4-HMAC-SHA256") {
-		return true
-	}
-	// Check for legacy AWS signature
+	return strings.HasPrefix(authHeader, "AWS4-HMAC-SHA256")
+}
+
+// IsSignatureV2Request reports whether the request carries a SigV2
+// Authorization header ("AWS ACCESS_KEY:SIG") or V2 query parameters
+// (AWSAccessKeyId + Signature).
+func IsSignatureV2Request(r *http.Request) bool {
+	authHeader := r.Header.Get("Authorization")
 	if strings.HasPrefix(authHeader, "AWS ") {
 		return true
 	}
-	return false
+	q := r.URL.Query()
+	return q.Get("AWSAccessKeyId") != "" && q.Get("Signature") != ""
 }

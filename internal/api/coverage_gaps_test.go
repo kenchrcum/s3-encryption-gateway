@@ -932,11 +932,11 @@ func TestHasCredentials_PresignedV4Credential(t *testing.T) {
 }
 
 func TestIsSignatureV4Request_LegacyAWS(t *testing.T) {
-	// Exercise the "AWS " legacy prefix branch.
+	// After the fix, "AWS " prefix is SigV2, not SigV4.
 	req := httptest.NewRequest("GET", "/", nil)
 	req.Header.Set("Authorization", "AWS AKID:signature")
-	if !IsSignatureV4Request(req) {
-		t.Error("IsSignatureV4Request should be true for legacy AWS auth header")
+	if IsSignatureV4Request(req) {
+		t.Error("IsSignatureV4Request should be false for legacy AWS auth header")
 	}
 }
 
