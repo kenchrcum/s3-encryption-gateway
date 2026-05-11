@@ -2209,44 +2209,60 @@ func applyRangeRequest(data []byte, rangeHeader string) ([]byte, error) {
 
 // generateListObjectsXML generates S3-compatible ListBucketResult XML.
 func generateListObjectsXML(bucket, prefix, delimiter string, objects []s3.ObjectInfo, commonPrefixes []string, nextContinuationToken string, isTruncated bool) string {
-	var xml strings.Builder
-	xml.WriteString(`<?xml version="1.0" encoding="UTF-8"?>` + "\n")
-	xml.WriteString("<ListBucketResult xmlns=\"http://s3.amazonaws.com/doc/2006-03-01/\">" + "\n")
-	xml.WriteString(fmt.Sprintf("  <Name>%s</Name>\n", bucket))
-	if prefix != "" {
-		xml.WriteString(fmt.Sprintf("  <Prefix>%s</Prefix>\n", prefix))
+	type xmlContents struct {
+		Key          string `xml:"Key"`
+		LastModified string `xml:"LastModified"`
+		ETag         string `xml:"ETag"`
+		Size         int64  `xml:"Size"`
+		StorageClass string `xml:"StorageClass"`
 	}
-	if delimiter != "" {
-		xml.WriteString(fmt.Sprintf("  <Delimiter>%s</Delimiter>\n", delimiter))
+	type xmlCommonPrefix struct {
+		Prefix string `xml:"Prefix"`
 	}
-	xml.WriteString(fmt.Sprintf("  <MaxKeys>%d</MaxKeys>\n", len(objects)))
-	xml.WriteString(fmt.Sprintf("  <IsTruncated>%t</IsTruncated>\n", isTruncated))
+	type listBucketResult struct {
+		XMLName               xml.Name          `xml:"ListBucketResult"`
+		Xmlns                 string            `xml:"xmlns,attr"`
+		Name                  string            `xml:"Name"`
+		Prefix                string            `xml:"Prefix,omitempty"`
+		Delimiter             string            `xml:"Delimiter,omitempty"`
+		MaxKeys               int               `xml:"MaxKeys"`
+		IsTruncated           bool              `xml:"IsTruncated"`
+		NextContinuationToken string            `xml:"NextContinuationToken,omitempty"`
+		Contents              []xmlContents     `xml:"Contents"`
+		CommonPrefixes        []xmlCommonPrefix `xml:"CommonPrefixes"`
+	}
 
-	// Add continuation token if present
-	if nextContinuationToken != "" {
-		xml.WriteString(fmt.Sprintf("  <NextContinuationToken>%s</NextContinuationToken>\n", nextContinuationToken))
+	result := listBucketResult{
+		Xmlns:                 "http://s3.amazonaws.com/doc/2006-03-01/",
+		Name:                  bucket,
+		Prefix:                prefix,
+		Delimiter:             delimiter,
+		MaxKeys:               len(objects),
+		IsTruncated:           isTruncated,
+		NextContinuationToken: nextContinuationToken,
 	}
 
-	// Add objects
 	for _, obj := range objects {
-		xml.WriteString("  <Contents>\n")
-		xml.WriteString(fmt.Sprintf("    <Key>%s</Key>\n", obj.Key))
-		xml.WriteString(fmt.Sprintf("    <LastModified>%s</LastModified>\n", obj.LastModified))
-		xml.WriteString(fmt.Sprintf("    <ETag>%s</ETag>\n", obj.ETag))
-		xml.WriteString(fmt.Sprintf("    <Size>%d</Size>\n", obj.Size))
-		xml.WriteString("    <StorageClass>STANDARD</StorageClass>\n")
-		xml.WriteString("  </Contents>\n")
+		result.Contents = append(result.Contents, xmlContents{
+			Key:          obj.Key,
+			LastModified: obj.LastModified,
+			ETag:         obj.ETag,
+			Size:         obj.Size,
+			StorageClass: "STANDARD",
+		})
 	}
 
-	// Add common prefixes
 	for _, cp := range commonPrefixes {
-		xml.WriteString("  <CommonPrefixes>\n")
-		xml.WriteString(fmt.Sprintf("    <Prefix>%s</Prefix>\n", cp))
-		xml.WriteString("  </CommonPrefixes>\n")
+		result.CommonPrefixes = append(result.CommonPrefixes, xmlCommonPrefix{Prefix: cp})
 	}
 
-	xml.WriteString("</ListBucketResult>")
-	return xml.String()
+	out, err := xml.Marshal(result)
+	if err != nil {
+		// Fallback: return a minimal valid error response; this should never happen
+		// since all fields are basic strings/numbers with no unrepresentable types.
+		return `<?xml version="1.0" encoding="UTF-8"?><ListBucketResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/"></ListBucketResult>`
+	}
+	return xml.Header + string(out)
 }
 
 // handleCreateMultipartUpload handles multipart upload initiation.
