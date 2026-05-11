@@ -102,19 +102,22 @@ func (p *seaweedfsProvider) Start(ctx context.Context, t *testing.T) Instance {
 	// The shell entrypoint writes the S3 identity config file then launches
 	// weed server with the S3 gateway enabled.
 	//
-	//   -master.volumeSizeLimitMB=64   caps volume pre-allocation to 64 MiB
-	//                                  (default is 30 GiB — CI-hostile)
-	//   -volume.max=5                  limits the number of pre-allocated
-	//                                  volumes; prevents "no free volumes"
-	//                                  errors when many buckets are created
-	//                                  in parallel
+	//   -master.volumeSizeLimitMB=128  caps volume pre-allocation to 128 MiB
+	//                                  (default is 30 GiB — CI-hostile; 128 MiB
+	//                                   provides enough headroom for the
+	//                                   400 MiB EncryptedMPU_LargeObject test)
+	//   -volume.max=8                  limits the number of pre-allocated
+	//                                  volumes; 8×128 MiB = 1024 MiB total
+	//                                  capacity, preventing "no free volumes"
+	//                                  errors and volume-full 500 responses
+	//                                  during large-object tests
 	shellCmd := fmt.Sprintf(
 		`mkdir -p /etc/seaweedfs && `+
 			`printf '%%s' %q > /etc/seaweedfs/s3.json && `+
 			`weed server -s3 `+
 			`-s3.config=/etc/seaweedfs/s3.json `+
-			`-master.volumeSizeLimitMB=64 `+
-			`-volume.max=5`,
+			`-master.volumeSizeLimitMB=128 `+
+			`-volume.max=8`,
 		seaweedS3Config,
 	)
 
