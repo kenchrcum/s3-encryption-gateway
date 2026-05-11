@@ -404,23 +404,18 @@ func main() {
 		logger.Warn("backend retry config: " + w)
 	}
 
-	// Initialize S3 client (only if useClientCredentials is not enabled).
+	// Initialize S3 client.
 	// V0.6-PERF-2: always use ClientFactory so the retry policy is applied.
-	var s3Client s3.Client
-	if !cfg.Backend.UseClientCredentials {
-		factory := s3.NewClientFactory(&cfg.Backend, s3.WithMetrics(m))
-		s3Client, err = factory.GetClient()
-		if err != nil {
-			logger.WithError(err).Fatal("Failed to create S3 client")
-		}
-		logger.WithFields(logrus.Fields{
-			"retry_mode":     cfg.Backend.Retry.Mode,
-			"max_attempts":   cfg.Backend.Retry.MaxAttempts,
-			"initial_backoff": cfg.Backend.Retry.InitialBackoff,
-		}).Info("S3 backend client initialized with configured credentials and retry policy")
-	} else {
-		logger.Info("Client credential passthrough enabled - S3 clients will be created per-request from client credentials")
+	factory := s3.NewClientFactory(&cfg.Backend, s3.WithMetrics(m))
+	s3Client, err := factory.GetClient()
+	if err != nil {
+		logger.WithError(err).Fatal("Failed to create S3 client")
 	}
+	logger.WithFields(logrus.Fields{
+		"retry_mode":      cfg.Backend.Retry.Mode,
+		"max_attempts":    cfg.Backend.Retry.MaxAttempts,
+		"initial_backoff": cfg.Backend.Retry.InitialBackoff,
+	}).Info("S3 backend client initialized with configured credentials and retry policy")
 
 	// Load encryption password (required for both single password and KMS modes)
 	var encryptionPassword []byte
@@ -611,6 +606,20 @@ func main() {
 			"Configure Valkey or remove EncryptMultipartUploads from all policies.")
 	}
 
+	// Create gateway credential store from resolved credentials.
+	// V1.0-AUTH-1: every request must present valid gateway-managed credentials.
+	resolvedCreds := cfg.ResolvedCredentials()
+	credStore, err := api.NewStaticCredentialStore(resolvedCreds)
+	if err != nil {
+		logger.WithError(err).Fatal("Failed to create credential store")
+	}
+	// Zero plaintext secrets from the transient slice; the store holds its own copy.
+	for i := range resolvedCreds {
+		resolvedCreds[i].SecretKey = strings.Repeat("\x00", len(resolvedCreds[i].SecretKey))
+	}
+	resolvedCreds = nil
+	logger.WithField("count", len(cfg.Auth.Credentials)).Info("Gateway credential store initialized")
+
 	// Initialize API handler with Phase 5 features
 	handler := api.NewHandlerWithFeatures(s3Client, encryptionEngine, logger, m, keyManager, objectCache, auditLogger, cfg, policyManager)
 
@@ -724,6 +733,12 @@ func main() {
 			"window": cfg.RateLimit.Window,
 		}).Info("Rate limiting enabled")
 	}
+
+	// V1.0-AUTH-1: AuthMiddleware gatekeeps every request before it reaches
+	// business logic. It runs inside RecoveryMiddleware so panics during auth
+	// validation are caught, but it must be outermost among functional
+	// middleware so unauthenticated requests are rejected early.
+	httpHandler = api.AuthMiddleware(credStore, cfg.Auth.ClockSkewTolerance, logger)(httpHandler)
 
 	// RecoveryMiddleware wraps the ENTIRE chain so panics in any layer are caught.
 	httpHandler = middleware.RecoveryMiddleware(logger)(httpHandler)
