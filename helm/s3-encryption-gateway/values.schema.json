@@ -751,6 +751,32 @@
           "description": "Restrict the gateway to a single proxied bucket name."
         },
 
+        "auth": {
+          "type": "object",
+          "description": "Gateway authentication and credential store configuration.",
+          "additionalProperties": false,
+          "properties": {
+            "clockSkewTolerance": {
+              "allOf": [{ "$ref": "#/$defs/configValue" }],
+              "description": "Maximum acceptable clock skew for signature validation (e.g. 5m)."
+            },
+            "credentials": {
+              "type": "array",
+              "description": "Gateway-managed credential store. At least one entry is required.",
+              "minItems": 1,
+              "items": {
+                "type": "object",
+                "required": ["accessKey"],
+                "additionalProperties": false,
+                "properties": {
+                  "accessKey": { "allOf": [{ "$ref": "#/$defs/configValue" }], "description": "S3 access key ID for a gateway credential." },
+                  "secretKey": { "allOf": [{ "$ref": "#/$defs/configValue" }], "description": "S3 secret access key for a gateway credential." },
+                  "label": { "type": "string", "description": "Optional human-readable label for audit logs." }
+                }
+              }
+            }
+          }
+        },
         "backend": {
           "type": "object",
           "description": "Backend S3-compatible storage configuration.",
@@ -762,8 +788,7 @@
             "secretKey":            { "allOf": [{ "$ref": "#/$defs/configValue" }], "description": "Backend secret access key. Optional when useClientCredentials is true." },
             "provider":             { "allOf": [{ "$ref": "#/$defs/configValue" }], "description": "Backend provider identifier (e.g. aws, minio)." },
             "useSSL":               { "allOf": [{ "$ref": "#/$defs/configValue" }], "description": "Use TLS for backend connections (\\\"true\\\"/\\\"false\\\")." },
-            "usePathStyle":         { "allOf": [{ "$ref": "#/$defs/configValue" }], "description": "Force path-style S3 URLs (required for MinIO, Ceph, etc.)." },
-            "useClientCredentials": { "allOf": [{ "$ref": "#/$defs/configValue" }], "description": "Extract credentials from client requests instead of static backend creds." }
+            "usePathStyle":         { "allOf": [{ "$ref": "#/$defs/configValue" }], "description": "Force path-style S3 URLs (required for MinIO, Ceph, etc.)." }
           }
         },
 

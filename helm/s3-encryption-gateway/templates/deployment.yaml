@@ -54,26 +54,14 @@ spec:
         {{- end }}
         {{- include "s3-encryption-gateway.envVar" (dict "name" "BACKEND_ENDPOINT" "value" .Values.config.backend.endpoint.value "valueFrom" .Values.config.backend.endpoint.valueFrom) | nindent 8 }}
         {{- include "s3-encryption-gateway.envVar" (dict "name" "BACKEND_REGION" "value" .Values.config.backend.region.value "valueFrom" .Values.config.backend.region.valueFrom) | nindent 8 }}
-        {{- $useClientCreds := false }}
-        {{- $useClientCredsValue := .Values.config.backend.useClientCredentials.value }}
-        {{- if kindIs "bool" $useClientCredsValue }}
-          {{- if $useClientCredsValue }}
-            {{- $useClientCreds = true }}
-          {{- end }}
-        {{- else if kindIs "string" $useClientCredsValue }}
-          {{- if or (eq $useClientCredsValue "true") (eq $useClientCredsValue "1") }}
-            {{- $useClientCreds = true }}
-          {{- end }}
-        {{- end }}
-        {{- if not $useClientCreds }}
-          {{- if .Values.config.backend.useClientCredentials.valueFrom }}
-            {{- $useClientCreds = true }}
-          {{- end }}
-        {{- end }}
-        {{- include "s3-encryption-gateway.envVar" (dict "name" "BACKEND_USE_CLIENT_CREDENTIALS" "value" .Values.config.backend.useClientCredentials.value "valueFrom" .Values.config.backend.useClientCredentials.valueFrom) | nindent 8 }}
-        {{- if not $useClientCreds }}
         {{- include "s3-encryption-gateway.envVar" (dict "name" "BACKEND_ACCESS_KEY" "value" .Values.config.backend.accessKey.value "valueFrom" .Values.config.backend.accessKey.valueFrom) | nindent 8 }}
         {{- include "s3-encryption-gateway.envVar" (dict "name" "BACKEND_SECRET_KEY" "value" .Values.config.backend.secretKey.value "valueFrom" .Values.config.backend.secretKey.valueFrom) | nindent 8 }}
+        {{- if or .Values.config.auth.clockSkewTolerance.value .Values.config.auth.clockSkewTolerance.valueFrom }}
+        {{- include "s3-encryption-gateway.envVar" (dict "name" "AUTH_CLOCK_SKEW_TOLERANCE" "value" .Values.config.auth.clockSkewTolerance.value "valueFrom" .Values.config.auth.clockSkewTolerance.valueFrom) | nindent 8 }}
+        {{- end }}
+        {{- range $i, $cred := .Values.config.auth.credentials }}
+        {{- include "s3-encryption-gateway.envVar" (dict "name" (printf "GW_CRED_%d_ACCESS_KEY" $i) "value" $cred.accessKey.value "valueFrom" $cred.accessKey.valueFrom) | nindent 8 }}
+        {{- include "s3-encryption-gateway.envVar" (dict "name" (printf "GW_CRED_%d_SECRET_KEY" $i) "value" $cred.secretKey.value "valueFrom" $cred.secretKey.valueFrom) | nindent 8 }}
         {{- end }}
         {{- if or .Values.config.backend.provider.value .Values.config.backend.provider.valueFrom }}
         {{- include "s3-encryption-gateway.envVar" (dict "name" "BACKEND_PROVIDER" "value" .Values.config.backend.provider.value "valueFrom" .Values.config.backend.provider.valueFrom) | nindent 8 }}

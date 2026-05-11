@@ -165,6 +165,27 @@ config:
     #     name: s3-encryption-gateway-secrets
     #     key: proxied-bucket
 
+  auth:
+    clockSkewTolerance:
+      value: "5m"
+    # Gateway credential store — at least one entry required.
+    # Every inbound S3 request must present one of these access keys
+    # with a valid AWS Signature (V2 or V4).
+    credentials:
+      - accessKey:
+          value: ""
+          valueFrom:
+            secretKeyRef:
+              name: s3-encryption-gateway-secrets
+              key: gateway-access-key
+        secretKey:
+          value: ""
+          valueFrom:
+            secretKeyRef:
+              name: s3-encryption-gateway-secrets
+              key: gateway-secret-key
+        label: "default"
+
   # Backend S3 configuration
   backend:
     endpoint:
@@ -202,20 +223,7 @@ config:
       value: "true"
     usePathStyle:
       value: "false"
-    useClientCredentials:
-      value: "false"
-      valueFrom: {}
-      # If set to "true", the gateway will extract and use credentials from client requests.
-      # When enabled, backend.accessKey and backend.secretKey are NOT required.
-      # Requests must include credentials via query parameters (AWSAccessKeyId, AWSSecretAccessKey)
-      # or Authorization header. If credentials cannot be extracted, requests will fail.
-      # Example:
-      # value: "true"
-      # Or use valueFrom:
-      # valueFrom:
-      #   configMapKeyRef:
-      #     name: s3-encryption-gateway-config
-      #     key: backend-use-client-credentials
+
 
   # Encryption configuration
   encryption:
