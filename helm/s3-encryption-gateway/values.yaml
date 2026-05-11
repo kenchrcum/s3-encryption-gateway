@@ -186,6 +186,14 @@ config:
               key: gateway-secret-key
         label: "default"
 
+    # Alternatively, reference an existing Kubernetes Secret containing the
+    # full credentials list as a single file (YAML or JSON). Useful when
+    # credentials are synced from an external system (e.g. HashiCorp Vault).
+    # When set, this takes precedence over individual credential entries above.
+    # existingCredentialsSecret:
+    #   name: gateway-credentials
+    #   key: credentials.yaml
+
   # Backend S3 configuration
   backend:
     endpoint:

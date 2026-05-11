@@ -188,45 +188,117 @@ data:
 
 The gateway requires every incoming request to present valid AWS Signature V4 or V2 credentials. These are configured in the `auth.credentials` list and are **separate** from the backend S3 credentials.
 
-### `auth.credentials` Config Block
+### `auth.credentials` Config Block (Helm Chart)
+
+In the Helm chart, each credential entry supports both inline `value` and `valueFrom` (`secretKeyRef`). This is the recommended approach for production:
+
+```yaml
+config:
+  auth:
+    credentials:
+      - accessKey:
+          value: ""               # fallback only when valueFrom is absent
+          valueFrom:
+            secretKeyRef:
+              name: s3-encryption-gateway-secrets
+              key: gateway-access-key
+        secretKey:
+          value: ""
+          valueFrom:
+            secretKeyRef:
+              name: s3-encryption-gateway-secrets
+              key: gateway-secret-key
+        label: "default"          # optional — appears in audit logs
+```
+
+Each entry generates `GW_CRED_N_ACCESS_KEY` / `GW_CRED_N_SECRET_KEY` environment variables, which the gateway resolves at startup. You can add multiple credential entries:
+
+```yaml
+config:
+  auth:
+    credentials:
+      - accessKey:
+          valueFrom:
+            secretKeyRef:
+              name: gateway-auth-secrets
+              key: access-key-1
+        secretKey:
+          valueFrom:
+            secretKeyRef:
+              name: gateway-auth-secrets
+              key: secret-key-1
+        label: "team-a"
+      - accessKey:
+          valueFrom:
+            secretKeyRef:
+              name: gateway-auth-secrets
+              key: access-key-2
+        secretKey:
+          valueFrom:
+            secretKeyRef:
+              name: gateway-auth-secrets
+              key: secret-key-2
+        label: "team-b"
+```
+
+### Full Credentials List From a Single Secret
+
+For operators who sync credentials from an external system (e.g. HashiCorp Vault, External Secrets Operator), you can reference a pre-created Kubernetes Secret containing the complete credentials list as a single file:
+
+```yaml
+# values.yaml
+config:
+  auth:
+    existingCredentialsSecret:
+      name: gateway-credentials   # the Kubernetes Secret name
+      key: credentials.yaml       # the key within that Secret
+```
+
+The referenced Secret must contain the credentials list as valid YAML or JSON:
+
+```yaml
+# The `gateway-credentials` Secret (created outside the chart):
+apiVersion: v1
+kind: Secret
+metadata:
+  name: gateway-credentials
+data:
+  credentials.yaml: |
+    - access_key: "AKIAIOSFODNN7EXAMPLE"
+      secret_key: "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
+      proxied_bucket: "my-bucket"
+      label: "sync-from-vault"
+    - access_key: "AKIAI44QH8DHBEXAMPLE"
+      secret_key: "abc123/7MDENG/bPxRfiCYEXAMPLEKEY"
+      label: "batch-pipeline"
+```
+
+When `existingCredentialsSecret` is set, the chart mounts it as a file at `/etc/s3-gateway/auth-credentials/` and sets `AUTH_CREDENTIALS_FILE` — no individual `valueFrom` entries are needed. The inline `credentials` list is ignored when this option is active.
+
+### Environment Variables for Non-Kubernetes Deployments
+
+For Docker or bare-metal deployments without Helm, use the `secret_key_env` field to reference environment variables:
 
 ```yaml
 auth:
   credentials:
-    - access_key: "gateway-access-key-1"
-      secret_key: "gateway-secret-key-1"
-      proxied_bucket: "my-bucket"  # optional: restrict this credential to a single bucket
-    - access_key: "gateway-access-key-2"
-      secret_key: "gateway-secret-key-2"
+    - access_key: "my-gateway-access-key"
+      secret_key_env: "GW_SECRET_KEY_1"  # read from environment
+      label: "primary-client"
+    - access_key: "my-service-key"
+      secret_key_env: "GW_SECRET_KEY_2"
+      label: "etl-pipeline"
 ```
-
-### Kubernetes Secret + `valueFrom` / `secretKeyRef`
-
-For Kubernetes deployments, store gateway credentials in a Secret and reference them via `valueFrom`:
-
-```yaml
-env:
-  - name: GW_ACCESS_KEY_1
-    valueFrom:
-      secretKeyRef:
-        name: gateway-auth-secrets
-        key: access-key-1
-  - name: GW_SECRET_KEY_1
-    valueFrom:
-      secretKeyRef:
-        name: gateway-auth-secrets
-        key: secret-key-1
-```
-
-The Helm chart can mount these automatically — see `helm/s3-encryption-gateway/README.md`.
-
-### Environment Variables for Non-Kubernetes Deployments
-
-For Docker or bare-metal deployments, use environment variables:
 
 ```bash
-export GW_ACCESS_KEY_1="gateway-access-key-1"
-export GW_SECRET_KEY_1="gateway-secret-key-1"
+export GW_SECRET_KEY_1="my-gateway-secret-key"
+export GW_SECRET_KEY_2="my-service-secret-key"
+```
+
+For a full credentials list from an external file, set the `AUTH_CREDENTIALS_FILE` environment variable:
+
+```bash
+export AUTH_CREDENTIALS_FILE="/etc/s3-gateway/credentials.yaml"
 ```
 
 ### Generating Credentials

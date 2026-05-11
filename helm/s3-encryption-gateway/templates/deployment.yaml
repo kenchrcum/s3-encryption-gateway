@@ -59,9 +59,14 @@ spec:
         {{- if or .Values.config.auth.clockSkewTolerance.value .Values.config.auth.clockSkewTolerance.valueFrom }}
         {{- include "s3-encryption-gateway.envVar" (dict "name" "AUTH_CLOCK_SKEW_TOLERANCE" "value" .Values.config.auth.clockSkewTolerance.value "valueFrom" .Values.config.auth.clockSkewTolerance.valueFrom) | nindent 8 }}
         {{- end }}
+        {{- if .Values.config.auth.existingCredentialsSecret }}
+        - name: AUTH_CREDENTIALS_FILE
+          value: "/etc/s3-gateway/auth-credentials/{{ .Values.config.auth.existingCredentialsSecret.key }}"
+        {{- else }}
         {{- range $i, $cred := .Values.config.auth.credentials }}
         {{- include "s3-encryption-gateway.envVar" (dict "name" (printf "GW_CRED_%d_ACCESS_KEY" $i) "value" $cred.accessKey.value "valueFrom" $cred.accessKey.valueFrom) | nindent 8 }}
         {{- include "s3-encryption-gateway.envVar" (dict "name" (printf "GW_CRED_%d_SECRET_KEY" $i) "value" $cred.secretKey.value "valueFrom" $cred.secretKey.valueFrom) | nindent 8 }}
+        {{- end }}
         {{- end }}
         {{- if or .Values.config.backend.provider.value .Values.config.backend.provider.valueFrom }}
         {{- include "s3-encryption-gateway.envVar" (dict "name" "BACKEND_PROVIDER" "value" .Values.config.backend.provider.value "valueFrom" .Values.config.backend.provider.valueFrom) | nindent 8 }}
@@ -283,7 +288,8 @@ spec:
           {{- toYaml . | nindent 10 }}
         {{- end }}
         {{- $tlsCertMount := and (or (eq .Values.config.tls.enabled.value "true") (eq .Values.config.tls.enabled.value "1")) (and .Values.config.tls.useCertManager.value (or (eq .Values.config.tls.useCertManager.value "true") (eq .Values.config.tls.useCertManager.value "1"))) }}
-        {{- if or $tlsCertMount .Values.policies .Values.extraVolumeMounts }}
+        {{- $credsSecret := .Values.config.auth.existingCredentialsSecret }}
+        {{- if or $tlsCertMount .Values.policies $credsSecret .Values.extraVolumeMounts }}
         volumeMounts:
           {{- if $tlsCertMount }}
           - name: tls-cert
@@ -295,6 +301,11 @@ spec:
             mountPath: /etc/s3-gateway/policies
             readOnly: true
           {{- end }}
+          {{- if $credsSecret }}
+          - name: gateway-auth-credentials
+            mountPath: /etc/s3-gateway/auth-credentials
+            readOnly: true
+          {{- end }}
           {{- with .Values.extraVolumeMounts }}
           {{- toYaml . | nindent 10 }}
           {{- end }}
@@ -303,7 +314,8 @@ spec:
       {{- toYaml . | nindent 6 }}
       {{- end }}
       {{- $tlsCertVol := and (or (eq .Values.config.tls.enabled.value "true") (eq .Values.config.tls.enabled.value "1")) (and .Values.config.tls.useCertManager.value (or (eq .Values.config.tls.useCertManager.value "true") (eq .Values.config.tls.useCertManager.value "1"))) }}
-      {{- if or $tlsCertVol .Values.policies .Values.extraVolumes }}
+      {{- $credsSecret := .Values.config.auth.existingCredentialsSecret }}
+      {{- if or $tlsCertVol .Values.policies $credsSecret .Values.extraVolumes }}
       volumes:
         {{- if $tlsCertVol }}
         - name: tls-cert
@@ -314,6 +326,14 @@ spec:
         - name: gateway-policies
           configMap:
             name: {{ include "s3-encryption-gateway.fullname" . }}-policies
+        {{- end }}
+        {{- if $credsSecret }}
+        - name: gateway-auth-credentials
+          secret:
+            secretName: {{ $credsSecret.name }}
+            items:
+              - key: {{ $credsSecret.key }}
+                path: {{ $credsSecret.key }}
         {{- end }}
         {{- with .Values.extraVolumes }}
         {{- toYaml . | nindent 8 }}

@@ -1145,6 +1145,46 @@ func loadFromEnv(config *Config) {
 			}
 		}
 	}
+	// Read indexed gateway credentials from Helm-injected env vars.
+	// Helm sets GW_CRED_0_ACCESS_KEY, GW_CRED_0_SECRET_KEY, etc.
+	for i := 0; ; i++ {
+		ak := os.Getenv(fmt.Sprintf("GW_CRED_%d_ACCESS_KEY", i))
+		sk := os.Getenv(fmt.Sprintf("GW_CRED_%d_SECRET_KEY", i))
+		if ak == "" && sk == "" {
+			break
+		}
+		found := false
+		for j := range config.Auth.Credentials {
+			if config.Auth.Credentials[j].AccessKey == ak {
+				if sk != "" {
+					config.Auth.Credentials[j].SecretKey = sk
+				}
+				found = true
+				break
+			}
+		}
+		if !found {
+			config.Auth.Credentials = append(config.Auth.Credentials, GatewayCredential{
+				AccessKey: ak,
+				SecretKey: sk,
+				Label:     fmt.Sprintf("helm-cred-%d", i),
+			})
+		}
+	}
+	// Load credentials from external file (AUTH_CREDENTIALS_FILE).
+	if path := os.Getenv("AUTH_CREDENTIALS_FILE"); path != "" {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			slog.Error("failed to read AUTH_CREDENTIALS_FILE", "path", path, "error", err)
+		} else {
+			var fileCreds []GatewayCredential
+			if err := yaml.Unmarshal(data, &fileCreds); err != nil {
+				slog.Error("failed to parse AUTH_CREDENTIALS_FILE", "path", path, "error", err)
+			} else {
+				config.Auth.Credentials = append(config.Auth.Credentials, fileCreds...)
+			}
+		}
+	}
 	// Admin configuration
 	if v := os.Getenv("ADMIN_ENABLED"); v != "" {
 		config.Admin.Enabled = v == "true" || v == "1"

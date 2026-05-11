@@ -760,10 +760,20 @@
               "allOf": [{ "$ref": "#/$defs/configValue" }],
               "description": "Maximum acceptable clock skew for signature validation (e.g. 5m)."
             },
+            "existingCredentialsSecret": {
+              "type": "object",
+              "description": "Reference an existing Kubernetes Secret containing the full credentials list (YAML/JSON). When set, the inline credentials list is ignored.",
+              "required": ["name", "key"],
+              "additionalProperties": false,
+              "properties": {
+                "name": { "type": "string", "minLength": 1, "description": "Name of the Secret." },
+                "key":  { "type": "string", "minLength": 1, "description": "Key within the Secret (e.g. credentials.yaml)." }
+              }
+            },
             "credentials": {
               "type": "array",
-              "description": "Gateway-managed credential store. At least one entry is required.",
-              "minItems": 1,
+              "description": "Gateway-managed credential store. Required unless existingCredentialsSecret is set.",
+              "minItems": 0,
               "items": {
                 "type": "object",
                 "required": ["accessKey"],
