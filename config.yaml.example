@@ -3,6 +3,36 @@ log_level: "info"
 # proxied_bucket: ""  # Optional: If set, the gateway will only proxy requests for this specific bucket
                       # Set via PROXIED_BUCKET env var
 
+auth:
+  # Maximum acceptable clock skew for SigV4 timestamp validation.
+  # Default: 5m (matching AWS SigV4 specification).
+  clock_skew_tolerance: "5m"
+
+  # Gateway credential store — REQUIRED.
+  # Every inbound S3 request must present one of these access keys with
+  # a valid AWS Signature (V2 or V4). Requests with no credentials or
+  # an unknown access key are rejected before any backend interaction.
+  #
+  # Production deployments MUST use secret_key_env. Inline secret_key
+  # is provided for local development only and will trigger a startup
+  # warning in future releases.
+  #
+  # The backend.access_key / backend.secret_key configure the gateway's
+  # own connection to the S3 backend and are independent of this list.
+  credentials:
+    - access_key: "my-gateway-access-key"
+      # secret_key: ""           # Dev only — avoid in production
+      secret_key_env: "GW_SECRET_KEY_1"  # Set via environment variable or Kubernetes secretKeyRef
+      label: "primary-client"   # Optional — appears in audit logs
+
+  # To add multiple clients with separate credentials:
+  #   - access_key: "service-account-key"
+  #     secret_key_env: "GW_SECRET_KEY_2"
+  #     label: "etl-pipeline"
+
+# NOTE: backend.use_client_credentials has been removed in V1.0.
+# NOTE: proxied_bucket remains supported as an optional bucket filter.
+
 # Policy Configuration
 # policies:
 #   - "/etc/s3-gateway/policies/*.yaml"
