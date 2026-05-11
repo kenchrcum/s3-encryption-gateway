@@ -344,6 +344,13 @@ func main() {
 		logger.WithError(err).Fatal("Failed to load configuration")
 	}
 
+	// If the config file doesn't exist on disk, disable hot-reload.
+	// This is normal when running with env-var-only configuration (e.g. Helm).
+	if _, statErr := os.Stat(configPath); os.IsNotExist(statErr) {
+		logger.WithField("config_file", configPath).Info("Config file not found — hot-reload disabled")
+		configPath = ""
+	}
+
 	// Set log level from config
 	level, err := logrus.ParseLevel(cfg.LogLevel)
 	if err != nil {
