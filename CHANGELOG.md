@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.8.0] — 2026-05-11
+
 ### Security
 
 This release addresses all 23 findings from the 2026-05-04 deep security
@@ -162,6 +164,49 @@ run before this release; these changes raise the security floor further.
   removes the dependency on `wget` being present in the container image
   and provides a consistent, reliable health probe in both standard and
   FIPS images.
+
+### Breaking
+
+- **Unified credential store replacing `use_client_credentials`** (V1.0-AUTH-1):
+  the legacy `use_client_credentials` boolean passthrough has been removed. A
+  new `auth.credentials` configuration block supports multiple named
+  `GatewayCredential` entries. A `CredentialStore` interface and
+  `StaticCredentialStore` handle per-credential S3 client construction;
+  `AuthMiddleware` dispatches SigV4 and SigV2 validation against the
+  configured credential set. The Helm chart removes `useClientCredentials` in
+  favour of `auth.credentials`.
+
+  **Migration**: replace `backend.use_client_credentials: true` with
+  `auth.credentials` entries matching your S3-compatible backend credentials.
+  See `config.yaml.example` and ADR-0012 for the new format.
+
+### Fixed
+
+- **XML injection prevention in ListObjects response**: `generateListObjectsXML`
+  now uses `encoding/xml.Marshal` instead of raw string concatenation, preventing
+  XML injection when object keys contain XML-special characters.
+
+- **Object lock handlers routed to correct client**: `PutObjectRetention`,
+  `GetObjectRetention`, `PutObjectLegalHold`, `GetObjectLegalHold` now use the
+  proxied backend client instead of the service-account client, fixing
+  `AccessDenied` failures when `auth.credentials` is in use.
+
+- **SeaweedFS conformance test disk-full handling**: the conformance test suite
+  now handles `OutOfSpace` errors from SeaweedFS gracefully instead of failing
+  the entire suite.
+
+### Dependencies
+
+- Updated `golang.org/x/crypto` to v0.51.0
+- Updated `golang.org/x/sys` to v0.44.0
+
+### Documentation
+
+- Added V1.0-AUTH-1 design documentation (ADR-0012, architecture, deployment,
+  and README updates) for the unified credential store.
+- Added CRYPTO-2 issue tracking Valkey at-rest encryption for a future release.
+- Added prominent production warning to `InsecureAllowPlaintext` in config
+  example and Helm chart values.
 
 ## [0.7.2] — 2026-05-07
 
