@@ -43,6 +43,22 @@ type Config struct {
 	MultipartState MultipartStateConfig `yaml:"multipart_state"`
 }
 
+// ResolvedCredentials returns a copy of the auth credentials with SecretKeyEnv
+// values resolved from the environment.  The returned slice is safe to mutate
+// (it does not alias the underlying config).
+func (c *Config) ResolvedCredentials() []GatewayCredential {
+	resolved := make([]GatewayCredential, len(c.Auth.Credentials))
+	for i, cred := range c.Auth.Credentials {
+		resolved[i] = cred
+		if cred.SecretKeyEnv != "" {
+			if v := os.Getenv(cred.SecretKeyEnv); v != "" {
+				resolved[i].SecretKey = v
+			}
+		}
+	}
+	return resolved
+}
+
 // BackendConfig holds S3 backend configuration.
 type BackendConfig struct {
 	Endpoint     string `yaml:"endpoint" env:"BACKEND_ENDPOINT"`
@@ -54,9 +70,6 @@ type BackendConfig struct {
 	UsePathStyle bool   `yaml:"use_path_style" env:"BACKEND_USE_PATH_STYLE"`
 	// Compatibility options for backends with metadata restrictions
 	FilterMetadataKeys []string `yaml:"filter_metadata_keys" env:"BACKEND_FILTER_METADATA_KEYS"` // Comma-separated list of metadata keys to filter out
-	// Credential passthrough: if enabled, use credentials from client requests instead of configured credentials
-	// This allows respecting client access rights while still using configured credentials as fallback
-	UseClientCredentials bool `yaml:"use_client_credentials" env:"BACKEND_USE_CLIENT_CREDENTIALS"`
 	// Retry governs the S3 backend retry policy (V0.6-PERF-2).
 	// All fields are optional; zero values fall back to the DefaultBackendRetry* constants.
 	Retry BackendRetryConfig `yaml:"retry"`
@@ -474,13 +487,30 @@ type LoggingConfig struct {
 	RedactHeaders   []string `yaml:"redact_headers" env:"LOGGING_REDACT_HEADERS"`       // Headers to redact in access logs (comma-separated)
 }
 
+// GatewayCredential is a single access-key/secret-key pair managed by the gateway.
+type GatewayCredential struct {
+	// AccessKey is the S3 access key identifier presented by clients.
+	AccessKey    string `yaml:"access_key"`
+	// SecretKey is the inline plaintext secret (dev only; prefer SecretKeyEnv).
+	SecretKey    string `yaml:"secret_key"`
+	// SecretKeyEnv is the name of the environment variable that holds the
+	// plaintext secret key.  Takes precedence over SecretKey.
+	SecretKeyEnv string `yaml:"secret_key_env"`
+	// Label is an optional human-readable name used in audit log entries.
+	Label        string `yaml:"label"`
+}
+
 // AuthConfig holds authentication-related configuration for the S3 API.
 type AuthConfig struct {
 	// ClockSkewTolerance is the maximum acceptable difference between the
 	// request timestamp (X-Amz-Date) and server time. Requests outside this
 	// window are rejected to prevent replay attacks.
 	// Default: 15 minutes (matching AWS SigV4 specification).
-	ClockSkewTolerance time.Duration `yaml:"clock_skew_tolerance" env:"AUTH_CLOCK_SKEW_TOLERANCE"`
+	ClockSkewTolerance time.Duration       `yaml:"clock_skew_tolerance" env:"AUTH_CLOCK_SKEW_TOLERANCE"`
+	// Credentials holds the gateway-managed credential store.
+	// Every inbound S3 request must present one of these access keys with a
+	// valid signature.
+	Credentials        []GatewayCredential `yaml:"credentials"`
 }
 
 // AdminConfig holds admin API configuration.
@@ -783,9 +813,6 @@ func loadFromEnv(config *Config) {
 		for i := range config.Backend.FilterMetadataKeys {
 			config.Backend.FilterMetadataKeys[i] = strings.TrimSpace(config.Backend.FilterMetadataKeys[i])
 		}
-	}
-	if v := os.Getenv("BACKEND_USE_CLIENT_CREDENTIALS"); v != "" {
-		config.Backend.UseClientCredentials = v == "true" || v == "1"
 	}
 	// V0.6-PERF-2 — backend retry config env vars.
 	if v := os.Getenv("BACKEND_RETRY_MODE"); v != "" {
@@ -1110,6 +1137,14 @@ func loadFromEnv(config *Config) {
 			config.Auth.ClockSkewTolerance = d
 		}
 	}
+	// Resolve credential secrets from environment variables (V1.0-AUTH-1)
+	for i := range config.Auth.Credentials {
+		if config.Auth.Credentials[i].SecretKeyEnv != "" {
+			if v := os.Getenv(config.Auth.Credentials[i].SecretKeyEnv); v != "" {
+				config.Auth.Credentials[i].SecretKey = v
+			}
+		}
+	}
 	// Admin configuration
 	if v := os.Getenv("ADMIN_ENABLED"); v != "" {
 		config.Admin.Enabled = v == "true" || v == "1"
@@ -1245,16 +1280,25 @@ func (c *Config) Validate() error {
 
 	// Endpoint is optional - if empty, AWS SDK will use default AWS endpoints
 
-	// Backend credentials: required unless use_client_credentials is enabled
-	// When use_client_credentials is enabled, credentials must come from client requests
-	if !c.Backend.UseClientCredentials {
-		if c.Backend.AccessKey == "" {
-			return fmt.Errorf("backend.access_key is required (or enable backend.use_client_credentials)")
+	// Validate credential store (V1.0-AUTH-1)
+	if len(c.Auth.Credentials) == 0 {
+		return fmt.Errorf("auth.credentials must not be empty; at least one credential is required")
+	}
+	for i, cred := range c.Auth.Credentials {
+		if cred.AccessKey == "" {
+			return fmt.Errorf("auth.credentials[%d]: access_key is required", i)
 		}
+		if cred.SecretKey == "" && cred.SecretKeyEnv == "" {
+			return fmt.Errorf("auth.credentials[%d]: either secret_key or secret_key_env is required", i)
+		}
+	}
 
-		if c.Backend.SecretKey == "" {
-			return fmt.Errorf("backend.secret_key is required (or enable backend.use_client_credentials)")
-		}
+	// Backend credentials are always required
+	if c.Backend.AccessKey == "" {
+		return fmt.Errorf("backend.access_key is required")
+	}
+	if c.Backend.SecretKey == "" {
+		return fmt.Errorf("backend.secret_key is required")
 	}
 
 	if c.Encryption.Password == "" && c.Encryption.KeyFile == "" {

@@ -54,6 +54,10 @@ backend:
   secret_key: test-secret
 encryption:
   password: test-password
+auth:
+  credentials:
+    - access_key: "gateway-key"
+      secret_key: "gateway-secret"
 `
 	err := os.WriteFile(configPath, []byte(initialYAML), 0644)
 	require.NoError(t, err)
@@ -103,6 +107,10 @@ compression:
   enabled: false
   algorithm: gzip
   level: 6
+auth:
+  credentials:
+    - access_key: "gateway-key"
+      secret_key: "gateway-secret"
 `
 	err = os.WriteFile(configPath, []byte(updatedYAML), 0644)
 	require.NoError(t, err)

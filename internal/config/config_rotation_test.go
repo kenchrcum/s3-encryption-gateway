@@ -2,6 +2,7 @@ package config
 
 import (
 	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -10,40 +11,57 @@ import (
 )
 
 func TestRotationPolicyConfig_Defaults(t *testing.T) {
-	// Set required backend credentials
-	os.Setenv("BACKEND_ACCESS_KEY", "test-key")
-	os.Setenv("BACKEND_SECRET_KEY", "test-secret")
-	os.Setenv("ENCRYPTION_PASSWORD", "test-password-123456")
-	defer func() {
-		os.Unsetenv("BACKEND_ACCESS_KEY")
-		os.Unsetenv("BACKEND_SECRET_KEY")
-		os.Unsetenv("ENCRYPTION_PASSWORD")
-	}()
+	tmpDir := t.TempDir()
+	configPath := filepath.Join(tmpDir, "config.yaml")
+	content := `
+backend:
+  access_key: "test-key"
+  secret_key: "test-secret"
+encryption:
+  password: "test-password-123456"
+auth:
+  credentials:
+    - access_key: "gateway-key"
+      secret_key: "gateway-secret"
+`
+	if err := os.WriteFile(configPath, []byte(content), 0644); err != nil {
+		t.Fatalf("failed to write temp config: %v", err)
+	}
 
 	// Defaults should be set in LoadConfig
-	cfg, err := LoadConfig("")
+	cfg, err := LoadConfig(configPath)
 	require.NoError(t, err)
 	assert.False(t, cfg.Encryption.KeyManager.RotationPolicy.Enabled)
 	assert.Equal(t, time.Duration(0), cfg.Encryption.KeyManager.RotationPolicy.GraceWindow)
 }
 
 func TestRotationPolicyConfig_FromEnv(t *testing.T) {
-	// Set required backend credentials
-	os.Setenv("BACKEND_ACCESS_KEY", "test-key")
-	os.Setenv("BACKEND_SECRET_KEY", "test-secret")
-	os.Setenv("ENCRYPTION_PASSWORD", "test-password-123456")
+	tmpDir := t.TempDir()
+	configPath := filepath.Join(tmpDir, "config.yaml")
+	content := `
+backend:
+  access_key: "test-key"
+  secret_key: "test-secret"
+encryption:
+  password: "test-password-123456"
+auth:
+  credentials:
+    - access_key: "gateway-key"
+      secret_key: "gateway-secret"
+`
+	if err := os.WriteFile(configPath, []byte(content), 0644); err != nil {
+		t.Fatalf("failed to write temp config: %v", err)
+	}
+
 	// Set rotation policy environment variables
 	os.Setenv("KEY_MANAGER_ROTATION_POLICY_ENABLED", "true")
 	os.Setenv("KEY_MANAGER_ROTATION_GRACE_WINDOW", "168h")
 	defer func() {
-		os.Unsetenv("BACKEND_ACCESS_KEY")
-		os.Unsetenv("BACKEND_SECRET_KEY")
-		os.Unsetenv("ENCRYPTION_PASSWORD")
 		os.Unsetenv("KEY_MANAGER_ROTATION_POLICY_ENABLED")
 		os.Unsetenv("KEY_MANAGER_ROTATION_GRACE_WINDOW")
 	}()
 
-	config, err := LoadConfig("")
+	config, err := LoadConfig(configPath)
 	require.NoError(t, err)
 	assert.True(t, config.Encryption.KeyManager.RotationPolicy.Enabled)
 	assert.Equal(t, 168*time.Hour, config.Encryption.KeyManager.RotationPolicy.GraceWindow)
@@ -68,6 +86,10 @@ encryption:
       keys:
         - id: "key-1"
           version: 1
+auth:
+  credentials:
+    - access_key: "gateway-key"
+      secret_key: "gateway-secret"
 `
 
 	tmpFile := createTempConfigFile(t, yamlContent)
@@ -80,18 +102,29 @@ encryption:
 }
 
 func TestRotationPolicyConfig_InvalidGraceWindow(t *testing.T) {
-	os.Setenv("BACKEND_ACCESS_KEY", "test-key")
-	os.Setenv("BACKEND_SECRET_KEY", "test-secret")
-	os.Setenv("ENCRYPTION_PASSWORD", "test-password-123456")
+	tmpDir := t.TempDir()
+	configPath := filepath.Join(tmpDir, "config.yaml")
+	content := `
+backend:
+  access_key: "test-key"
+  secret_key: "test-secret"
+encryption:
+  password: "test-password-123456"
+auth:
+  credentials:
+    - access_key: "gateway-key"
+      secret_key: "gateway-secret"
+`
+	if err := os.WriteFile(configPath, []byte(content), 0644); err != nil {
+		t.Fatalf("failed to write temp config: %v", err)
+	}
+
 	os.Setenv("KEY_MANAGER_ROTATION_GRACE_WINDOW", "invalid")
 	defer func() {
-		os.Unsetenv("BACKEND_ACCESS_KEY")
-		os.Unsetenv("BACKEND_SECRET_KEY")
-		os.Unsetenv("ENCRYPTION_PASSWORD")
 		os.Unsetenv("KEY_MANAGER_ROTATION_GRACE_WINDOW")
 	}()
 
-	config, err := LoadConfig("")
+	config, err := LoadConfig(configPath)
 	require.NoError(t, err)
 	// Invalid duration should be ignored, default to 0
 	assert.Equal(t, time.Duration(0), config.Encryption.KeyManager.RotationPolicy.GraceWindow)
@@ -108,6 +141,10 @@ encryption:
     rotation_policy:
       enabled: false
       grace_window: 24h
+auth:
+  credentials:
+    - access_key: "gateway-key"
+      secret_key: "gateway-secret"
 `
 
 	tmpFile := createTempConfigFile(t, yamlContent)

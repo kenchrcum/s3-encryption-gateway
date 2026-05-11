@@ -24,7 +24,24 @@ func TestLoadConfig_Defaults(t *testing.T) {
 		os.Unsetenv("ENCRYPTION_PASSWORD")
 	}()
 
-	config, err := LoadConfig("")
+	tmpDir := t.TempDir()
+	configPath := filepath.Join(tmpDir, "config.yaml")
+	content := `
+backend:
+  access_key: "test-key"
+  secret_key: "test-secret"
+encryption:
+  password: "test-password"
+auth:
+  credentials:
+    - access_key: "gateway-key"
+      secret_key: "gateway-secret"
+`
+	if err := os.WriteFile(configPath, []byte(content), 0644); err != nil {
+		t.Fatalf("failed to write temp config: %v", err)
+	}
+
+	config, err := LoadConfig(configPath)
 	if err != nil {
 		t.Fatalf("LoadConfig failed: %v", err)
 	}
@@ -57,7 +74,24 @@ func TestLoadConfig_EnvOverrides(t *testing.T) {
 		os.Unsetenv("ENCRYPTION_PASSWORD")
 	}()
 
-	config, err := LoadConfig("")
+	tmpDir := t.TempDir()
+	configPath := filepath.Join(tmpDir, "config.yaml")
+	content := `
+backend:
+  access_key: "test-key"
+  secret_key: "test-secret"
+encryption:
+  password: "test-password"
+auth:
+  credentials:
+    - access_key: "gateway-key"
+      secret_key: "gateway-secret"
+`
+	if err := os.WriteFile(configPath, []byte(content), 0644); err != nil {
+		t.Fatalf("failed to write temp config: %v", err)
+	}
+
+	config, err := LoadConfig(configPath)
 	if err != nil {
 		t.Fatalf("LoadConfig failed: %v", err)
 	}
@@ -78,6 +112,24 @@ func TestLoadConfig_EnvOverrides(t *testing.T) {
 // TestLoadConfig_ValkeyEnvOverrides verifies the V0.6-SEC-3 / #14 env var
 // bindings for the Helm chart's Valkey subchart wiring.
 func TestLoadConfig_ValkeyEnvOverrides(t *testing.T) {
+	tmpDir := t.TempDir()
+	configPath := filepath.Join(tmpDir, "config.yaml")
+	content := `
+backend:
+  endpoint: "http://localhost:9000"
+  access_key: "test-key"
+  secret_key: "test-secret"
+encryption:
+  password: "test-password-12345"
+auth:
+  credentials:
+    - access_key: "gateway-key"
+      secret_key: "gateway-secret"
+`
+	if err := os.WriteFile(configPath, []byte(content), 0644); err != nil {
+		t.Fatalf("failed to write temp config: %v", err)
+	}
+
 	t.Setenv("ENCRYPTION_PASSWORD", "test-password-12345")
 	t.Setenv("BACKEND_ENDPOINT", "http://localhost:9000")
 	t.Setenv("BACKEND_ACCESS_KEY", "test-key")
@@ -95,7 +147,7 @@ func TestLoadConfig_ValkeyEnvOverrides(t *testing.T) {
 	t.Setenv("VALKEY_TTL_SECONDS", "86400")
 	t.Setenv("VALKEY_POOL_SIZE", "32")
 
-	cfg, err := LoadConfig("")
+	cfg, err := LoadConfig(configPath)
 	if err != nil {
 		t.Fatalf("LoadConfig failed: %v", err)
 	}
@@ -152,6 +204,14 @@ func TestConfig_Validate(t *testing.T) {
 						},
 					},
 				},
+				Auth: AuthConfig{
+					Credentials: []GatewayCredential{
+						{
+							AccessKey: "gateway-key",
+							SecretKey: "gateway-secret",
+						},
+					},
+				},
 			},
 			wantErr: false,
 		},
@@ -168,6 +228,14 @@ func TestConfig_Validate(t *testing.T) {
 					KDF: KDFConfig{
 						PBKDF2: PBKDF2Config{
 							Iterations: 600000,
+						},
+					},
+				},
+				Auth: AuthConfig{
+					Credentials: []GatewayCredential{
+						{
+							AccessKey: "gateway-key",
+							SecretKey: "gateway-secret",
 						},
 					},
 				},
@@ -190,6 +258,14 @@ func TestConfig_Validate(t *testing.T) {
 						},
 					},
 				},
+				Auth: AuthConfig{
+					Credentials: []GatewayCredential{
+						{
+							AccessKey: "gateway-key",
+							SecretKey: "gateway-secret",
+						},
+					},
+				},
 			},
 			wantErr: false, // Endpoint is optional - empty means AWS default
 		},
@@ -203,17 +279,25 @@ func TestConfig_Validate(t *testing.T) {
 					SecretKey: "test-secret",
 				},
 				Encryption: EncryptionConfig{},
+				Auth: AuthConfig{
+					Credentials: []GatewayCredential{
+						{
+							AccessKey: "gateway-key",
+							SecretKey: "gateway-secret",
+						},
+					},
+				},
 			},
 			wantErr: true,
 		},
 		{
-			name: "useClientCredentials enabled - backend credentials not required",
+			name: "empty credentials list",
 			config: &Config{
 				ListenAddr: ":8080",
 				Backend: BackendConfig{
-					Endpoint:             "http://localhost:9000",
-					UseClientCredentials: true,
-					// AccessKey and SecretKey are empty - this is valid
+					Endpoint:  "http://localhost:9000",
+					AccessKey: "test-key",
+					SecretKey: "test-secret",
 				},
 				Encryption: EncryptionConfig{
 					Password: "test-password",
@@ -223,23 +307,60 @@ func TestConfig_Validate(t *testing.T) {
 						},
 					},
 				},
+				Auth: AuthConfig{
+					Credentials: []GatewayCredential{},
+				},
 			},
-			wantErr: false,
+			wantErr: true,
 		},
 		{
-			name: "useClientCredentials disabled - backend credentials required",
+			name: "credential missing access key",
 			config: &Config{
 				ListenAddr: ":8080",
 				Backend: BackendConfig{
-					Endpoint:             "http://localhost:9000",
-					UseClientCredentials: false,
-					// Missing AccessKey and SecretKey
+					Endpoint:  "http://localhost:9000",
+					AccessKey: "test-key",
+					SecretKey: "test-secret",
 				},
 				Encryption: EncryptionConfig{
 					Password: "test-password",
 					KDF: KDFConfig{
 						PBKDF2: PBKDF2Config{
 							Iterations: 600000,
+						},
+					},
+				},
+				Auth: AuthConfig{
+					Credentials: []GatewayCredential{
+						{
+							SecretKey: "gateway-secret",
+						},
+					},
+				},
+			},
+			wantErr: true,
+		},
+		{
+			name: "credential missing both secret key and secret key env",
+			config: &Config{
+				ListenAddr: ":8080",
+				Backend: BackendConfig{
+					Endpoint:  "http://localhost:9000",
+					AccessKey: "test-key",
+					SecretKey: "test-secret",
+				},
+				Encryption: EncryptionConfig{
+					Password: "test-password",
+					KDF: KDFConfig{
+						PBKDF2: PBKDF2Config{
+							Iterations: 600000,
+						},
+					},
+				},
+				Auth: AuthConfig{
+					Credentials: []GatewayCredential{
+						{
+							AccessKey: "gateway-key",
 						},
 					},
 				},
@@ -255,6 +376,119 @@ func TestConfig_Validate(t *testing.T) {
 				t.Errorf("Validate() error = %v, wantErr %v", err, tt.wantErr)
 			}
 		})
+	}
+}
+
+// ---- V1.0-AUTH-1 GatewayCredential tests ---------------------------------
+
+func TestConfig_Validate_EmptyCredentials(t *testing.T) {
+	cfg := minValidConfig()
+	cfg.Auth.Credentials = []GatewayCredential{}
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("expected error for empty credentials list, got nil")
+	}
+	if !strings.Contains(err.Error(), "auth.credentials must not be empty") {
+		t.Errorf("unexpected error message: %v", err)
+	}
+}
+
+func TestConfig_Validate_CredentialMissingAccessKey(t *testing.T) {
+	cfg := minValidConfig()
+	cfg.Auth.Credentials = []GatewayCredential{
+		{SecretKey: "secret"},
+	}
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("expected error for credential missing access_key, got nil")
+	}
+	if !strings.Contains(err.Error(), "access_key is required") {
+		t.Errorf("unexpected error message: %v", err)
+	}
+}
+
+func TestConfig_Validate_CredentialMissingSecret(t *testing.T) {
+	cfg := minValidConfig()
+	cfg.Auth.Credentials = []GatewayCredential{
+		{AccessKey: "key"},
+	}
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("expected error for credential missing secret, got nil")
+	}
+	if !strings.Contains(err.Error(), "either secret_key or secret_key_env is required") {
+		t.Errorf("unexpected error message: %v", err)
+	}
+}
+
+func TestConfig_ResolvedCredentials_FromEnv(t *testing.T) {
+	cfg := &Config{
+		Auth: AuthConfig{
+			Credentials: []GatewayCredential{
+				{
+					AccessKey:    "gateway-key",
+					SecretKeyEnv: "GATEWAY_SECRET",
+				},
+			},
+		},
+	}
+
+	t.Setenv("GATEWAY_SECRET", "resolved-from-env")
+	resolved := cfg.ResolvedCredentials()
+
+	if len(resolved) != 1 {
+		t.Fatalf("expected 1 credential, got %d", len(resolved))
+	}
+	if resolved[0].SecretKey != "resolved-from-env" {
+		t.Errorf("expected SecretKey 'resolved-from-env', got %q", resolved[0].SecretKey)
+	}
+	// Original config should remain unchanged
+	if cfg.Auth.Credentials[0].SecretKey != "" {
+		t.Errorf("original config SecretKey should remain empty, got %q", cfg.Auth.Credentials[0].SecretKey)
+	}
+}
+
+func TestConfig_ResolvedCredentials_EnvNotSet(t *testing.T) {
+	cfg := &Config{
+		Auth: AuthConfig{
+			Credentials: []GatewayCredential{
+				{
+					AccessKey:    "gateway-key",
+					SecretKey:    "inline-secret",
+					SecretKeyEnv: "NONEXISTENT_ENV_VAR",
+				},
+			},
+		},
+	}
+
+	os.Unsetenv("NONEXISTENT_ENV_VAR")
+	resolved := cfg.ResolvedCredentials()
+
+	if len(resolved) != 1 {
+		t.Fatalf("expected 1 credential, got %d", len(resolved))
+	}
+	// When env var is not set, inline SecretKey should be preserved
+	if resolved[0].SecretKey != "inline-secret" {
+		t.Errorf("expected SecretKey 'inline-secret', got %q", resolved[0].SecretKey)
+	}
+}
+
+func TestConfig_Validate_ValidCredentials(t *testing.T) {
+	cfg := minValidConfig()
+	cfg.Auth.Credentials = []GatewayCredential{
+		{
+			AccessKey: "key-1",
+			SecretKey: "secret-1",
+			Label:     "first",
+		},
+		{
+			AccessKey:    "key-2",
+			SecretKeyEnv: "ENV_SECRET",
+		},
+	}
+	err := cfg.Validate()
+	if err != nil {
+		t.Fatalf("expected no error for valid credentials, got: %v", err)
 	}
 }
 
@@ -447,9 +681,23 @@ func containsStr(s, sub string) bool {
 
 // TestBackendRetryConfig_EnvOverrides verifies that env vars override YAML values.
 func TestBackendRetryConfig_EnvOverrides(t *testing.T) {
-	t.Setenv("ENCRYPTION_PASSWORD", "test-password-12345")
-	t.Setenv("BACKEND_ACCESS_KEY", "test-key")
-	t.Setenv("BACKEND_SECRET_KEY", "test-secret")
+	tmpDir := t.TempDir()
+	configPath := filepath.Join(tmpDir, "config.yaml")
+	content := `
+backend:
+  access_key: "test-key"
+  secret_key: "test-secret"
+encryption:
+  password: "test-password-12345"
+auth:
+  credentials:
+    - access_key: "gateway-key"
+      secret_key: "gateway-secret"
+`
+	if err := os.WriteFile(configPath, []byte(content), 0644); err != nil {
+		t.Fatalf("failed to write temp config: %v", err)
+	}
+
 	t.Setenv("BACKEND_RETRY_MODE", "adaptive")
 	t.Setenv("BACKEND_RETRY_MAX_ATTEMPTS", "5")
 	t.Setenv("BACKEND_RETRY_INITIAL_BACKOFF", "200ms")
@@ -457,7 +705,7 @@ func TestBackendRetryConfig_EnvOverrides(t *testing.T) {
 	t.Setenv("BACKEND_RETRY_JITTER", "decorrelated")
 	t.Setenv("BACKEND_RETRY_SAFE_COPY_OBJECT", "false")
 
-	cfg, err := LoadConfig("")
+	cfg, err := LoadConfig(configPath)
 	if err != nil {
 		t.Fatalf("LoadConfig failed: %v", err)
 	}
@@ -557,6 +805,14 @@ func minValidConfig() *Config {
 			KDF: KDFConfig{
 				PBKDF2: PBKDF2Config{
 					Iterations: 600000,
+				},
+			},
+		},
+		Auth: AuthConfig{
+			Credentials: []GatewayCredential{
+				{
+					AccessKey: "gateway-key",
+					SecretKey: "gateway-secret",
 				},
 			},
 		},
@@ -1574,12 +1830,24 @@ func TestParseCosmianKeyRefs(t *testing.T) {
 // ---- V1.0-SEC-H03 PBKDF2 iteration tests ---------------------------------
 
 func TestConfig_Default_PBKDF2Iterations(t *testing.T) {
-	// Set minimal required environment variables for LoadConfig
-	t.Setenv("BACKEND_ACCESS_KEY", "test-key")
-	t.Setenv("BACKEND_SECRET_KEY", "test-secret")
-	t.Setenv("ENCRYPTION_PASSWORD", "test-password")
+	tmpDir := t.TempDir()
+	configPath := filepath.Join(tmpDir, "config.yaml")
+	content := `
+backend:
+  access_key: "test-key"
+  secret_key: "test-secret"
+encryption:
+  password: "test-password"
+auth:
+  credentials:
+    - access_key: "gateway-key"
+      secret_key: "gateway-secret"
+`
+	if err := os.WriteFile(configPath, []byte(content), 0644); err != nil {
+		t.Fatalf("failed to write temp config: %v", err)
+	}
 
-	config, err := LoadConfig("")
+	config, err := LoadConfig(configPath)
 	if err != nil {
 		t.Fatalf("LoadConfig failed: %v", err)
 	}
@@ -1623,12 +1891,26 @@ func TestConfig_Validate_Recommended(t *testing.T) {
 }
 
 func TestConfig_EnvOverride_PBKDF2Iterations(t *testing.T) {
-	t.Setenv("ENCRYPTION_KDF_PBKDF2_ITERATIONS", "750000")
-	t.Setenv("BACKEND_ACCESS_KEY", "test-key")
-	t.Setenv("BACKEND_SECRET_KEY", "test-secret")
-	t.Setenv("ENCRYPTION_PASSWORD", "test-password")
+	tmpDir := t.TempDir()
+	configPath := filepath.Join(tmpDir, "config.yaml")
+	content := `
+backend:
+  access_key: "test-key"
+  secret_key: "test-secret"
+encryption:
+  password: "test-password"
+auth:
+  credentials:
+    - access_key: "gateway-key"
+      secret_key: "gateway-secret"
+`
+	if err := os.WriteFile(configPath, []byte(content), 0644); err != nil {
+		t.Fatalf("failed to write temp config: %v", err)
+	}
 
-	config, err := LoadConfig("")
+	t.Setenv("ENCRYPTION_KDF_PBKDF2_ITERATIONS", "750000")
+
+	config, err := LoadConfig(configPath)
 	if err != nil {
 		t.Fatalf("LoadConfig failed: %v", err)
 	}
@@ -1639,12 +1921,26 @@ func TestConfig_EnvOverride_PBKDF2Iterations(t *testing.T) {
 }
 
 func TestConfig_EnvOverride_BelowMin_Ignored(t *testing.T) {
-	t.Setenv("ENCRYPTION_KDF_PBKDF2_ITERATIONS", "50000")
-	t.Setenv("BACKEND_ACCESS_KEY", "test-key")
-	t.Setenv("BACKEND_SECRET_KEY", "test-secret")
-	t.Setenv("ENCRYPTION_PASSWORD", "test-password")
+	tmpDir := t.TempDir()
+	configPath := filepath.Join(tmpDir, "config.yaml")
+	content := `
+backend:
+  access_key: "test-key"
+  secret_key: "test-secret"
+encryption:
+  password: "test-password"
+auth:
+  credentials:
+    - access_key: "gateway-key"
+      secret_key: "gateway-secret"
+`
+	if err := os.WriteFile(configPath, []byte(content), 0644); err != nil {
+		t.Fatalf("failed to write temp config: %v", err)
+	}
 
-	config, err := LoadConfig("")
+	t.Setenv("ENCRYPTION_KDF_PBKDF2_ITERATIONS", "50000")
+
+	config, err := LoadConfig(configPath)
 	if err != nil {
 		t.Fatalf("LoadConfig failed: %v", err)
 	}
