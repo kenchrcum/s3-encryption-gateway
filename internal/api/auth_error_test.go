@@ -49,12 +49,6 @@ func TestClassifyAuthError_Table(t *testing.T) {
 			wantStatus: http.StatusForbidden,
 		},
 		{
-			name:       "sigv4 with passthrough",
-			err:        ErrSigV4NotSupportedWithPassthrough,
-			wantCode:   "SignatureDoesNotMatch",
-			wantStatus: http.StatusForbidden,
-		},
-		{
 			name:       "unknown error falls through to 500",
 			err:        errors.New(secretShapedInternal),
 			wantCode:   "InternalError",
@@ -112,26 +106,12 @@ func TestWriteS3ClientError_NoLeakRegression(t *testing.T) {
 		err  error
 	}{
 		{
-			name: "passthrough mode, sig mismatch with leaked detail",
-			cfg: &config.Config{Backend: config.BackendConfig{
-				UseClientCredentials: true,
-			}},
-			err: fmt.Errorf("%w: computed %s expected %s", ErrSignatureMismatch, secretShapedSig, secretShapedSig),
-		},
-		{
-			name: "default mode, sig mismatch with leaked detail",
+			name: "sig mismatch with leaked detail",
 			cfg:  &config.Config{Backend: config.BackendConfig{}},
 			err:  fmt.Errorf("%w: computed %s expected %s", ErrSignatureMismatch, secretShapedSig, secretShapedSig),
 		},
 		{
-			name: "passthrough mode, generic unclassified error",
-			cfg: &config.Config{Backend: config.BackendConfig{
-				UseClientCredentials: true,
-			}},
-			err: errors.New(secretShapedInternal),
-		},
-		{
-			name: "default mode, generic unclassified error",
+			name: "generic unclassified error",
 			cfg:  &config.Config{Backend: config.BackendConfig{}},
 			err:  errors.New(secretShapedInternal),
 		},

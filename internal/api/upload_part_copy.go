@@ -138,10 +138,10 @@ func (h *Handler) handleUploadPartCopy(w http.ResponseWriter, r *http.Request) {
 
 	ctx := r.Context()
 
-	// Get S3 client. This binds to the caller's credentials when
-	// UseClientCredentials is enabled, which is the mechanism by which
-	// source-bucket read authorisation is enforced: the caller MUST be
-	// authorised to read the source, or the backend returns AccessDenied.
+	// Get S3 client. The caller's credentials are already validated by
+	// AuthMiddleware before reaching this handler; source-bucket read
+	// authorisation is enforced by the backend using the gateway's
+	// configured backend credentials.
 	s3Client, err := h.getS3Client(r)
 	if err != nil {
 		h.logger.WithError(err).Error("Failed to get S3 client")

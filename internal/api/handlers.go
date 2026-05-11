@@ -322,13 +322,6 @@ func classifyAuthError(err error, resource string) *S3Error {
 			Resource:   resource,
 			HTTPStatus: http.StatusForbidden,
 		}
-	case errors.Is(err, ErrSigV4NotSupportedWithPassthrough):
-		return &S3Error{
-			Code:       "SignatureDoesNotMatch",
-			Message:    "Signature V4 authentication is not supported in this configuration. Please use query parameter authentication instead.",
-			Resource:   resource,
-			HTTPStatus: http.StatusForbidden,
-		}
 	default:
 		// Unknown / server-side failure. Never echo err.Error().
 		return &S3Error{
@@ -574,100 +567,17 @@ func (h *Handler) forwardSignatureV4Request(w http.ResponseWriter, r *http.Reque
 	h.metrics.RecordHTTPRequest(r.Context(), method, r.URL.Path, backendResp.StatusCode, time.Since(start), contentLength)
 }
 
-// getS3Client returns the appropriate S3 client for the request.
-// If use_client_credentials is enabled, extracts credentials from request and creates a client.
-// For Signature V4 requests, returns nil to indicate request should be forwarded directly.
-// Otherwise, returns the default configured client.
+// getS3Client returns the configured backend S3 client.
+// Authentication has already been validated by AuthMiddleware before this
+// point; this function only needs to return the pre-configured client.
 func (h *Handler) getS3Client(r *http.Request) (s3.Client, error) {
-	// If credential passthrough is not enabled, use default client
-	if h.config == nil || !h.config.Backend.UseClientCredentials {
-		// Enforce validation for V4 requests even when using default credentials
-		// This allows supporting Presigned URLs securely if the client uses the same credentials
-		if IsSignatureV4Request(r) {
-			if h.config != nil && h.config.Backend.AccessKey != "" {
-				// Validate signature if using configured backend credentials
-				creds, err := ExtractCredentials(r)
-				if err == nil {
-					if creds.AccessKey == h.config.Backend.AccessKey {
-						// Validate signature using backend secret
-						if err := ValidateSignatureV4(r, h.config.Backend.SecretKey, h.config.Auth.ClockSkewTolerance); err != nil {
-							h.logger.WithError(err).Warn("Signature validation failed")
-							// Return a classified sentinel so response writers
-							// never serialise the underlying diagnostic (which
-							// historically leaked computed signatures).
-							return nil, fmt.Errorf("%w: %v", ErrSignatureMismatch, err)
-						}
-						// Validation succeeded
-					} else {
-						h.logger.WithField("access_key", creds.AccessKey).Warn("Unknown access key in V4 request")
-						return nil, ErrUnknownAccessKey
-					}
-				} else {
-					h.logger.WithError(err).Warn("Failed to extract credentials for validation")
-					return nil, fmt.Errorf("%w: %v", ErrMissingCredentials, err)
-				}
-			}
-		}
-
-		if h.s3Client != nil {
-			return h.s3Client, nil
-		}
-		if h.clientFactory != nil {
-			return h.clientFactory.GetClient()
-		}
-		return nil, fmt.Errorf("no S3 client available")
+	if h.s3Client != nil {
+		return h.s3Client, nil
 	}
-
-	// When use_client_credentials is enabled, check for Signature V4
-	// Signature V4 requests include the Host header in the signature, so forwarding doesn't work
-	// because the signature was created for the gateway's hostname, not the backend's
-	if IsSignatureV4Request(r) {
-		clientCreds, err := ExtractCredentials(r)
-		if err == nil && clientCreds.AccessKey != "" {
-			h.logger.WithFields(logrus.Fields{
-				"access_key": clientCreds.AccessKey,
-			}).Warn("Signature V4 requests cannot be forwarded - signature validation will fail")
-			return nil, ErrSigV4NotSupportedWithPassthrough
-		}
+	if h.clientFactory != nil {
+		return h.clientFactory.GetClient()
 	}
-
-	// Try to extract credentials (for query parameters or other methods)
-	clientCreds, err := ExtractCredentials(r)
-	if err != nil {
-		h.logger.WithError(err).Warn("Failed to extract client credentials from request")
-		return nil, fmt.Errorf("%w: %v", ErrMissingCredentials, err)
-	}
-
-	// Both access key and secret key are required for non-Signature V4 requests
-	if clientCreds.AccessKey == "" {
-		h.logger.Warn("Client credentials incomplete: missing access key")
-		return nil, ErrMissingCredentials
-	}
-
-	if clientCreds.SecretKey == "" {
-		h.logger.WithFields(logrus.Fields{
-			"access_key": clientCreds.AccessKey,
-		}).Warn("Client credentials incomplete: missing secret key")
-		return nil, ErrMissingCredentials
-	}
-
-	// Create client with extracted credentials
-	if h.clientFactory == nil {
-		return nil, fmt.Errorf("client factory not initialized")
-	}
-
-	client, err := h.clientFactory.GetClientWithCredentials(clientCreds.AccessKey, clientCreds.SecretKey)
-	if err != nil {
-		h.logger.WithError(err).WithFields(logrus.Fields{
-			"access_key": clientCreds.AccessKey,
-		}).Error("Failed to create client with extracted credentials")
-		return nil, fmt.Errorf("failed to create S3 client with client credentials: %w", err)
-	}
-
-	h.logger.WithFields(logrus.Fields{
-		"access_key": clientCreds.AccessKey,
-	}).Debug("Using client credentials for backend request")
-	return client, nil
+	return nil, fmt.Errorf("no S3 client available")
 }
 
 // getEncryptionEngine returns the appropriate encryption engine for the bucket.
