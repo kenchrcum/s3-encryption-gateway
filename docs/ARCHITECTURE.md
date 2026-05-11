@@ -37,8 +37,9 @@ After analyzing multiple languages, Go was selected for this project due to:
 - **Technology**: Go's net/http with custom middleware
 - **Responsibilities**:
   - Parse and validate S3 API requests
-  - Route requests to appropriate handlers
-  - Handle authentication and authorization
+  - Authenticate every request via AuthMiddleware (credential lookup + AWS Signature V4/V2 validation) before any handler logic
+  - Route authenticated requests to appropriate handlers
+  - Apply optional `proxied_bucket` filter after successful authentication
   - Provide health check endpoints
 
 ### 2. Request Processor
@@ -79,32 +80,47 @@ After analyzing multiple languages, Go was selected for this project due to:
 
 ## Data Flow
 
+### Authentication Flow
+
+Every request must present valid AWS Signature V4 or V2 credentials. Authentication happens before any handler logic:
+
+```
+Client → AuthMiddleware: credential lookup + signature validation
+AuthMiddleware → Handler: proceed (with optional proxied_bucket filter applied)
+Handler → Backend S3: forward authenticated request
+```
+
+The gateway maintains a unified credential store (`auth.credentials`). Each entry contains an access key, secret key, and an optional `proxied_bucket` filter that restricts the credential to a single bucket after authentication succeeds.
+
 ### Object Upload (PUT)
 ```
-1. Client → Gateway: PUT /bucket/key
-2. Gateway → RequestParser: Parse request
-3. RequestParser → EncryptionEngine: Encrypt object data
-4. EncryptionEngine → BackendClient: PUT encrypted data
-5. BackendClient → Gateway: Response
-6. Gateway → Client: Response (with modified metadata)
+1. Client → Gateway: PUT /bucket/key (with AWS Signature V4/V2)
+2. Gateway → AuthMiddleware: Validate signature against auth.credentials
+3. Gateway → RequestParser: Parse request
+4. RequestParser → EncryptionEngine: Encrypt object data
+5. EncryptionEngine → BackendClient: PUT encrypted data
+6. BackendClient → Gateway: Response
+7. Gateway → Client: Response (with modified metadata)
 ```
 
 ### Object Download (GET)
 ```
-1. Client → Gateway: GET /bucket/key
-2. Gateway → RequestParser: Parse request
-3. RequestParser → BackendClient: GET encrypted data
-4. BackendClient → EncryptionEngine: Decrypt object data
-5. EncryptionEngine → Gateway: Decrypted response
-6. Gateway → Client: Response (original data)
+1. Client → Gateway: GET /bucket/key (with AWS Signature V4/V2)
+2. Gateway → AuthMiddleware: Validate signature against auth.credentials
+3. Gateway → RequestParser: Parse request
+4. RequestParser → BackendClient: GET encrypted data
+5. BackendClient → EncryptionEngine: Decrypt object data
+6. EncryptionEngine → Gateway: Decrypted response
+7. Gateway → Client: Response (original data)
 ```
 
 ### List Objects (GET with query params)
 ```
-1. Client → Gateway: GET /bucket/?list-type=2
-2. Gateway → BackendClient: Forward request (no encryption needed)
-3. BackendClient → Gateway: Response
-4. Gateway → Client: Response (unchanged)
+1. Client → Gateway: GET /bucket/?list-type=2 (with AWS Signature V4/V2)
+2. Gateway → AuthMiddleware: Validate signature against auth.credentials
+3. Gateway → BackendClient: Forward request (no encryption needed)
+4. BackendClient → Gateway: Response
+5. Gateway → Client: Response (unchanged)
 ```
 
 ## Key Design Decisions

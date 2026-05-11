@@ -184,6 +184,71 @@ data:
 - **SERVER_READ_HEADER_TIMEOUT**: Header read timeout (default: 10s)
 - **SERVER_MAX_HEADER_BYTES**: Maximum header size in bytes (default: 1048576)
 
+## Configuring Gateway Credentials
+
+The gateway requires every incoming request to present valid AWS Signature V4 or V2 credentials. These are configured in the `auth.credentials` list and are **separate** from the backend S3 credentials.
+
+### `auth.credentials` Config Block
+
+```yaml
+auth:
+  credentials:
+    - access_key: "gateway-access-key-1"
+      secret_key: "gateway-secret-key-1"
+      proxied_bucket: "my-bucket"  # optional: restrict this credential to a single bucket
+    - access_key: "gateway-access-key-2"
+      secret_key: "gateway-secret-key-2"
+```
+
+### Kubernetes Secret + `valueFrom` / `secretKeyRef`
+
+For Kubernetes deployments, store gateway credentials in a Secret and reference them via `valueFrom`:
+
+```yaml
+env:
+  - name: GW_ACCESS_KEY_1
+    valueFrom:
+      secretKeyRef:
+        name: gateway-auth-secrets
+        key: access-key-1
+  - name: GW_SECRET_KEY_1
+    valueFrom:
+      secretKeyRef:
+        name: gateway-auth-secrets
+        key: secret-key-1
+```
+
+The Helm chart can mount these automatically — see `helm/s3-encryption-gateway/README.md`.
+
+### Environment Variables for Non-Kubernetes Deployments
+
+For Docker or bare-metal deployments, use environment variables:
+
+```bash
+export GW_ACCESS_KEY_1="gateway-access-key-1"
+export GW_SECRET_KEY_1="gateway-secret-key-1"
+```
+
+### Generating Credentials
+
+Generate strong random credentials with OpenSSL:
+
+```bash
+# Access key: 16 bytes hex
+openssl rand -hex 16
+
+# Secret key: 32 bytes hex
+openssl rand -hex 32
+```
+
+### Backend Credentials Are Separate
+
+`backend.access_key` and `backend.secret_key` are used by the gateway to authenticate **itself** to the backend S3 provider. They are completely separate from `auth.credentials`, which are used to authenticate **clients** to the gateway.
+
+### Migration Note
+
+The old `backend.use_client_credentials` passthrough mode has been removed. Operators who previously relied on client credential passthrough must move those credentials into `auth.credentials` before upgrading.
+
 ## Multipart Upload State Store (Valkey)
 
 When encrypted multipart uploads are enabled (`encrypt_multipart_uploads: true`

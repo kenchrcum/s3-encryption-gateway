@@ -365,8 +365,12 @@ docker run -p 8080:8080 \
   -e BACKEND_ACCESS_KEY="your-key" \
   -e BACKEND_SECRET_KEY="your-secret" \
   -e ENCRYPTION_PASSWORD="your-password" \
+  -e GW_ACCESS_KEY_1="gateway-access-key" \
+  -e GW_SECRET_KEY_1="gateway-secret-key" \
   s3-encryption-gateway:latest
 ```
+
+> **Authentication is required.** As of v1.0, every request must include valid AWS Signature V4 or V2 credentials matching an entry in `auth.credentials`. Unauthenticated requests will receive `AccessDenied`.
 
 Point any S3 client at the gateway instead of directly at S3:
 
@@ -384,7 +388,9 @@ aws s3 cp backup.sql s3://my-bucket/ --endpoint-url http://localhost:8080
 kubectl create secret generic s3-encryption-gateway-secrets \
   --from-literal=backend-access-key=YOUR_KEY \
   --from-literal=backend-secret-key=YOUR_SECRET \
-  --from-literal=encryption-password=YOUR_PASSWORD
+  --from-literal=encryption-password=YOUR_PASSWORD \
+  --from-literal=gateway-access-key=YOUR_GATEWAY_ACCESS_KEY \
+  --from-literal=gateway-secret-key=YOUR_GATEWAY_SECRET_KEY
 
 helm install s3-encryption-gateway ./helm/s3-encryption-gateway
 ```
@@ -422,6 +428,12 @@ Create a `config.yaml` file (see `config.yaml.example` for reference):
 ```yaml
 listen_addr: ":8080"
 log_level: "info"
+
+auth:
+  credentials:
+    - access_key: "YOUR_GATEWAY_ACCESS_KEY"
+      secret_key: "YOUR_GATEWAY_SECRET_KEY"
+      # proxied_bucket: "optional-bucket-filter"
 
 backend:
   endpoint: "https://s3.amazonaws.com"
