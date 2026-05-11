@@ -6,21 +6,22 @@ config:
     value: ":8080"
   logLevel:
     value: "info"
+  auth:
+    credentials:
+      - accessKey:
+          value: "test-access-key"
+        secretKey:
+          value: "test-secret-key"
+        label: "ci-test"
   backend:
     endpoint:
       value: "https://s3.amazonaws.com"
     region:
       value: "us-east-1"
-    # Test with useClientCredentials enabled
-    useClientCredentials:
-      value: "true"
-    # accessKey and secretKey not required when useClientCredentials is true
     accessKey:
-      value: ""
-      valueFrom: {}
+      value: "backend-test-access-key"
     secretKey:
-      value: ""
-      valueFrom: {}
+      value: "backend-test-secret-key"
     useSSL:
       value: "true"
     usePathStyle:
@@ -66,4 +67,3 @@ resources:
   requests:
     cpu: 100m
     memory: 64Mi
-

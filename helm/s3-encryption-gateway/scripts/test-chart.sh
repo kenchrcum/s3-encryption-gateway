@@ -9,19 +9,21 @@ CHART_DIR="$(dirname "$SCRIPT_DIR")"
 
 echo "Testing Helm chart: $CHART_DIR"
 
-# Test 1: Default configuration (useClientCredentials disabled)
+# Test 1: Default configuration with backend and auth credentials
 echo ""
-echo "Test 1: Default configuration with backend credentials"
+echo "Test 1: Default configuration with credentials"
 helm template test "$CHART_DIR" \
-  --set-string config.backend.useClientCredentials.value=false \
   --set config.backend.accessKey.value=test-access-key \
   --set config.backend.secretKey.value=test-secret-key \
+  --set config.auth.credentials[0].accessKey.value=gw-access-key \
+  --set config.auth.credentials[0].secretKey.value=gw-secret-key \
   --set config.encryption.password.value=test-password > /dev/null
 
 if helm template test "$CHART_DIR" \
-  --set-string config.backend.useClientCredentials.value=false \
   --set config.backend.accessKey.value=test-access-key \
   --set config.backend.secretKey.value=test-secret-key \
+  --set config.auth.credentials[0].accessKey.value=gw-access-key \
+  --set config.auth.credentials[0].secretKey.value=gw-secret-key \
   --set config.encryption.password.value=test-password 2>&1 | grep -q "BACKEND_ACCESS_KEY"; then
   echo "✓ BACKEND_ACCESS_KEY is present"
 else
@@ -30,9 +32,10 @@ else
 fi
 
 if helm template test "$CHART_DIR" \
-  --set-string config.backend.useClientCredentials.value=false \
   --set config.backend.accessKey.value=test-access-key \
   --set config.backend.secretKey.value=test-secret-key \
+  --set config.auth.credentials[0].accessKey.value=gw-access-key \
+  --set config.auth.credentials[0].secretKey.value=gw-secret-key \
   --set config.encryption.password.value=test-password 2>&1 | grep -q "BACKEND_SECRET_KEY"; then
   echo "✓ BACKEND_SECRET_KEY is present"
 else
@@ -40,34 +43,50 @@ else
   exit 1
 fi
 
-# Test 2: useClientCredentials enabled
+if helm template test "$CHART_DIR" \
+  --set config.backend.accessKey.value=test-access-key \
+  --set config.backend.secretKey.value=test-secret-key \
+  --set config.auth.credentials[0].accessKey.value=gw-access-key \
+  --set config.auth.credentials[0].secretKey.value=gw-secret-key \
+  --set config.encryption.password.value=test-password 2>&1 | grep -q "GW_CRED_0_ACCESS_KEY"; then
+  echo "✓ GW_CRED_0_ACCESS_KEY is present"
+else
+  echo "✗ GW_CRED_0_ACCESS_KEY is missing"
+  exit 1
+fi
+
+# Test 2: existingCredentialsSecret rendering
 echo ""
-echo "Test 2: useClientCredentials enabled"
+echo "Test 2: existingCredentialsSecret"
 helm template test "$CHART_DIR" \
-  --values "$CHART_DIR/tests/ci-values.yaml" > /dev/null
+  --set config.auth.existingCredentialsSecret.name=gw-creds \
+  --set config.auth.existingCredentialsSecret.key=creds.yaml \
+  --set config.backend.accessKey.value=test-access-key \
+  --set config.backend.secretKey.value=test-secret-key \
+  --set config.encryption.password.value=test-password > /dev/null
 
 if helm template test "$CHART_DIR" \
-  --values "$CHART_DIR/tests/ci-values.yaml" 2>&1 | grep -q "BACKEND_USE_CLIENT_CREDENTIALS"; then
-  echo "✓ BACKEND_USE_CLIENT_CREDENTIALS is present"
+  --set config.auth.existingCredentialsSecret.name=gw-creds \
+  --set config.auth.existingCredentialsSecret.key=creds.yaml \
+  --set config.backend.accessKey.value=test-access-key \
+  --set config.backend.secretKey.value=test-secret-key \
+  --set config.encryption.password.value=test-password 2>&1 | grep -q "AUTH_CREDENTIALS_FILE"; then
+  echo "✓ AUTH_CREDENTIALS_FILE is present"
 else
-  echo "✗ BACKEND_USE_CLIENT_CREDENTIALS is missing"
+  echo "✗ AUTH_CREDENTIALS_FILE is missing"
   exit 1
 fi
 
-if ! helm template test "$CHART_DIR" \
-  --values "$CHART_DIR/tests/ci-values.yaml" 2>&1 | grep -q "BACKEND_ACCESS_KEY"; then
-  echo "✓ BACKEND_ACCESS_KEY is correctly excluded"
-else
-  echo "✗ BACKEND_ACCESS_KEY should not be present when useClientCredentials is enabled"
+if helm template test "$CHART_DIR" \
+  --set config.auth.existingCredentialsSecret.name=gw-creds \
+  --set config.auth.existingCredentialsSecret.key=creds.yaml \
+  --set config.backend.accessKey.value=test-access-key \
+  --set config.backend.secretKey.value=test-secret-key \
+  --set config.encryption.password.value=test-password 2>&1 | grep -q "GW_CRED_0_ACCESS_KEY"; then
+  echo "✗ GW_CRED_0_ACCESS_KEY should not be present with existingCredentialsSecret"
   exit 1
-fi
-
-if ! helm template test "$CHART_DIR" \
-  --values "$CHART_DIR/tests/ci-values.yaml" 2>&1 | grep -q "BACKEND_SECRET_KEY"; then
-  echo "✓ BACKEND_SECRET_KEY is correctly excluded"
 else
-  echo "✗ BACKEND_SECRET_KEY should not be present when useClientCredentials is enabled"
-  exit 1
+  echo "✓ GW_CRED_0_ACCESS_KEY correctly excluded"
 fi
 
 # Test 3: Validate chart linting
@@ -102,4 +121,3 @@ fi
 
 echo ""
 echo "All tests passed!"
-
