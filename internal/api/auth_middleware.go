@@ -81,7 +81,7 @@ func AuthMiddleware(store CredentialStore, clockSkew time.Duration, logger *logr
 			if IsSignatureV4Request(r) {
 				sigErr = ValidateSignatureV4(r, secretKey, clockSkew)
 			} else if IsSignatureV2Request(r) {
-				sigErr = ValidateSignatureV2(r, secretKey)
+				sigErr = ValidateSignatureV2(r, secretKey, clockSkew)
 			} else {
 				// Credentials were extracted but no recognizable signature format
 				logger.WithField("access_key", creds.AccessKey).Warn("No recognizable signature in request")
