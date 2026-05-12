@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/xml"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -291,13 +292,21 @@ func (m *mockS3Client) UploadPartCopy(ctx context.Context, dstBucket, dstKey, up
 
 func (m *mockS3Client) DeleteObjects(ctx context.Context, bucket string, keys []s3.ObjectIdentifier) ([]s3.DeletedObject, []s3.ErrorObject, error) {
 	deleted := []s3.DeletedObject{}
-	errors := []s3.ErrorObject{}
+	errObjects := []s3.ErrorObject{}
 
 	for _, k := range keys {
 		if err := m.DeleteObject(ctx, bucket, k.Key, nil); err != nil {
-			errors = append(errors, s3.ErrorObject{
+			errCode := "InternalError"
+			// Propagate the original error code if available.
+			var apiErr smithy.APIError
+			if errors.As(err, &apiErr) {
+				errCode = apiErr.ErrorCode()
+			} else if se, ok := err.(*s3Error); ok {
+				errCode = se.code
+			}
+			errObjects = append(errObjects, s3.ErrorObject{
 				Key:     k.Key,
-				Code:    "InternalError",
+				Code:    errCode,
 				Message: err.Error(),
 			})
 		} else {
@@ -307,7 +316,7 @@ func (m *mockS3Client) DeleteObjects(ctx context.Context, bucket string, keys []
 		}
 	}
 
-	return deleted, errors, nil
+	return deleted, errObjects, nil
 }
 
 type s3Error struct {
@@ -1397,4 +1406,285 @@ func (m *mockS3Client) GetObjectLockConfiguration(ctx context.Context, bucket st
 		return &cp, nil
 	}
 	return nil, nil
+}
+
+// ---------------------------------------------------------------------------
+// MPU manifest cleanup tests
+// ---------------------------------------------------------------------------
+
+func TestDeleteObject_CleansUpMPUManifest(t *testing.T) {
+	logger := logrus.New()
+	logger.SetLevel(logrus.ErrorLevel)
+	mockClient := newMockS3Client()
+	mockEngine, _ := crypto.NewEngine([]byte("test-password-123456"))
+	handler := NewHandler(mockClient, mockEngine, logger, getTestMetrics())
+
+	// Pre-populate with primary object AND its MPU manifest
+	mockClient.PutObject(context.Background(), "test-bucket", "test-key", bytes.NewReader([]byte("test data")), nil, nil, "", nil)
+	mockClient.PutObject(context.Background(), "test-bucket", "test-key.mpu-manifest", bytes.NewReader([]byte("manifest data")), nil, nil, "", nil)
+
+	router := mux.NewRouter()
+	handler.RegisterRoutes(router)
+
+	req := httptest.NewRequest("DELETE", "/test-bucket/test-key", nil)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusNoContent {
+		t.Errorf("expected status %d, got %d", http.StatusNoContent, w.Code)
+	}
+
+	// Verify primary object is gone
+	_, _, err := mockClient.GetObject(context.Background(), "test-bucket", "test-key", nil, nil)
+	if err == nil {
+		t.Error("primary object should have been deleted")
+	}
+
+	// Verify manifest object is also gone
+	_, _, err = mockClient.GetObject(context.Background(), "test-bucket", "test-key.mpu-manifest", nil, nil)
+	if err == nil {
+		t.Error("MPU manifest should have been cleaned up")
+	}
+}
+
+func TestDeleteObject_ManifestNotFoundIsNoop(t *testing.T) {
+	logger := logrus.New()
+	logger.SetLevel(logrus.ErrorLevel)
+	mockClient := newMockS3Client()
+	mockEngine, _ := crypto.NewEngine([]byte("test-password-123456"))
+	handler := NewHandler(mockClient, mockEngine, logger, getTestMetrics())
+
+	// Pre-populate with primary object only (NO manifest)
+	mockClient.PutObject(context.Background(), "test-bucket", "test-key", bytes.NewReader([]byte("test data")), nil, nil, "", nil)
+
+	// Simulate NoSuchKey for the manifest delete
+	mockClient.errors["test-bucket/test-key.mpu-manifest/delete"] = &mockAPIError{code: "NoSuchKey", message: "not found"}
+
+	router := mux.NewRouter()
+	handler.RegisterRoutes(router)
+
+	req := httptest.NewRequest("DELETE", "/test-bucket/test-key", nil)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusNoContent {
+		t.Errorf("expected status %d, got %d", http.StatusNoContent, w.Code)
+	}
+
+	// Verify primary object is gone
+	_, _, err := mockClient.GetObject(context.Background(), "test-bucket", "test-key", nil, nil)
+	if err == nil {
+		t.Error("primary object should have been deleted")
+	}
+}
+
+func TestDeleteObject_ManifestCleanupFailureDoesNotAffectPrimary(t *testing.T) {
+	logger := logrus.New()
+	logger.SetLevel(logrus.ErrorLevel)
+	mockClient := newMockS3Client()
+	mockEngine, _ := crypto.NewEngine([]byte("test-password-123456"))
+	handler := NewHandler(mockClient, mockEngine, logger, getTestMetrics())
+
+	// Pre-populate with primary object
+	mockClient.PutObject(context.Background(), "test-bucket", "test-key", bytes.NewReader([]byte("test data")), nil, nil, "", nil)
+
+	// Simulate an AccessDenied error for the manifest delete
+	mockClient.errors["test-bucket/test-key.mpu-manifest/delete"] = &mockAPIError{code: "AccessDenied", message: "access denied"}
+
+	router := mux.NewRouter()
+	handler.RegisterRoutes(router)
+
+	req := httptest.NewRequest("DELETE", "/test-bucket/test-key", nil)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	// Primary delete MUST still succeed
+	if w.Code != http.StatusNoContent {
+		t.Errorf("expected status %d despite manifest cleanup failure, got %d", http.StatusNoContent, w.Code)
+	}
+
+	// Verify primary object is gone despite manifest cleanup failure
+	_, _, err := mockClient.GetObject(context.Background(), "test-bucket", "test-key", nil, nil)
+	if err == nil {
+		t.Error("primary object should have been deleted")
+	}
+}
+
+func TestDeleteObjects_CleansUpMPUManifests(t *testing.T) {
+	logger := logrus.New()
+	logger.SetLevel(logrus.ErrorLevel)
+	mockClient := newMockS3Client()
+	mockEngine, _ := crypto.NewEngine([]byte("test-password-123456"))
+	handler := NewHandler(mockClient, mockEngine, logger, getTestMetrics())
+
+	// Pre-populate with objects AND their manifests
+	mockClient.PutObject(context.Background(), "test-bucket", "key1", bytes.NewReader([]byte("data1")), nil, nil, "", nil)
+	mockClient.PutObject(context.Background(), "test-bucket", "key2", bytes.NewReader([]byte("data2")), nil, nil, "", nil)
+	mockClient.PutObject(context.Background(), "test-bucket", "key1.mpu-manifest", bytes.NewReader([]byte("manifest1")), nil, nil, "", nil)
+	mockClient.PutObject(context.Background(), "test-bucket", "key2.mpu-manifest", bytes.NewReader([]byte("manifest2")), nil, nil, "", nil)
+
+	router := mux.NewRouter()
+	handler.RegisterRoutes(router)
+
+	body := `<Delete><Object><Key>key1</Key></Object><Object><Key>key2</Key></Object></Delete>`
+	req := httptest.NewRequest("POST", "/test-bucket?delete", bytes.NewReader([]byte(body)))
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("expected status %d, got %d", http.StatusOK, w.Code)
+	}
+
+	// Verify both primary objects are gone
+	_, _, err := mockClient.GetObject(context.Background(), "test-bucket", "key1", nil, nil)
+	if err == nil {
+		t.Error("key1 should have been deleted")
+	}
+	_, _, err = mockClient.GetObject(context.Background(), "test-bucket", "key2", nil, nil)
+	if err == nil {
+		t.Error("key2 should have been deleted")
+	}
+
+	// Verify both manifests are cleaned up
+	_, _, err = mockClient.GetObject(context.Background(), "test-bucket", "key1.mpu-manifest", nil, nil)
+	if err == nil {
+		t.Error("key1 manifest should have been cleaned up")
+	}
+	_, _, err = mockClient.GetObject(context.Background(), "test-bucket", "key2.mpu-manifest", nil, nil)
+	if err == nil {
+		t.Error("key2 manifest should have been cleaned up")
+	}
+}
+
+func TestDeleteObjects_ManifestNotFoundIsNoop(t *testing.T) {
+	logger := logrus.New()
+	logger.SetLevel(logrus.ErrorLevel)
+	mockClient := newMockS3Client()
+	mockEngine, _ := crypto.NewEngine([]byte("test-password-123456"))
+	handler := NewHandler(mockClient, mockEngine, logger, getTestMetrics())
+
+	// Pre-populate with primary objects only (NO manifests)
+	mockClient.PutObject(context.Background(), "test-bucket", "key1", bytes.NewReader([]byte("data1")), nil, nil, "", nil)
+
+	router := mux.NewRouter()
+	handler.RegisterRoutes(router)
+
+	body := `<Delete><Object><Key>key1</Key></Object></Delete>`
+	req := httptest.NewRequest("POST", "/test-bucket?delete", bytes.NewReader([]byte(body)))
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("expected status %d, got %d", http.StatusOK, w.Code)
+	}
+
+	// Verify primary object is gone
+	_, _, err := mockClient.GetObject(context.Background(), "test-bucket", "key1", nil, nil)
+	if err == nil {
+		t.Error("key1 should have been deleted")
+	}
+}
+
+func TestDeleteObjects_PartialManifestCleanupFailure(t *testing.T) {
+	logger := logrus.New()
+	logger.SetLevel(logrus.ErrorLevel)
+	mockClient := newMockS3Client()
+	mockEngine, _ := crypto.NewEngine([]byte("test-password-123456"))
+	handler := NewHandler(mockClient, mockEngine, logger, getTestMetrics())
+
+	// Pre-populate with objects AND their manifests
+	mockClient.PutObject(context.Background(), "test-bucket", "key1", bytes.NewReader([]byte("data1")), nil, nil, "", nil)
+	mockClient.PutObject(context.Background(), "test-bucket", "key2", bytes.NewReader([]byte("data2")), nil, nil, "", nil)
+	mockClient.PutObject(context.Background(), "test-bucket", "key1.mpu-manifest", bytes.NewReader([]byte("manifest1")), nil, nil, "", nil)
+	mockClient.PutObject(context.Background(), "test-bucket", "key2.mpu-manifest", bytes.NewReader([]byte("manifest2")), nil, nil, "", nil)
+
+	// Simulate AccessDenied for key2's manifest cleanup
+	mockClient.errors["test-bucket/key2.mpu-manifest/delete"] = &mockAPIError{code: "AccessDenied", message: "access denied"}
+
+	router := mux.NewRouter()
+	handler.RegisterRoutes(router)
+
+	body := `<Delete><Object><Key>key1</Key></Object><Object><Key>key2</Key></Object></Delete>`
+	req := httptest.NewRequest("POST", "/test-bucket?delete", bytes.NewReader([]byte(body)))
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("expected status %d, got %d", http.StatusOK, w.Code)
+	}
+
+	// Verify both primary objects are gone
+	_, _, err := mockClient.GetObject(context.Background(), "test-bucket", "key1", nil, nil)
+	if err == nil {
+		t.Error("key1 should have been deleted")
+	}
+	_, _, err = mockClient.GetObject(context.Background(), "test-bucket", "key2", nil, nil)
+	if err == nil {
+		t.Error("key2 should have been deleted")
+	}
+
+	// Verify key1's manifest WAS cleaned up (no error for it)
+	_, _, err = mockClient.GetObject(context.Background(), "test-bucket", "key1.mpu-manifest", nil, nil)
+	if err == nil {
+		t.Error("key1 manifest should have been cleaned up")
+	}
+
+	// Verify key2's manifest still EXISTS (cleanup was denied)
+	_, _, err = mockClient.GetObject(context.Background(), "test-bucket", "key2.mpu-manifest", nil, nil)
+	if err != nil {
+		t.Error("key2 manifest should still exist because cleanup was denied")
+	}
+}
+
+func TestIsS3NotFoundError(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{
+			name: "nil error",
+			err:  nil,
+			want: false,
+		},
+		{
+			name: "NoSuchKey via APIError",
+			err:  &mockAPIError{code: "NoSuchKey", message: "not found"},
+			want: true,
+		},
+		{
+			name: "NotFound via APIError",
+			err:  &mockAPIError{code: "NotFound", message: "not found"},
+			want: true,
+		},
+		{
+			name: "AccessDenied via APIError",
+			err:  &mockAPIError{code: "AccessDenied", message: "denied"},
+			want: false,
+		},
+		{
+			name: "NoSuchKey via s3Error (string match fallback)",
+			err:  &s3Error{code: "NoSuchKey", message: "NoSuchKey: The specified key does not exist"},
+			want: true,
+		},
+		{
+			name: "NotFound string in error message",
+			err:  fmt.Errorf("something NotFound happened"),
+			want: true,
+		},
+		{
+			name: "unrelated error",
+			err:  fmt.Errorf("unrelated error"),
+			want: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := isS3NotFoundError(tt.err)
+			if got != tt.want {
+				t.Errorf("isS3NotFoundError(%v) = %v, want %v", tt.err, got, tt.want)
+			}
+		})
+	}
 }

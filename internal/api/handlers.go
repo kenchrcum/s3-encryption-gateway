@@ -1628,6 +1628,30 @@ func (h *Handler) handleDeleteObject(w http.ResponseWriter, r *http.Request) {
 		h.cache.Delete(ctx, bucket, key)
 	}
 
+	// Clean up MPU manifest companion object (best-effort).
+	// Non-MPU objects have no manifest, so a 404 on the companion key is
+	// expected and silently ignored. Manifest cleanup failures must NOT
+	// propagate as primary delete errors — the object itself is already gone.
+	manifestKey := key + ".mpu-manifest"
+	if err := s3Client.DeleteObject(ctx, bucket, manifestKey, nil); err != nil {
+		if isS3NotFoundError(err) {
+			h.logger.WithFields(logrus.Fields{
+				"bucket": bucket,
+				"key":    manifestKey,
+			}).Debug("No MPU manifest to clean up (object was not an MPU-encrypted object)")
+		} else {
+			h.logger.WithError(err).WithFields(logrus.Fields{
+				"bucket": bucket,
+				"key":    manifestKey,
+			}).Warn("Failed to clean up MPU manifest companion object")
+		}
+	} else {
+		h.logger.WithFields(logrus.Fields{
+			"bucket": bucket,
+			"key":    manifestKey,
+		}).Debug("Cleaned up MPU manifest companion object")
+	}
+
 	// Audit logging
 	if h.auditLogger != nil {
 		h.auditLogger.LogAccess("delete", bucket, key, getClientIP(r), r.UserAgent(), getRequestID(r), true, nil, time.Since(start))
@@ -4084,6 +4108,48 @@ func (h *Handler) handleDeleteObjects(w http.ResponseWriter, r *http.Request) {
 	if h.cache != nil {
 		for _, del := range deleted {
 			h.cache.Delete(ctx, bucket, del.Key)
+		}
+	}
+
+	// Clean up MPU manifest companion objects for successfully deleted keys
+	// (best-effort). Non-MPU objects have no manifest, so 404s are expected
+	// and silently ignored. Manifest cleanup failures must NOT propagate as
+	// primary delete errors — the objects themselves are already gone.
+	if len(deleted) > 0 {
+		manifestKeys := make([]s3.ObjectIdentifier, 0, len(deleted))
+		for _, del := range deleted {
+			manifestKeys = append(manifestKeys, s3.ObjectIdentifier{
+				Key: del.Key + ".mpu-manifest",
+			})
+		}
+		manifestDeleted, manifestErrors, manifestErr := s3Client.DeleteObjects(ctx, bucket, manifestKeys)
+		if manifestErr != nil {
+			// Whole-batch failure — log and move on.
+			h.logger.WithError(manifestErr).WithFields(logrus.Fields{
+				"bucket": bucket,
+				"count": len(manifestKeys),
+			}).Warn("Failed to batch-delete MPU manifest companion objects")
+		} else {
+			for _, d := range manifestDeleted {
+				h.logger.WithFields(logrus.Fields{
+					"bucket": bucket,
+					"key":    d.Key,
+				}).Debug("Cleaned up MPU manifest companion object")
+			}
+			for _, e := range manifestErrors {
+				if e.Code == "NoSuchKey" || e.Code == "NotFound" {
+					h.logger.WithFields(logrus.Fields{
+						"bucket": bucket,
+						"key":    e.Key,
+					}).Debug("No MPU manifest to clean up (object was not an MPU-encrypted object)")
+				} else {
+					h.logger.WithFields(logrus.Fields{
+						"bucket": bucket,
+						"key":    e.Key,
+						"code":   e.Code,
+					}).Warn("Failed to clean up MPU manifest companion object")
+				}
+			}
 		}
 	}
 
