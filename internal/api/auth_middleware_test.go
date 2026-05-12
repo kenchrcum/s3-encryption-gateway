@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -101,6 +102,32 @@ func TestAuthMiddleware_SigV2_BadSignature(t *testing.T) {
 	}))
 
 	req := httptest.NewRequest("GET", "/bucket/key?AWSAccessKeyId=AKIAIOSFODNN7EXAMPLE&Signature=bad-signature&Expires=1893456000&AWSSecretAccessKey=dummy", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusForbidden {
+		t.Errorf("status = %d, want %d", rec.Code, http.StatusForbidden)
+	}
+}
+
+func TestAuthMiddleware_SigV2_Expired(t *testing.T) {
+	logger := logrus.New()
+	logger.SetOutput(io.Discard)
+	middleware := AuthMiddleware(testCredentialStore(), 5*time.Minute, logger)
+
+	handler := middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	// Expires 1 hour ago — should be rejected
+	expires := strconv.FormatInt(time.Now().Add(-1*time.Hour).Unix(), 10)
+	q := url.Values{}
+	q.Set("AWSAccessKeyId", "AKIAIOSFODNN7EXAMPLE")
+	q.Set("Expires", expires)
+	q.Set("AWSSecretAccessKey", "dummy")
+	q.Set("Signature", "badsignature")
+
+	req := httptest.NewRequest("GET", "/bucket/key?"+q.Encode(), nil)
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 

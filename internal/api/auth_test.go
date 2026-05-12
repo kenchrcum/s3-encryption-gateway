@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -705,41 +706,41 @@ func TestValidateSignatureV4_PresignedURL_ExceedsMaxDuration(t *testing.T) {
 
 
 // TestValidateSignatureV2_HeaderAuth verifies that a valid V2 Authorization
-// header is accepted.
+// header with a current timestamp is accepted.
 func TestValidateSignatureV2_HeaderAuth(t *testing.T) {
 	secretKey := "test-secret-key"
 	accessKey := "AKIATEST"
 	req := httptest.NewRequest("GET", "/bucket/key", nil)
-	req.Header.Set("Date", "Mon, 11 May 2026 12:00:00 GMT")
+	req.Header.Set("Date", time.Now().UTC().Format(time.RFC1123))
 
 	stringToSign := buildV2StringToSign(req)
 	sig := base64.StdEncoding.EncodeToString(hmacSHA1([]byte(secretKey), []byte(stringToSign)))
 	req.Header.Set("Authorization", "AWS "+accessKey+":"+sig)
 
-	err := ValidateSignatureV2(req, secretKey)
+	err := ValidateSignatureV2(req, secretKey, defaultClockSkew)
 	if err != nil {
 		t.Fatalf("ValidateSignatureV2() expected nil for valid header auth, got: %v", err)
 	}
 }
 
 // TestValidateSignatureV2_QueryParam verifies that a valid V2 query-parameter
-// request is accepted.
+// request with a future Expires timestamp is accepted.
 func TestValidateSignatureV2_QueryParam(t *testing.T) {
 	secretKey := "test-secret-key"
 	accessKey := "AKIATEST"
-	expires := "Mon, 11 May 2026 12:00:00 GMT"
+	// Expires 1 hour from now (Unix timestamp)
+	expires := strconv.FormatInt(time.Now().Add(1*time.Hour).Unix(), 10)
 	q := url.Values{}
 	q.Set("AWSAccessKeyId", accessKey)
 	q.Set("Expires", expires)
 
 	req := httptest.NewRequest("GET", "/bucket/key?"+q.Encode(), nil)
-	// No Date header; date comes from Expires query param.
 	stringToSign := buildV2StringToSign(req)
 	sig := base64.StdEncoding.EncodeToString(hmacSHA1([]byte(secretKey), []byte(stringToSign)))
 	q.Set("Signature", sig)
 
 	req = httptest.NewRequest("GET", "/bucket/key?"+q.Encode(), nil)
-	err := ValidateSignatureV2(req, secretKey)
+	err := ValidateSignatureV2(req, secretKey, defaultClockSkew)
 	if err != nil {
 		t.Fatalf("ValidateSignatureV2() expected nil for valid query-param auth, got: %v", err)
 	}
@@ -750,15 +751,114 @@ func TestValidateSignatureV2_QueryParam(t *testing.T) {
 func TestValidateSignatureV2_BadSignature(t *testing.T) {
 	secretKey := "correct-secret"
 	req := httptest.NewRequest("GET", "/bucket/key", nil)
-	req.Header.Set("Date", "Mon, 11 May 2026 12:00:00 GMT")
+	req.Header.Set("Date", time.Now().UTC().Format(time.RFC1123))
 	req.Header.Set("Authorization", "AWS AKIATEST:badsignature")
 
-	err := ValidateSignatureV2(req, secretKey)
+	err := ValidateSignatureV2(req, secretKey, defaultClockSkew)
 	if err == nil {
 		t.Fatal("ValidateSignatureV2() expected error for bad signature, got nil")
 	}
 	if !errors.Is(err, ErrSignatureMismatch) {
 		t.Errorf("ValidateSignatureV2() error = %v, want errors.Is(err, ErrSignatureMismatch)", err)
+	}
+}
+
+// TestValidateSignatureV2_ClockSkew_Past verifies that a V2 header-auth
+// request with a Date more than 5 minutes in the past is rejected.
+func TestValidateSignatureV2_ClockSkew_Past(t *testing.T) {
+	secretKey := "test-secret"
+	req := httptest.NewRequest("GET", "/bucket/key", nil)
+	// Timestamp 20 minutes in the past
+	req.Header.Set("Date", time.Now().UTC().Add(-20*time.Minute).Format(time.RFC1123))
+	req.Header.Set("Authorization", "AWS AKIATEST:badsignature")
+
+	err := ValidateSignatureV2(req, secretKey, defaultClockSkew)
+	if err == nil {
+		t.Fatal("ValidateSignatureV2() expected error for old timestamp, got nil")
+	}
+	if !strings.Contains(err.Error(), "clock skew") {
+		t.Errorf("ValidateSignatureV2() error = %v, want clock-skew rejection", err)
+	}
+}
+
+// TestValidateSignatureV2_ClockSkew_Future verifies that a V2 header-auth
+// request with a Date more than 5 minutes in the future is rejected.
+func TestValidateSignatureV2_ClockSkew_Future(t *testing.T) {
+	secretKey := "test-secret"
+	req := httptest.NewRequest("GET", "/bucket/key", nil)
+	// Timestamp 20 minutes in the future
+	req.Header.Set("Date", time.Now().UTC().Add(20*time.Minute).Format(time.RFC1123))
+	req.Header.Set("Authorization", "AWS AKIATEST:badsignature")
+
+	err := ValidateSignatureV2(req, secretKey, defaultClockSkew)
+	if err == nil {
+		t.Fatal("ValidateSignatureV2() expected error for future timestamp, got nil")
+	}
+	if !strings.Contains(err.Error(), "clock skew") {
+		t.Errorf("ValidateSignatureV2() error = %v, want clock-skew rejection", err)
+	}
+}
+
+// TestValidateSignatureV2_ClockSkew_WithinWindow verifies that a V2 header-auth
+// request with a Date within the 5-minute skew window is accepted.
+func TestValidateSignatureV2_ClockSkew_WithinWindow(t *testing.T) {
+	secretKey := "test-secret-key"
+	accessKey := "AKIATEST"
+	req := httptest.NewRequest("GET", "/bucket/key", nil)
+	// Timestamp 2 minutes in the past — comfortably within the skew window
+	req.Header.Set("Date", time.Now().UTC().Add(-2*time.Minute).Format(time.RFC1123))
+
+	stringToSign := buildV2StringToSign(req)
+	sig := base64.StdEncoding.EncodeToString(hmacSHA1([]byte(secretKey), []byte(stringToSign)))
+	req.Header.Set("Authorization", "AWS "+accessKey+":"+sig)
+
+	err := ValidateSignatureV2(req, secretKey, defaultClockSkew)
+	if err != nil {
+		t.Fatalf("ValidateSignatureV2() expected nil for timestamp within skew window, got: %v", err)
+	}
+}
+
+// TestValidateSignatureV2_QueryParam_Expired verifies that a V2 query-param
+// request with an Expires timestamp in the past is rejected.
+func TestValidateSignatureV2_QueryParam_Expired(t *testing.T) {
+	secretKey := "test-secret"
+	// Expires 1 hour ago
+	expires := strconv.FormatInt(time.Now().Add(-1*time.Hour).Unix(), 10)
+	q := url.Values{}
+	q.Set("AWSAccessKeyId", "AKIATEST")
+	q.Set("Expires", expires)
+	q.Set("Signature", "badsignature")
+
+	req := httptest.NewRequest("GET", "/bucket/key?"+q.Encode(), nil)
+	err := ValidateSignatureV2(req, secretKey, defaultClockSkew)
+	if err == nil {
+		t.Fatal("ValidateSignatureV2() expected error for expired request, got nil")
+	}
+	if !strings.Contains(err.Error(), "expired") {
+		t.Errorf("ValidateSignatureV2() error = %v, want expired rejection", err)
+	}
+}
+
+// TestValidateSignatureV2_QueryParam_ValidFuture verifies that a V2 query-param
+// request with an Expires timestamp in the future is accepted.
+func TestValidateSignatureV2_QueryParam_ValidFuture(t *testing.T) {
+	secretKey := "test-secret-key"
+	accessKey := "AKIATEST"
+	// Expires 1 hour from now
+	expires := strconv.FormatInt(time.Now().Add(1*time.Hour).Unix(), 10)
+	q := url.Values{}
+	q.Set("AWSAccessKeyId", accessKey)
+	q.Set("Expires", expires)
+
+	req := httptest.NewRequest("GET", "/bucket/key?"+q.Encode(), nil)
+	stringToSign := buildV2StringToSign(req)
+	sig := base64.StdEncoding.EncodeToString(hmacSHA1([]byte(secretKey), []byte(stringToSign)))
+	q.Set("Signature", sig)
+
+	req = httptest.NewRequest("GET", "/bucket/key?"+q.Encode(), nil)
+	err := ValidateSignatureV2(req, secretKey, defaultClockSkew)
+	if err != nil {
+		t.Fatalf("ValidateSignatureV2() expected nil for valid future Expires, got: %v", err)
 	}
 }
 

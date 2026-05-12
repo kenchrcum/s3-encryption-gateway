@@ -191,17 +191,44 @@ func ValidateSignatureV4(r *http.Request, secretKey string, clockSkew time.Durat
 // ValidateSignatureV2 validates an AWS Signature Version 2 request.
 // It supports both the Authorization header and query-parameter styles.
 // secretKey is the stored secret for the access key identified in the request.
-func ValidateSignatureV2(r *http.Request, secretKey string) error {
+// clockSkew is the maximum acceptable difference between the request
+// timestamp and server time for header-style auth; zero or negative values
+// fall back to defaultClockSkew (5 minutes). For query-parameter style with
+// Expires, the expiry is checked against the current time directly.
+func ValidateSignatureV2(r *http.Request, secretKey string, clockSkew time.Duration) error {
+	if clockSkew <= 0 {
+		clockSkew = defaultClockSkew
+	}
+
 	// Query-parameter style
 	q := r.URL.Query()
 	if q.Get("AWSAccessKeyId") != "" && q.Get("Signature") != "" {
 		signature := q.Get("Signature")
-		date := q.Get("Expires")
-		if date == "" {
-			date = q.Get("Date")
-		}
-		if date == "" {
-			return fmt.Errorf("missing Date/Expires parameter")
+		expiresStr := q.Get("Expires")
+		if expiresStr != "" {
+			// Expires is a Unix timestamp — reject if the request has expired.
+			expires, err := strconv.ParseInt(expiresStr, 10, 64)
+			if err != nil {
+				return fmt.Errorf("invalid Expires format")
+			}
+			if time.Now().Unix() > expires {
+				return fmt.Errorf("request has expired")
+			}
+		} else {
+			// Fallback to Date query parameter (RFC 1123 format) — check clock skew.
+			dateStr := q.Get("Date")
+			if dateStr == "" {
+				return fmt.Errorf("missing Date/Expires parameter")
+			}
+			t, err := time.Parse(time.RFC1123, dateStr)
+			if err != nil {
+				return fmt.Errorf("invalid date format")
+			}
+			now := time.Now().UTC()
+			skew := now.Sub(t).Abs()
+			if skew > clockSkew {
+				return fmt.Errorf("request timestamp outside clock skew window")
+			}
 		}
 		// Build string-to-sign
 		stringToSign := buildV2StringToSign(r)
@@ -226,6 +253,16 @@ func ValidateSignatureV2(r *http.Request, secretKey string) error {
 		}
 		if date == "" {
 			return fmt.Errorf("missing Date header")
+		}
+		// Validate timestamp is within clock skew window to prevent replay.
+		t, err := time.Parse(time.RFC1123, date)
+		if err != nil {
+			return fmt.Errorf("invalid date format")
+		}
+		now := time.Now().UTC()
+		skew := now.Sub(t).Abs()
+		if skew > clockSkew {
+			return fmt.Errorf("request timestamp outside clock skew window")
 		}
 		stringToSign := buildV2StringToSign(r)
 		expectedSig := base64.StdEncoding.EncodeToString(hmacSHA1([]byte(secretKey), []byte(stringToSign)))
