@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strings"
 
 	"github.com/aws/smithy-go"
 )
@@ -151,6 +152,24 @@ func TranslateError(err error, bucket, key string) *S3Error {
 		RequestID:  requestID,
 		HTTPStatus: http.StatusInternalServerError,
 	}
+}
+
+// isS3NotFoundError reports whether err represents an S3 "not found" condition
+// (NoSuchKey or NotFound). This is used to treat missing companion objects
+// (e.g. MPU manifests) as no-ops during cleanup.
+func isS3NotFoundError(err error) bool {
+	if err == nil {
+		return false
+	}
+	var apiErr smithy.APIError
+	if errors.As(err, &apiErr) {
+		code := apiErr.ErrorCode()
+		return code == "NoSuchKey" || code == "NotFound"
+	}
+	// Some S3-compatible backends wrap the code in a plain error string.
+	// Check for common patterns as a fallback.
+	msg := err.Error()
+	return strings.Contains(msg, "NoSuchKey") || strings.Contains(msg, "NotFound")
 }
 
 // extractRequestID attempts to extract request ID from error.
