@@ -26,8 +26,10 @@ type PolicyConfig struct {
 	DisallowLockBypass bool `yaml:"disallow_lock_bypass,omitempty"`
 	// EncryptMultipartUploads opts this bucket into the encrypted multipart
 	// upload path (ADR 0009). When true a per-upload DEK is generated at
-	// CreateMultipartUpload and state is persisted in Valkey. Default false.
-	EncryptMultipartUploads bool `yaml:"encrypt_multipart_uploads,omitempty"`
+	// CreateMultipartUpload and state is persisted in Valkey.
+	// Default is true (nil pointer = unset = enabled). Set explicitly to
+	// false to opt a bucket out.
+	EncryptMultipartUploads *bool `yaml:"encrypt_multipart_uploads,omitempty"`
 }
 
 // PolicyManager manages loading and matching policies
@@ -154,22 +156,29 @@ func (p *PolicyConfig) ApplyToConfig(base *Config) *Config {
 }
 
 // BucketEncryptsMultipart reports whether the bucket's matching policy enables
-// encrypted multipart uploads (EncryptMultipartUploads=true).
-// Returns false when no policy matches, preserving backward compatibility.
+// encrypted multipart uploads. The default is true: a nil pointer (field
+// omitted in the policy file) or no matching policy both result in true.
+// Set encrypt_multipart_uploads: false explicitly to opt a bucket out.
 func (pm *PolicyManager) BucketEncryptsMultipart(bucket string) bool {
 	if pm == nil {
-		return false
+		return true
 	}
 	policy := pm.GetPolicyForBucket(bucket)
 	if policy == nil {
-		return false
+		return true
 	}
-	return policy.EncryptMultipartUploads
+	if policy.EncryptMultipartUploads == nil {
+		return true
+	}
+	return *policy.EncryptMultipartUploads
 }
 
-// AnyPolicyRequiresMPUEncryption reports whether at least one loaded policy has
-// EncryptMultipartUploads=true. Used at startup to enforce fail-closed behaviour
-// when the Valkey state store is not configured.
+// AnyPolicyRequiresMPUEncryption reports whether at least one loaded policy
+// effectively enables encrypted multipart uploads (i.e. EncryptMultipartUploads
+// is nil/unset or explicitly true). Used at startup to enforce fail-closed
+// behaviour when the Valkey state store is not configured.
+// Returns false only when every loaded policy has an explicit false, or when
+// no policies are loaded at all.
 func (pm *PolicyManager) AnyPolicyRequiresMPUEncryption() bool {
 	if pm == nil {
 		return false
@@ -177,7 +186,7 @@ func (pm *PolicyManager) AnyPolicyRequiresMPUEncryption() bool {
 	pm.mu.RLock()
 	defer pm.mu.RUnlock()
 	for _, p := range pm.policies {
-		if p.EncryptMultipartUploads {
+		if p.EncryptMultipartUploads == nil || *p.EncryptMultipartUploads {
 			return true
 		}
 	}

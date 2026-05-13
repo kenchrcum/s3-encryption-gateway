@@ -1079,6 +1079,22 @@ encrypt_multipart_uploads: true
 	if !pm3.AnyPolicyRequiresMPUEncryption() {
 		t.Error("policy with encrypt_multipart_uploads=true MUST trigger startup gate")
 	}
+
+	// Case 5: policy with field omitted → default true → triggers startup gate.
+	policyDir3 := t.TempDir()
+	defaultEnc := `id: default-enc
+buckets: ["any-*"]
+`
+	if err := os.WriteFile(policyDir3+"/p.yaml", []byte(defaultEnc), 0600); err != nil {
+		t.Fatal(err)
+	}
+	pm4 := config.NewPolicyManager()
+	if err := pm4.LoadPolicies([]string{policyDir3 + "/p.yaml"}); err != nil {
+		t.Fatal(err)
+	}
+	if !pm4.AnyPolicyRequiresMPUEncryption() {
+		t.Error("policy with omitted encrypt_multipart_uploads (default true) MUST trigger startup gate")
+	}
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

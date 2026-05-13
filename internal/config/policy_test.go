@@ -98,8 +98,12 @@ require_encryption: true
 
 // TestBucketEncryptsMultipart verifies BucketEncryptsMultipart returns the
 // correct boolean for matching and non-matching buckets.
+// Default is true: buckets with no matching policy or a policy that omits the
+// field are encrypted; only an explicit false opts a bucket out.
 func TestBucketEncryptsMultipart(t *testing.T) {
 	tmpDir := t.TempDir()
+
+	// Policy with explicit true for specific buckets, explicit false for others.
 	policyFile := filepath.Join(tmpDir, "mpu-enc.yaml")
 	policyContent := `
 id: "mpu-enc-policy"
@@ -108,7 +112,16 @@ buckets:
   - "multi-*"
 encrypt_multipart_uploads: true
 `
+	policyFileOff := filepath.Join(tmpDir, "mpu-off.yaml")
+	policyContentOff := `
+id: "mpu-off-policy"
+buckets:
+  - "plain-bucket"
+encrypt_multipart_uploads: false
+`
 	err := os.WriteFile(policyFile, []byte(policyContent), 0644)
+	require.NoError(t, err)
+	err = os.WriteFile(policyFileOff, []byte(policyContentOff), 0644)
 	require.NoError(t, err)
 
 	pm := NewPolicyManager()
@@ -119,9 +132,10 @@ encrypt_multipart_uploads: true
 		bucket string
 		want   bool
 	}{
-		{"mpu-bucket", true},
-		{"multi-upload", true},
-		{"other-bucket", false},
+		{"mpu-bucket", true},          // explicit true
+		{"multi-upload", true},        // explicit true via glob
+		{"plain-bucket", false},       // explicit false
+		{"other-bucket", true},        // no matching policy → default true
 	}
 
 	for _, tt := range tests {
@@ -129,17 +143,25 @@ encrypt_multipart_uploads: true
 		assert.Equal(t, tt.want, got, "BucketEncryptsMultipart(%q)", tt.bucket)
 	}
 
-	// nil manager should return false
+	// nil manager should return true (safe default)
 	var nilPM *PolicyManager
-	assert.False(t, nilPM.BucketEncryptsMultipart("any-bucket"))
+	assert.True(t, nilPM.BucketEncryptsMultipart("any-bucket"))
 }
 
 // TestAnyPolicyRequiresMPUEncryption verifies the boolean aggregate.
+// Returns true when at least one policy has encrypt_multipart_uploads omitted
+// (default true) or set explicitly to true.
+// Returns false only when every loaded policy explicitly sets it to false,
+// or when no policies are loaded.
 func TestAnyPolicyRequiresMPUEncryption(t *testing.T) {
 	tmpDir := t.TempDir()
 
-	// No policy with MPU encryption
-	policyFile := filepath.Join(tmpDir, "no-mpu.yaml")
+	// No policies loaded → false (Valkey not required if there are no policies at all).
+	pm0 := NewPolicyManager()
+	assert.False(t, pm0.AnyPolicyRequiresMPUEncryption(), "expected false with no policies loaded")
+
+	// Policy with field omitted → default true → AnyPolicyRequiresMPUEncryption = true.
+	policyFile := filepath.Join(tmpDir, "default.yaml")
 	policyContent := `
 id: "plain-policy"
 buckets:
@@ -149,27 +171,41 @@ buckets:
 	require.NoError(t, err)
 
 	pm := NewPolicyManager()
-	err = pm.LoadPolicies([]string{filepath.Join(tmpDir, "*.yaml")})
+	err = pm.LoadPolicies([]string{policyFile})
+	require.NoError(t, err)
+	assert.True(t, pm.AnyPolicyRequiresMPUEncryption(), "expected true when policy omits field (default true)")
+
+	// Policy with explicit false → false.
+	policyFileOff := filepath.Join(tmpDir, "off.yaml")
+	policyContentOff := `
+id: "off-policy"
+buckets:
+  - "other-bucket"
+encrypt_multipart_uploads: false
+`
+	err = os.WriteFile(policyFileOff, []byte(policyContentOff), 0644)
 	require.NoError(t, err)
 
-	assert.False(t, pm.AnyPolicyRequiresMPUEncryption(), "expected false when no policy has MPU encryption")
+	pmOff := NewPolicyManager()
+	err = pmOff.LoadPolicies([]string{policyFileOff})
+	require.NoError(t, err)
+	assert.False(t, pmOff.AnyPolicyRequiresMPUEncryption(), "expected false when all policies explicitly set false")
 
-	// Add a policy with MPU encryption
-	policyFile2 := filepath.Join(tmpDir, "mpu.yaml")
-	policyContent2 := `
-id: "mpu-policy"
+	// Mix: one explicit false + one explicit true → true.
+	policyFileOn := filepath.Join(tmpDir, "on.yaml")
+	policyContentOn := `
+id: "on-policy"
 buckets:
   - "mpu-bucket"
 encrypt_multipart_uploads: true
 `
-	err = os.WriteFile(policyFile2, []byte(policyContent2), 0644)
+	err = os.WriteFile(policyFileOn, []byte(policyContentOn), 0644)
 	require.NoError(t, err)
 
-	pm2 := NewPolicyManager()
-	err = pm2.LoadPolicies([]string{filepath.Join(tmpDir, "*.yaml")})
+	pmMix := NewPolicyManager()
+	err = pmMix.LoadPolicies([]string{policyFileOff, policyFileOn})
 	require.NoError(t, err)
-
-	assert.True(t, pm2.AnyPolicyRequiresMPUEncryption(), "expected true when at least one policy has MPU encryption")
+	assert.True(t, pmMix.AnyPolicyRequiresMPUEncryption(), "expected true when at least one policy enables MPU encryption")
 
 	// nil manager should return false
 	var nilPM *PolicyManager
@@ -198,12 +234,13 @@ disallow_lock_bypass: true
 }
 
 // TestPolicyManager_NilSafe verifies methods on a nil PolicyManager that have
-// explicit nil guards return false (not panic). GetPolicyForBucket is not
-// nil-safe by design (it acquires a lock), so it is excluded from this test.
+// explicit nil guards do not panic. GetPolicyForBucket is not nil-safe by
+// design (it acquires a lock), so it is excluded from this test.
+// BucketEncryptsMultipart returns true on a nil manager (safe default: encrypt).
 func TestPolicyManager_NilSafe(t *testing.T) {
 	var pm *PolicyManager
 	assert.False(t, pm.BucketRequiresEncryption("any-bucket"))
-	assert.False(t, pm.BucketEncryptsMultipart("any-bucket"))
+	assert.True(t, pm.BucketEncryptsMultipart("any-bucket")) // default-on: nil manager = encrypt
 	assert.False(t, pm.AnyPolicyRequiresMPUEncryption())
 }
 

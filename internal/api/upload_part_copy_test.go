@@ -438,17 +438,21 @@ func TestUploadPartCopy_PlaintextSource_EncryptedDestBucket_Refused(t *testing.T
 }
 
 // TestUploadPartCopy_PlaintextSource_NonRequiringBucket_Allowed is the
-// inverse of the refusal test: when the destination bucket does NOT
-// mandate encryption, plaintext sources copy successfully via the fast
-// path. This guards against false-positives in the mismatch detector.
+// inverse of the refusal test: when the destination bucket explicitly opts
+// out of encrypted MPU (encrypt_multipart_uploads: false), plaintext sources
+// copy successfully via the fast path. This guards against false-positives
+// in the mismatch detector.
+// Note: since v0.8 the default for encrypt_multipart_uploads is true, so a
+// bucket without any policy now gets encrypted MPU. An explicit opt-out is
+// required to exercise the plaintext-allowed path.
 func TestUploadPartCopy_PlaintextSource_NonRequiringBucket_Allowed(t *testing.T) {
 	logger := logrus.New()
 	logger.SetLevel(logrus.ErrorLevel)
 	mockClient := newMockS3Client()
 	engine, _ := crypto.NewEngine([]byte("test-password-123456"))
 
-	// PolicyManager with an unrelated policy — dst-bucket is NOT covered.
-	pm := newPolicyManagerWithRequireEncryption(t, "other-bucket")
+	// PolicyManager with dst-bucket explicitly opting out of MPU encryption.
+	pm := newPolicyManagerWithMPUOff(t, "dst-bucket")
 	cfg := &config.Config{}
 	handler := NewHandlerWithFeatures(mockClient, engine, logger, getTestMetrics(),
 		nil, nil, nil, cfg, pm)
@@ -584,7 +588,8 @@ func TestUploadPartCopy_MPU_AppendPartFailure_Returns503(t *testing.T) {
 
 // newPolicyManagerWithRequireEncryption builds a PolicyManager with one
 // policy that sets RequireEncryption=true for the given bucket name.
-// Used by the mismatch-refusal tests.
+// encrypt_multipart_uploads is explicitly false because these tests exercise
+// RequireEncryption behaviour without a Valkey store wired up.
 func newPolicyManagerWithRequireEncryption(t *testing.T, bucket string) *config.PolicyManager {
 	t.Helper()
 	// Write a minimal YAML policy to a temp file and load it.
@@ -594,6 +599,30 @@ func newPolicyManagerWithRequireEncryption(t *testing.T, bucket string) *config.
 buckets:
   - %s
 require_encryption: true
+encrypt_multipart_uploads: false
+`, bucket)
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatalf("write policy: %v", err)
+	}
+	pm := config.NewPolicyManager()
+	if err := pm.LoadPolicies([]string{path}); err != nil {
+		t.Fatalf("load policies: %v", err)
+	}
+	return pm
+}
+
+// newPolicyManagerWithMPUOff builds a PolicyManager with one policy that
+// sets encrypt_multipart_uploads: false for the given bucket name. Used by
+// tests that need to exercise plaintext UploadPartCopy paths without a
+// Valkey store (since encrypt_multipart_uploads defaults to true as of v0.8).
+func newPolicyManagerWithMPUOff(t *testing.T, bucket string) *config.PolicyManager {
+	t.Helper()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "policy.yaml")
+	content := fmt.Sprintf(`id: test-mpu-off
+buckets:
+  - %s
+encrypt_multipart_uploads: false
 `, bucket)
 	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
 		t.Fatalf("write policy: %v", err)
