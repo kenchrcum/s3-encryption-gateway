@@ -8,11 +8,17 @@
 
 Countless applications write data to S3-compatible storage — database backups, log archives, ML training data, CI/CD artifacts — but most of them don't encrypt that data client-side.
 
-Server-side encryption (SSE) only protects data at rest on the provider's disks. The storage provider still holds the keys and can technically access your data. For regulated industries, shared infrastructure, or zero-trust architectures, that's not enough.
+**The real threat isn't a rogue storage provider.** Most people reasonably trust their cloud provider and their server-side encryption (SSE). The much more common and practical risk is a **misconfigured IAM policy, overly broad bucket policy, accidentally public ACL, or compromised access key**. Any mistake at the IAM or policy layer directly exposes your plaintext data — because without client-side encryption, whoever can reach the bucket can read everything in it.
+
+By adding a cryptographic layer at the gateway, a configuration mistake in your cloud account no longer immediately translates into a data breach. An attacker who gains unauthorized S3 access — through a policy misconfiguration, a leaked key, or any other account-level compromise — only retrieves ciphertext. TheyThey would also need to compromise the gateway — which in a typical deployment never leaves your private network.
+
+This is defense-in-depth for object storage: your cloud account's access controls remain your first line of defense; client-side encryption is the second — and it holds even when the first fails.
+
+Beyond misconfiguration risk, there are valid reasons to want an independent crypto layer: regulated environments that require customer-managed keys, multi-tenant shared infrastructure, or simply a preference for not relying solely on provider controls.
 
 Modifying every application to implement client-side encryption isn't realistic. Different tools use different S3 SDKs, different languages, and different upload strategies. Some are closed-source. Some are operators you don't control.
 
-**The result:** sensitive data sits on object storage, encrypted only by keys the storage provider controls — or not encrypted at all.
+**The result:** sensitive data sits on object storage, protected only by IAM policies and SSE keys the provider controls — one misconfiguration away from full exposure.
 
 ## The Solution
 
@@ -63,7 +69,7 @@ So we built a transparent proxy that solves the problem once, for every applicat
 All objects are encrypted before being sent to the backend and decrypted on retrieval. Encryption is transparent — any S3 client works without modification.
 
 - **AES-256-GCM** (default) or **ChaCha20-Poly1305**: Authenticated encryption with per-object keys
-- **Key derivation**: PBKDF2-HMAC-SHA256 with 100,000+ iterations
+- **Key derivation**: PBKDF2-HMAC-SHA256 with 600,000+ iterations (configurable; default raised in v0.8 per NIST SP 800-132)
 - **Chunked streaming**: Large files are encrypted in chunks with per-chunk IVs, enabling efficient range requests
 - **Range requests**: Fetches only the encrypted chunks covering the requested plaintext byte range — 99.9%+ reduction in transferred bytes compared to fetching the full object
 - **FIPS-compliant profile**: Build with `-tags=fips` to restrict to AES-256-GCM + HKDF-SHA256 + PBKDF2-HMAC-SHA256 (all FIPS-140 approved)
@@ -113,7 +119,7 @@ encrypt_multipart_uploads: true
 
 All Valkey settings are also available as environment variables (`VALKEY_ADDR`, `VALKEY_TLS_ENABLED`, `VALKEY_TLS_CA_FILE`, `VALKEY_TTL_SECONDS`, etc.).
 
-The default is `false` for backward compatibility. v0.7 will flip the default to `true` after a production soak period.
+`encrypt_multipart_uploads` defaults to `true` as of v0.8. Buckets without a matching policy, or policies that omit the field, will use the encrypted multipart upload path automatically. Set `encrypt_multipart_uploads: false` explicitly in the policy to opt a specific bucket out.
 
 #### Fail-closed guarantees
 
@@ -226,7 +232,7 @@ export COSMIAN_KMS_KEYS="your-key-id:1"  # Format: "key1:version1,key2:version2"
 - Requires `ca_cert`, `client_cert`, and `client_key`
 - Not fully tested in CI — use with caution
 
-See [`docs/KMS_COMPATIBILITY.md`](docs/KMS_COMPATIBILITY.md) for detailed documentation. AWS KMS and Vault Transit adapters are planned for v1.0.
+See [`docs/KMS_COMPATIBILITY.md`](docs/KMS_COMPATIBILITY.md) for detailed documentation. AWS KMS and Vault Transit adapters are on the roadmap (see Roadmap section below).
 
 ### Compression
 
@@ -304,6 +310,11 @@ Returns HTTP 503 with `status: "not_ready"` if any configured dependency fails i
 - `GET /live` — liveness probe
 - `GET /metrics` — Prometheus metrics
 
+Metrics endpoint routing (in priority order):
+1. **Dedicated metrics port** (`metrics.addr: ":9090"` / `METRICS_ADDR`) — recommended for Kubernetes; unauthenticated plain HTTP, restrict via `NetworkPolicy`
+2. **Admin port fallback** — when `metrics.addr` is empty and admin is enabled, `/metrics` is served on the admin port (requires bearer auth)
+3. **S3 port fallback** — when both `metrics.addr` is empty and admin is disabled, `/metrics` is served on the S3 data-plane port (legacy, no auth)
+
 #### Prometheus metrics
 
 - **HTTP**: request counts, durations, bytes transferred
@@ -354,7 +365,7 @@ Bearer-authenticated admin endpoints on a separate port:
 ### Prerequisites
 
 - Docker (recommended), or
-- Go 1.22+ for local builds
+- Go 1.25+ for local builds
 
 ### Docker (Simplest)
 
@@ -370,7 +381,7 @@ docker run -p 8080:8080 \
   s3-encryption-gateway:latest
 ```
 
-> **Authentication is required.** As of v1.0, every request must include valid AWS Signature V4 or V2 credentials matching an entry in `auth.credentials`. Unauthenticated requests will receive `AccessDenied`.
+> **Authentication is required.** As of v0.8, every request must include valid AWS Signature V4 or V2 credentials matching an entry in `auth.credentials`. Unauthenticated requests will receive `AccessDenied`.
 
 Point any S3 client at the gateway instead of directly at S3:
 
@@ -590,7 +601,7 @@ sequenceDiagram
   participant S3
   Client->>Gateway: PUT /bucket/key plaintext
   Gateway->>Gateway: optional compress
-  Gateway->>Gateway: derive key PBKDF2 100k
+  Gateway->>Gateway: derive key PBKDF2 600k
   Gateway->>Gateway: encrypt AES-GCM or ChaCha20-Poly1305
   Gateway->>S3: PUT /bucket/key ciphertext + metadata
   Note over Gateway,S3: metadata stores salt, iv, alg, original size
@@ -641,7 +652,22 @@ Using a backend not listed here? [Open an issue](https://github.com/kenchrcum/s3
 
 - **AWS KMS adapter** — native envelope encryption with AWS-managed keys
 - **HashiCorp Vault Transit** — key management via Vault's Transit secrets engine
-- **Structured audit logging** — compliance-ready audit trails with configurable sinks
+
+### Shipped in v0.8 (current release)
+
+- **Gateway-managed credential store** (V1.0-AUTH-1) — every request validated via SigV4/V2 against a gateway-local credential store; `use_client_credentials` passthrough removed; credentials configured via `auth.credentials` in config or env vars
+- **Full security audit hardening** — 23 defence-in-depth findings resolved: `context.Context` propagation through the encryption engine, length-prefixed AAD canonicalization, `keyResolver` oracle removal, PBKDF2 default raised to 600 000 iterations, decompression bomb protection, presigned URL expiry cap (7 days), rate limiter map cap, admin token zeroization on shutdown, TLS config for audit HTTP sink, policy reload wired into config watcher, and more
+- **Dedicated metrics port** — `/metrics` is no longer served on the public S3 port. A dedicated unauthenticated listener can be configured via `metrics.addr` / `METRICS_ADDR`; when not set, metrics fall back to the admin port (if enabled) or the S3 port (legacy). The Helm chart wires this end-to-end via `metrics.port` including Service, ServiceMonitor, PodMonitor, and NetworkPolicy (V1.0-SEC-L01)
+- **XML injection fix** — `generateListObjectsXML` now uses proper `encoding/xml` marshaling
+- **Docker healthcheck** — replaced `wget` healthcheck with a native Go binary; FIPS variant included
+
+### Shipped in v0.7
+
+- **Offline migration tool (`s3eg-migrate`)** — re-encrypts or re-seals existing objects in place for KDF-parameter migrations (V1.0-MAINT-1)
+- **Configurable PBKDF2 iterations + per-object KDF metadata** (V1.0-SEC-H03) — iteration count recorded in object metadata; mixed-iteration deployments decrypt correctly
+- **Large MPU streaming fixes** — `ReadTimeout` set to 0 (same as `WriteTimeout`) to prevent timeout kills on multi-hundred-MiB downloads; active write-deadline refresh during long streams; network errors distinguished from tamper on streaming (#135)
+- **Constant-time credential comparison** — timing-safe comparison for all credential checks
+- **V1.0-SEC-2 / V1.0-SEC-4 / V1.0-SEC-27 / V1.0-SEC-29** — additional hardening fixes
 
 ### Shipped in v0.6
 
