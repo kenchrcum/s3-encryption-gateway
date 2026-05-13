@@ -10,6 +10,11 @@ import (
 type ClientCredentials struct {
 	AccessKey string
 	SecretKey string
+	// FromQueryParam is true when the secret key was extracted from the URL
+	// query string (legacy Method 1). Callers should log a security warning
+	// when this is true, as query-string credentials are visible to
+	// intermediaries (proxies, CDNs, browser history, /proc/cmdline).
+	FromQueryParam bool
 }
 
 // ExtractCredentials extracts AWS credentials from an HTTP request.
@@ -23,12 +28,16 @@ type ClientCredentials struct {
 // The secret key must be provided via a mapping or fallback mechanism.
 func ExtractCredentials(r *http.Request) (*ClientCredentials, error) {
 	// Method 1: Query parameters (explicit auth with secret)
+	// SECURITY NOTE: Passing AWSSecretAccessKey via query parameters exposes
+	// the secret to intermediaries (reverse proxies, CDNs, browser history,
+	// server process listings). Prefer SigV4 Authorization header auth.
 	accessKey := r.URL.Query().Get("AWSAccessKeyId")
 	secretKey := r.URL.Query().Get("AWSSecretAccessKey")
 	if accessKey != "" && secretKey != "" {
 		return &ClientCredentials{
-			AccessKey: accessKey,
-			SecretKey: secretKey,
+			AccessKey:      accessKey,
+			SecretKey:      secretKey,
+			FromQueryParam: true,
 		}, nil
 	}
 

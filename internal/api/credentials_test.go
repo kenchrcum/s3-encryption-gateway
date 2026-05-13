@@ -9,18 +9,20 @@ import (
 
 func TestExtractCredentials_QueryParameters(t *testing.T) {
 	tests := []struct {
-		name           string
-		queryParams    map[string]string
-		wantAccessKey  string
-		wantSecretKey  string
-		wantErr        bool
+		name                string
+		queryParams         map[string]string
+		wantAccessKey       string
+		wantSecretKey       string
+		wantErr             bool
+		wantFromQueryParam  bool
 	}{
 		{
-			name:          "valid query parameters",
-			queryParams:   map[string]string{"AWSAccessKeyId": "AKIAIOSFODNN7EXAMPLE", "AWSSecretAccessKey": "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"},
-			wantAccessKey: "AKIAIOSFODNN7EXAMPLE",
-			wantSecretKey: "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
-			wantErr:       false,
+			name:                "valid query parameters",
+			queryParams:         map[string]string{"AWSAccessKeyId": "AKIAIOSFODNN7EXAMPLE", "AWSSecretAccessKey": "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"},
+			wantAccessKey:       "AKIAIOSFODNN7EXAMPLE",
+			wantSecretKey:       "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
+			wantErr:             false,
+			wantFromQueryParam:  true,
 		},
 		{
 			name:        "missing access key",
@@ -63,6 +65,9 @@ func TestExtractCredentials_QueryParameters(t *testing.T) {
 				if creds.SecretKey != tt.wantSecretKey {
 					t.Errorf("ExtractCredentials() SecretKey = %v, want %v", creds.SecretKey, tt.wantSecretKey)
 				}
+				if creds.FromQueryParam != tt.wantFromQueryParam {
+					t.Errorf("ExtractCredentials() FromQueryParam = %v, want %v", creds.FromQueryParam, tt.wantFromQueryParam)
+				}
 			}
 		})
 	}
@@ -70,25 +75,28 @@ func TestExtractCredentials_QueryParameters(t *testing.T) {
 
 func TestExtractCredentials_AuthorizationHeader(t *testing.T) {
 	tests := []struct {
-		name          string
-		authHeader    string
-		wantAccessKey string
-		wantSecretKey   string
-		wantErr       bool
+		name                string
+		authHeader          string
+		wantAccessKey       string
+		wantSecretKey       string
+		wantErr             bool
+		wantFromQueryParam  bool
 	}{
 		{
-			name:          "AWS Signature V4",
-			authHeader:    "AWS4-HMAC-SHA256 Credential=AKIAIOSFODNN7EXAMPLE/20130524/us-east-1/s3/aws4_request, SignedHeaders=host;range;x-amz-date, Signature=...",
-			wantAccessKey: "AKIAIOSFODNN7EXAMPLE",
-			wantSecretKey: "", // Only access key extracted from header
-			wantErr:       false,
+			name:                "AWS Signature V4",
+			authHeader:          "AWS4-HMAC-SHA256 Credential=AKIAIOSFODNN7EXAMPLE/20130524/us-east-1/s3/aws4_request, SignedHeaders=host;range;x-amz-date, Signature=...",
+			wantAccessKey:       "AKIAIOSFODNN7EXAMPLE",
+			wantSecretKey:       "", // Only access key extracted from header
+			wantErr:             false,
+			wantFromQueryParam:  false,
 		},
 		{
-			name:          "Legacy AWS signature",
-			authHeader:    "AWS AKIAIOSFODNN7EXAMPLE:signature",
-			wantAccessKey: "AKIAIOSFODNN7EXAMPLE",
-			wantSecretKey: "",
-			wantErr:       false,
+			name:                "Legacy AWS signature",
+			authHeader:          "AWS AKIAIOSFODNN7EXAMPLE:signature",
+			wantAccessKey:       "AKIAIOSFODNN7EXAMPLE",
+			wantSecretKey:       "",
+			wantErr:             false,
+			wantFromQueryParam:  false,
 		},
 		{
 			name:       "invalid authorization header",
@@ -127,6 +135,9 @@ func TestExtractCredentials_AuthorizationHeader(t *testing.T) {
 				}
 				if creds.SecretKey != tt.wantSecretKey {
 					t.Errorf("ExtractCredentials() SecretKey = %v, want %v", creds.SecretKey, tt.wantSecretKey)
+				}
+				if creds.FromQueryParam != tt.wantFromQueryParam {
+					t.Errorf("ExtractCredentials() FromQueryParam = %v, want %v", creds.FromQueryParam, tt.wantFromQueryParam)
 				}
 			}
 		})
