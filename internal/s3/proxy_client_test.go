@@ -3,6 +3,7 @@ package s3
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
 	"encoding/xml"
 	"fmt"
 	"io"
@@ -10,6 +11,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/kenneth/s3-encryption-gateway/internal/config"
 )
@@ -46,6 +48,51 @@ func TestNewProxyClient_ValidEndpoint(t *testing.T) {
 	}
 	if pc == nil {
 		t.Fatal("NewProxyClient() returned nil client without error")
+	}
+}
+
+// TestNewProxyClient_TLSConfig verifies that the ProxyClient's http.Client
+// has a Transport with TLS min version 1.2, non-empty cipher suites, and
+// timeouts (V1.0-SEC-F5+F6).
+func TestNewProxyClient_TLSConfig(t *testing.T) {
+	cfg := &config.BackendConfig{Endpoint: "http://localhost:9000"}
+	pc, err := NewProxyClient(cfg)
+	if err != nil {
+		t.Fatalf("NewProxyClient() error: %v", err)
+	}
+	if pc == nil {
+		t.Fatal("NewProxyClient() returned nil")
+	}
+
+	transport, ok := pc.httpClient.Transport.(*http.Transport)
+	if !ok {
+		t.Fatal("httpClient.Transport is not *http.Transport")
+	}
+
+	if transport.TLSClientConfig == nil {
+		t.Fatal("TLSClientConfig is nil")
+	}
+
+	if transport.TLSClientConfig.MinVersion != tls.VersionTLS12 {
+		t.Errorf("MinVersion = %d, want %d (VersionTLS12)", transport.TLSClientConfig.MinVersion, tls.VersionTLS12)
+	}
+
+	if len(transport.TLSClientConfig.CipherSuites) == 0 {
+		t.Error("CipherSuites is empty, expected non-empty")
+	}
+
+	expectedTimeouts := []struct {
+		name string
+		d    time.Duration
+		got  time.Duration
+	}{
+		{"IdleConnTimeout", 90 * time.Second, transport.IdleConnTimeout},
+		{"ResponseHeaderTimeout", 10 * time.Second, transport.ResponseHeaderTimeout},
+	}
+	for _, tc := range expectedTimeouts {
+		if tc.got != tc.d {
+			t.Errorf("%s = %v, want %v", tc.name, tc.got, tc.d)
+		}
 	}
 }
 

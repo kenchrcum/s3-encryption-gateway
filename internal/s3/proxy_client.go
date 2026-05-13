@@ -2,6 +2,7 @@ package s3
 
 import (
 	"context"
+	"crypto/tls"
 	"encoding/xml"
 	"fmt"
 	"io"
@@ -45,8 +46,29 @@ func NewProxyClient(cfg *config.BackendConfig) (*ProxyClient, error) {
 
 	return &ProxyClient{
 		backendURL: backendURL,
-		httpClient: &http.Client{},
-		config:     cfg,
+		httpClient: &http.Client{
+			Timeout: 60 * time.Second,
+			Transport: &http.Transport{
+				// V1.0-SEC-F6: Enforce minimum TLS 1.2 and restricted cipher
+				// suites consistent with the main S3 client and Cosmian KMS
+				// client. The bare &http.Client{} default uses Go's
+				// http.DefaultTransport which has no cipher restrictions.
+				TLSClientConfig: &tls.Config{
+					MinVersion: tls.VersionTLS12,
+					CipherSuites: []uint16{
+						tls.TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384,
+						tls.TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384,
+						tls.TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256,
+						tls.TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256,
+					},
+					CurvePreferences: []tls.CurveID{tls.X25519, tls.CurveP256},
+				},
+				IdleConnTimeout:       90 * time.Second,
+				ResponseHeaderTimeout: 10 * time.Second,
+				MaxIdleConnsPerHost:   10,
+			},
+		},
+		config: cfg,
 	}, nil
 }
 
@@ -183,8 +205,11 @@ func (p *ProxyClient) CopyObject(ctx context.Context, dstBucket, dstKey string, 
 
 	// Check for errors
 	if resp.StatusCode >= 400 {
-		// Let the caller handle the error response
-		body, _ := io.ReadAll(resp.Body)
+		// V1.0-SEC-F5: Truncate the response body to avoid embedding
+		// unbounded backend internals into error strings that propagate
+		// to application logs. 1 KiB is enough for a useful status
+		// message without leaking stack traces or infrastructure details.
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
 		return "", nil, fmt.Errorf("backend returned %d: %s", resp.StatusCode, string(body))
 	}
 
@@ -254,8 +279,11 @@ func (p *ProxyClient) UploadPartCopy(ctx context.Context, dstBucket, dstKey, upl
 
 	// Check for errors
 	if resp.StatusCode >= 400 {
-		// Let the caller handle the error response
-		body, _ := io.ReadAll(resp.Body)
+		// V1.0-SEC-F5: Truncate the response body to avoid embedding
+		// unbounded backend internals into error strings that propagate
+		// to application logs. 1 KiB is enough for a useful status
+		// message without leaking stack traces or infrastructure details.
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
 		return nil, fmt.Errorf("backend returned %d: %s", resp.StatusCode, string(body))
 	}
 
