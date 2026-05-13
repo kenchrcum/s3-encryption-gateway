@@ -47,7 +47,9 @@ spec:
     - port: {{ .Values.service.targetPort }}
       protocol: TCP
   {{- end }}
-  # Example: Allow ingress from monitoring services (prometheus, etc.)
+  # Allow ingress from monitoring services (Prometheus) to the metrics port.
+  # When metrics.port is set, Prometheus only needs access to that dedicated
+  # port. When not set, it falls through to the S3 port (less ideal).
   {{- if .Values.networkPolicy.ingress.monitoring }}
   - from:
     - namespaceSelector:
@@ -57,8 +59,13 @@ spec:
         matchLabels:
           app.kubernetes.io/name: prometheus
     ports:
+    {{- if .Values.metrics.port }}
+    - port: {{ .Values.metrics.port }}
+      protocol: TCP
+    {{- else }}
     - port: {{ .Values.service.targetPort }}
       protocol: TCP
+    {{- end }}
   {{- end }}
   {{- if has "Egress" .Values.networkPolicy.policyTypes }}
   egress:

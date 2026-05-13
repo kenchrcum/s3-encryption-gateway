@@ -23,6 +23,12 @@ spec:
       protocol: TCP
       name: http
     {{- end }}
+  {{- if .Values.metrics.port }}
+    - port: {{ .Values.metrics.port }}
+      targetPort: metrics
+      protocol: TCP
+      name: metrics
+  {{- end }}
   selector:
     {{- include "s3-encryption-gateway.selectorLabels" . | nindent 4 }}
 {{- end }}

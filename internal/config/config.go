@@ -483,7 +483,14 @@ type TracingConfig struct {
 
 // MetricsConfig holds metrics configuration.
 type MetricsConfig struct {
-	EnableBucketLabel bool `yaml:"enable_bucket_label" env:"METRICS_ENABLE_BUCKET_LABEL"`
+	EnableBucketLabel bool   `yaml:"enable_bucket_label" env:"METRICS_ENABLE_BUCKET_LABEL"`
+	// Addr is the optional address for a dedicated unauthenticated metrics
+	// listener (e.g. ":9090"). When set, /metrics is served on this port only
+	// and is removed from both the S3 data-plane port and the admin port.
+	// Restrict access via NetworkPolicy — this listener has no authentication.
+	// When empty, /metrics falls back to the admin port (if admin is enabled)
+	// or the S3 port (if admin is disabled).
+	Addr string `yaml:"addr" env:"METRICS_ADDR"`
 }
 
 // LoggingConfig holds access logging configuration.
@@ -1122,6 +1129,9 @@ func loadFromEnv(config *Config) {
 	if v := os.Getenv("METRICS_ENABLE_BUCKET_LABEL"); v != "" {
 		config.Metrics.EnableBucketLabel = v == "true" || v == "1"
 	}
+	if v := os.Getenv("METRICS_ADDR"); v != "" {
+		config.Metrics.Addr = v
+	}
 	// Logging configuration
 	if v := os.Getenv("LOGGING_ACCESS_LOG_FORMAT"); v != "" {
 		config.Logging.AccessLogFormat = v
@@ -1324,6 +1334,16 @@ func parseCosmianKeyRefs(value string) []CosmianKeyReference {
 func (c *Config) Validate() error {
 	if c.ListenAddr == "" {
 		return fmt.Errorf("listen_addr is required")
+	}
+
+	// metrics.addr must be a distinct address from the S3 and admin ports.
+	if c.Metrics.Addr != "" {
+		if c.Metrics.Addr == c.ListenAddr {
+			return fmt.Errorf("metrics.addr must differ from listen_addr")
+		}
+		if c.Admin.Enabled && c.Metrics.Addr == c.Admin.Address {
+			return fmt.Errorf("metrics.addr must differ from admin.address")
+		}
 	}
 
 	// Endpoint is optional - if empty, AWS SDK will use default AWS endpoints

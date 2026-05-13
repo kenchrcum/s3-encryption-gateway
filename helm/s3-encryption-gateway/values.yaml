@@ -646,6 +646,21 @@ podDisruptionBudget:
   minAvailable: ""
   maxUnavailable: ""
 
+# Dedicated metrics port configuration.
+# When metrics.port is set (non-zero), the gateway starts a third listener
+# serving /metrics only — unauthenticated plain HTTP. This is the recommended
+# setup for Kubernetes: restrict access via NetworkPolicy and configure a
+# ServiceMonitor pointing at this port.
+#
+# When metrics.port is 0 (default), the fallback chain applies:
+#   1. Admin port (if admin is enabled)
+#   2. S3 data-plane port (if admin is disabled — legacy)
+#
+# env: METRICS_ADDR (set to ":<port>" by the deployment template)
+metrics:
+  port: 0          # e.g. 9090 — set to a non-zero value to enable dedicated listener
+  enableBucketLabel: false  # METRICS_ENABLE_BUCKET_LABEL
+
 # Prometheus ServiceMonitor (requires Prometheus Operator)
 serviceMonitor:
   enabled: false

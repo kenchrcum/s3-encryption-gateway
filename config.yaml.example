@@ -212,6 +212,23 @@ audit:
                           # Set via AUDIT_SINK_RETRY_BACKOFF env var
 
 # ── Admin API (V0.6-CFG-1 / V0.6-OBS-1) ────────────────────────────────────
+# Metrics configuration
+# metrics.addr starts a dedicated, unauthenticated HTTP listener that serves
+# /metrics only. This is the recommended setup for Kubernetes: use a
+# NetworkPolicy to restrict access to the Prometheus namespace and configure
+# a ServiceMonitor pointing at this port.
+#
+# When metrics.addr is empty:
+#   - If admin is enabled: /metrics is served on the admin port (requires
+#     bearer auth + optional TLS — scraping is possible but more complex).
+#   - If admin is disabled: /metrics is served on the S3 data-plane port
+#     (legacy behaviour, no auth).
+#
+# env: METRICS_ADDR
+metrics:
+  addr: ""                # e.g. ":9090"  — leave empty to use fallback
+  enable_bucket_label: false  # Expose bucket name as a Prometheus label (METRICS_ENABLE_BUCKET_LABEL)
+
 # The admin API runs on a separate listener from the S3 data-plane.
 # All endpoints require bearer-token authentication; non-loopback addresses
 # require TLS. See docs/ADMIN_API.md for full endpoint reference.

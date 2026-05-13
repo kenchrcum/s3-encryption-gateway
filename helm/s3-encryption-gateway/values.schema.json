@@ -294,6 +294,24 @@
       }
     },
 
+    "metrics": {
+      "type": "object",
+      "description": "Dedicated metrics listener configuration.",
+      "additionalProperties": false,
+      "properties": {
+        "port": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 65535,
+          "description": "Port for the dedicated unauthenticated /metrics listener. 0 (default) disables it and uses the fallback chain (admin port → S3 port)."
+        },
+        "enableBucketLabel": {
+          "type": "boolean",
+          "description": "Expose bucket names as a Prometheus label (METRICS_ENABLE_BUCKET_LABEL). Disabled by default to avoid leaking bucket names."
+        }
+      }
+    },
+
     "serviceMonitor": {
       "type": "object",
       "description": "Prometheus Operator ServiceMonitor configuration.",

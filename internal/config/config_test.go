@@ -1972,3 +1972,99 @@ unknown_field: "value"
 		t.Errorf("expected error to contain 'failed to parse config file', got: %v", err)
 	}
 }
+
+func TestMetricsAddr_Validation(t *testing.T) {
+	tests := []struct {
+		name        string
+		metricsAddr string
+		adminAddr   string
+		adminEnabled bool
+		wantErr     string
+	}{
+		{
+			name:        "empty metrics addr is valid",
+			metricsAddr: "",
+			wantErr:     "",
+		},
+		{
+			name:        "valid dedicated metrics addr",
+			metricsAddr: ":9090",
+			wantErr:     "",
+		},
+		{
+			name:        "metrics addr conflicts with listen_addr",
+			metricsAddr: ":8080", // same as default listen_addr
+			wantErr:     "metrics.addr must differ from listen_addr",
+		},
+		{
+			name:         "metrics addr conflicts with admin addr",
+			metricsAddr:  "127.0.0.1:8081",
+			adminAddr:    "127.0.0.1:8081",
+			adminEnabled: true,
+			wantErr:      "metrics.addr must differ from admin.address",
+		},
+		{
+			name:         "metrics addr same as admin addr but admin disabled — ok",
+			metricsAddr:  "127.0.0.1:8081",
+			adminAddr:    "127.0.0.1:8081",
+			adminEnabled: false,
+			wantErr:      "",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := &Config{
+				ListenAddr: ":8080",
+				Metrics: MetricsConfig{
+					Addr: tc.metricsAddr,
+				},
+				Admin: AdminConfig{
+					Enabled: tc.adminEnabled,
+					Address: tc.adminAddr,
+				},
+			}
+			err := cfg.Validate()
+			if tc.wantErr == "" {
+				// Only check our specific field — other validation errors are fine.
+				if err != nil && strings.Contains(err.Error(), "metrics.addr") {
+					t.Errorf("unexpected metrics.addr error: %v", err)
+				}
+				return
+			}
+			if err == nil {
+				t.Fatalf("expected error containing %q, got nil", tc.wantErr)
+			}
+			if !strings.Contains(err.Error(), tc.wantErr) {
+				t.Errorf("expected error %q, got: %v", tc.wantErr, err)
+			}
+		})
+	}
+}
+
+func TestMetricsAddr_EnvOverride(t *testing.T) {
+	t.Setenv("METRICS_ADDR", ":9091")
+	tmpDir := t.TempDir()
+	configPath := filepath.Join(tmpDir, "config.yaml")
+	content := `
+backend:
+  access_key: "test-key"
+  secret_key: "test-secret"
+encryption:
+  password: "test-password"
+auth:
+  credentials:
+    - access_key: "gateway-key"
+      secret_key: "gateway-secret"
+`
+	if err := os.WriteFile(configPath, []byte(content), 0644); err != nil {
+		t.Fatalf("failed to write temp config: %v", err)
+	}
+	cfg, err := LoadConfig(configPath)
+	if err != nil {
+		t.Fatalf("LoadConfig failed: %v", err)
+	}
+	if cfg.Metrics.Addr != ":9091" {
+		t.Errorf("expected Metrics.Addr \":9091\", got %q", cfg.Metrics.Addr)
+	}
+}

@@ -815,8 +815,11 @@ func main() {
 			}).Warn("admin_profiling_enabled") // WARN — this surface widens blast radius
 		}
 
-		// V1.0-SEC-L01 — register metrics on the authenticated admin mux.
-		adminServer.Mux().Handle("/metrics", m.Handler())
+		// Register metrics on admin mux only when no dedicated metrics addr is
+		// configured (fallback: authenticated admin port).
+		if cfg.Metrics.Addr == "" {
+			adminServer.Mux().Handle("/metrics", m.Handler())
+		}
 
 		// Set admin API enabled metric
 		m.SetAdminAPIEnabled(true)
@@ -826,6 +829,30 @@ func main() {
 				logger.WithError(err).Error("Admin server failed")
 			}
 		}()
+	}
+
+	// Start dedicated metrics listener when metrics.addr is configured.
+	// This is the recommended approach for Kubernetes: serve /metrics on a
+	// separate unauthenticated port and restrict access via NetworkPolicy.
+	// When metrics.addr is empty and admin is disabled, fall back to the S3
+	// data-plane router (legacy behaviour, no TLS / auth on metrics).
+	if cfg.Metrics.Addr != "" {
+		metricsMux := http.NewServeMux()
+		metricsMux.Handle("/metrics", m.Handler())
+		metricsServer := &http.Server{
+			Addr:              cfg.Metrics.Addr,
+			Handler:           metricsMux,
+			ReadHeaderTimeout: 10 * time.Second,
+		}
+		go func() {
+			logger.WithField("addr", cfg.Metrics.Addr).Info("metrics listener started")
+			if err := metricsServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+				logger.WithError(err).Error("metrics listener failed")
+			}
+		}()
+	} else if !cfg.Admin.Enabled {
+		// No dedicated metrics addr, no admin server — serve on S3 port (legacy).
+		router.Handle("/metrics", m.Handler()).Methods("GET")
 	}
 
 	// Wait for interrupt signal

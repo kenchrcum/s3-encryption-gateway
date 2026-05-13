@@ -3,6 +3,7 @@
 {{- if or (eq .Values.config.tls.enabled.value "true") (eq .Values.config.tls.enabled.value "1") }}
   {{- $tlsEnabled = true }}
 {{- end }}
+{{- $metricsPort := .Values.metrics.port }}
 apiVersion: monitoring.coreos.com/v1
 kind: PodMonitor
 metadata:
@@ -17,6 +18,20 @@ spec:
     matchLabels:
       {{- include "s3-encryption-gateway.selectorLabels" . | nindent 6 }}
   podMetricsEndpoints:
+  {{- if $metricsPort }}
+  # Dedicated unauthenticated metrics port — no TLS config required.
+  - port: metrics
+    path: /metrics
+    interval: {{ .Values.podMonitor.interval }}
+    scrapeTimeout: {{ .Values.podMonitor.scrapeTimeout }}
+    {{- if .Values.track }}
+    relabelings:
+      - sourceLabels: [__meta_kubernetes_pod_label_track]
+        targetLabel: track
+        action: replace
+    {{- end }}
+  {{- else }}
+  # Fallback: scrape /metrics from the S3 data-plane port.
   - port: {{ if $tlsEnabled }}https{{ else }}http{{ end }}
     path: /metrics
     interval: {{ .Values.podMonitor.interval }}
@@ -32,4 +47,5 @@ spec:
         targetLabel: track
         action: replace
     {{- end }}
+  {{- end }}
 {{- end }}
