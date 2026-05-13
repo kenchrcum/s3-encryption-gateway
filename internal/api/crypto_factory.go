@@ -113,10 +113,15 @@ func buildCosmianOptions(kmCfg *config.KeyManagerConfig) (crypto.CosmianKMIPOpti
 
 func buildCosmianTLSConfig(cfg config.CosmianConfig) (*tls.Config, error) {
 	if cfg.InsecureSkipVerify {
+		if cfg.CACert == "" {
+			return nil, fmt.Errorf("cosmian.key_manager.insecure_skip_verify is ENABLED but no ca_cert is configured — " +
+				"this disables TLS certificate verification for KMS connections without pinning a trusted CA, " +
+				"allowing MITM attacks. Either provide a ca_cert or remove insecure_skip_verify")
+		}
 		logrus.WithFields(logrus.Fields{
 			"component": "crypto_factory",
 			"setting":   "COSMIAN_KMS_INSECURE_SKIP_VERIFY",
-		}).Error("InsecureSkipVerify is ENABLED: TLS certificate verification is disabled for KMS connections. This is UNSAFE in production and allows MITM attacks.")
+		}).Error("InsecureSkipVerify is ENABLED with a custom CA certificate: TLS certificate verification is disabled for KMS connections. This should only be used in development.")
 	}
 
 	tlsCfg := &tls.Config{

@@ -175,15 +175,48 @@ func TestBuildCosmianTLSConfig_Basic(t *testing.T) {
 	}
 }
 
-// TestBuildCosmianTLSConfig_InsecureMode verifies InsecureSkipVerify is propagated.
-func TestBuildCosmianTLSConfig_InsecureMode(t *testing.T) {
+// TestBuildCosmianTLSConfig_InsecureMode_Rejected verifies that
+// InsecureSkipVerify=true without a CACert returns an error (V1.0-SEC-F3).
+func TestBuildCosmianTLSConfig_InsecureMode_Rejected(t *testing.T) {
 	cfg := config.CosmianConfig{
 		InsecureSkipVerify: true,
+		// CACert is empty → should be rejected
+	}
+
+	_, err := buildCosmianTLSConfig(cfg)
+	if err == nil {
+		t.Fatal("buildCosmianTLSConfig() expected error for InsecureSkipVerify=true with empty CACert, got nil")
+	}
+	if !strings.Contains(err.Error(), "insecure_skip_verify") {
+		t.Errorf("expected error to mention 'insecure_skip_verify', got: %v", err)
+	}
+}
+
+// TestBuildCosmianTLSConfig_InsecureWithCACert verifies that
+// InsecureSkipVerify=true with a non-empty CACert passes validation
+// and does not return the insecure-without-CA error (V1.0-SEC-F3).
+func TestBuildCosmianTLSConfig_InsecureWithCACert(t *testing.T) {
+	// Create a dummy self-signed CA cert file for the test
+	cert := generateTestCert(t)
+	certPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: cert.Certificate[0]})
+
+	tmpDir := t.TempDir()
+	caFile := tmpDir + "/ca.crt"
+	if err := os.WriteFile(caFile, certPEM, 0644); err != nil {
+		t.Fatalf("failed to write CA cert: %v", err)
+	}
+
+	cfg := config.CosmianConfig{
+		InsecureSkipVerify: true,
+		CACert:             caFile,
 	}
 
 	tlsCfg, err := buildCosmianTLSConfig(cfg)
 	if err != nil {
 		t.Fatalf("buildCosmianTLSConfig() error: %v", err)
+	}
+	if tlsCfg == nil {
+		t.Fatal("buildCosmianTLSConfig() returned nil config")
 	}
 	if !tlsCfg.InsecureSkipVerify {
 		t.Error("expected InsecureSkipVerify=true")
@@ -226,8 +259,19 @@ func TestBuildCosmianTLSConfig_InvalidCACert(t *testing.T) {
 }
 
 // TestBuildCosmianTLSConfig_InsecureSkipVerify_Warning verifies that an
-// ERROR-level warning is logged when InsecureSkipVerify is enabled.
+// ERROR-level warning is logged when InsecureSkipVerify is enabled with a
+// custom CA certificate (V1.0-SEC-F3).
 func TestBuildCosmianTLSConfig_InsecureSkipVerify_Warning(t *testing.T) {
+	// Create a dummy CA cert file (needed because the warning is only logged
+	// when InsecureSkipVerify=true and CACert is non-empty).
+	cert := generateTestCert(t)
+	certPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: cert.Certificate[0]})
+	tmpDir := t.TempDir()
+	caFile := tmpDir + "/ca.crt"
+	if err := os.WriteFile(caFile, certPEM, 0644); err != nil {
+		t.Fatalf("failed to write CA cert: %v", err)
+	}
+
 	// Capture log output
 	var buf strings.Builder
 	originalOutput := logrus.StandardLogger().Out
@@ -241,6 +285,7 @@ func TestBuildCosmianTLSConfig_InsecureSkipVerify_Warning(t *testing.T) {
 
 	cfg := config.CosmianConfig{
 		InsecureSkipVerify: true,
+		CACert:             caFile,
 	}
 
 	_, err := buildCosmianTLSConfig(cfg)
@@ -255,8 +300,8 @@ func TestBuildCosmianTLSConfig_InsecureSkipVerify_Warning(t *testing.T) {
 	if !strings.Contains(logOutput, "COSMIAN_KMS_INSECURE_SKIP_VERIFY") {
 		t.Errorf("expected ERROR log to mention 'COSMIAN_KMS_INSECURE_SKIP_VERIFY', got: %s", logOutput)
 	}
-	if !strings.Contains(logOutput, "UNSAFE in production") {
-		t.Errorf("expected ERROR log to mention 'UNSAFE in production', got: %s", logOutput)
+	if !strings.Contains(logOutput, "only be used in development") {
+		t.Errorf("expected ERROR log to mention 'only be used in development', got: %s", logOutput)
 	}
 }
 
