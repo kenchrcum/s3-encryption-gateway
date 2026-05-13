@@ -371,6 +371,11 @@ type ServerConfig struct {
 	// should raise this value and size pod memory accordingly.
 	// V0.6-PERF-1 — Phase D.
 	MaxPartBuffer int64 `yaml:"max_part_buffer" env:"SERVER_MAX_PART_BUFFER"`
+	// ForceHTTPS unconditionally sends the HSTS header regardless of whether
+	// the request arrived over TLS. This is required when the gateway runs
+	// behind a TLS-terminating reverse proxy (nginx, ALB, Traefik, etc.)
+	// where r.TLS is always nil on the Go side.
+	ForceHTTPS bool `yaml:"force_https" env:"SERVER_FORCE_HTTPS"`
 }
 
 // DefaultMaxLegacyCopySourceBytes is the default cap for the legacy
@@ -705,7 +710,7 @@ func LoadConfig(path string) (*Config, error) {
 		},
 		Logging: LoggingConfig{
 			AccessLogFormat: "default",
-			RedactHeaders:   []string{"authorization", "x-amz-security-token", "x-amz-signature", "x-encryption-key", "x-encryption-password"},
+			RedactHeaders:   []string{"authorization", "x-amz-security-token", "x-amz-signature", "x-amz-tagging", "x-encryption-key", "x-encryption-password"},
 		},
 		Auth: AuthConfig{
 			ClockSkewTolerance: 5 * time.Minute,
@@ -943,6 +948,9 @@ func loadFromEnv(config *Config) {
 		if maxBytes, err := strconv.Atoi(v); err == nil && maxBytes > 0 {
 			config.Server.MaxHeaderBytes = maxBytes
 		}
+	}
+	if v := os.Getenv("SERVER_FORCE_HTTPS"); v != "" {
+		config.Server.ForceHTTPS = v == "true" || v == "1"
 	}
 	if v := os.Getenv("RATE_LIMIT_ENABLED"); v != "" {
 		config.RateLimit.Enabled = v == "true" || v == "1"

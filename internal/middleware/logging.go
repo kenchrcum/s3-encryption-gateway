@@ -19,6 +19,7 @@ var sensitiveQueryParams = []string{
 	"awssecretaccesskey",
 	"x-amz-security-token",
 	"x-amz-signature",
+	"x-amz-tagging",
 }
 
 // redactQueryString parses rawQuery, replaces the value of every sensitive

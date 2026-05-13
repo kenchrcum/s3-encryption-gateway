@@ -164,7 +164,7 @@ func addHeadersToSpan(span trace.Span, headers http.Header, redactSensitive bool
 		"range",
 		"x-amz-date",
 		"x-amz-version-id",
-		"x-amz-tagging",
+		"x-amz-request-payer",
 	}
 
 	// Headers to redact
@@ -173,6 +173,7 @@ func addHeadersToSpan(span trace.Span, headers http.Header, redactSensitive bool
 		"x-amz-security-token",
 		"x-amz-server-side-encryption-aws-kms-key-id",
 		"x-amz-server-side-encryption-context",
+		"x-amz-tagging", // May contain PII, credentials, or business-sensitive metadata
 		"cookie",
 		"x-forwarded-for", // Already handled separately
 		"x-real-ip",      // Already handled separately
