@@ -931,6 +931,71 @@ func TestBuildTokenSource_TokenFile_Cached(t *testing.T) {
 	}
 }
 
+// TestBuildTokenSource_PermissionCheck verifies that buildTokenSource refuses
+// to load a token when the file has overly permissive permissions (group/world
+// readable), and loads correctly with restrictive permissions (V1.0-SEC-F2).
+func TestBuildTokenSource_PermissionCheck(t *testing.T) {
+	token := "my-secret-token"
+
+	// Case 1: World-readable permissions (0644) → should return nil.
+	t.Run("world readable", func(t *testing.T) {
+		tmpFile, err := os.CreateTemp(t.TempDir(), "admin-token-*.txt")
+		if err != nil {
+			t.Fatalf("failed to create temp file: %v", err)
+		}
+		defer tmpFile.Close()
+		if _, err := tmpFile.WriteString(token + "\n"); err != nil {
+			t.Fatal(err)
+		}
+		tmpFile.Close()
+
+		if err := os.Chmod(tmpFile.Name(), 0644); err != nil {
+			t.Fatal(err)
+		}
+
+		cfg := config.AdminConfig{
+			Auth: config.AdminAuthConfig{
+				TokenFile: tmpFile.Name(),
+			},
+		}
+		s := NewServer(cfg, testLogger())
+		source := s.buildTokenSource()
+		got := source()
+		if got != nil {
+			t.Errorf("buildTokenSource() with 0644 perms = %q, want nil (refused)", string(got))
+		}
+	})
+
+	// Case 2: Restrictive permissions (0600) → should load token correctly.
+	t.Run("owner only", func(t *testing.T) {
+		tmpFile, err := os.CreateTemp(t.TempDir(), "admin-token-*.txt")
+		if err != nil {
+			t.Fatalf("failed to create temp file: %v", err)
+		}
+		defer tmpFile.Close()
+		if _, err := tmpFile.WriteString(token + "\n"); err != nil {
+			t.Fatal(err)
+		}
+		tmpFile.Close()
+
+		if err := os.Chmod(tmpFile.Name(), 0600); err != nil {
+			t.Fatal(err)
+		}
+
+		cfg := config.AdminConfig{
+			Auth: config.AdminAuthConfig{
+				TokenFile: tmpFile.Name(),
+			},
+		}
+		s := NewServer(cfg, testLogger())
+		source := s.buildTokenSource()
+		got := source()
+		if string(got) != token {
+			t.Errorf("buildTokenSource() with 0600 perms = %q, want %q", string(got), token)
+		}
+	})
+}
+
 // TestRefreshToken_UpdatesCache verifies that calling refreshToken explicitly
 // updates the cached token value.
 func TestRefreshToken_UpdatesCache(t *testing.T) {

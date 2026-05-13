@@ -216,6 +216,22 @@ func (s *Server) buildTokenSource() func() []byte {
 	if s.cfg.Auth.TokenFile != "" {
 		path := s.cfg.Auth.TokenFile
 
+		// V1.0-SEC-F2: Validate file permissions before reading the token.
+		// Refuse to start if the file is group- or world-readable, matching
+		// the same check performed by refreshToken() at runtime.
+		info, err := os.Stat(path)
+		if err != nil {
+			s.logger.WithError(err).Error("admin: failed to stat token file")
+			// Fall through — the read below will also fail and produce a clear error.
+		} else if info.Mode().Perm()&0077 != 0 {
+			s.logger.WithFields(logrus.Fields{
+				"path": path,
+				"mode": info.Mode().Perm().String(),
+			}).Error("admin: token file has overly permissive permissions (must be 0600 or more restrictive); refusing to start")
+			// Do NOT load the token — force the operator to fix permissions.
+			return func() []byte { return nil }
+		}
+
 		// Initial read: cache the token immediately.
 		data, err := os.ReadFile(path)
 		if err != nil {
