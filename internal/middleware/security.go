@@ -21,7 +21,9 @@ func SetIPExtractor(extractor *util.IPExtractor) {
 }
 
 // SecurityHeadersMiddleware adds security headers to all responses.
-func SecurityHeadersMiddleware() func(http.Handler) http.Handler {
+// Pass forceHTTPS=true to send the HSTS header even when r.TLS is nil
+// (required behind TLS-terminating reverse proxies).
+func SecurityHeadersMiddleware(forceHTTPS bool) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			// Prevent clickjacking
@@ -30,8 +32,8 @@ func SecurityHeadersMiddleware() func(http.Handler) http.Handler {
 			w.Header().Set("X-Content-Type-Options", "nosniff")
 			// Enable XSS protection
 			w.Header().Set("X-XSS-Protection", "1; mode=block")
-			// Strict Transport Security (only if TLS)
-			if r.TLS != nil {
+			// Strict Transport Security (only if TLS or ForceHTTPS)
+			if r.TLS != nil || forceHTTPS {
 				w.Header().Set("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
 			}
 			// Content Security Policy

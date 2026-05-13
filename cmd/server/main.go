@@ -707,7 +707,7 @@ func main() {
 	// security headers, tracing, bucket validation, rate limiting) would
 	// bypass recovery and crash the server goroutine.
 	httpHandler := middleware.LoggingMiddleware(logger, &cfg.Logging)(router)
-	httpHandler = middleware.SecurityHeadersMiddleware()(httpHandler)
+	httpHandler = middleware.SecurityHeadersMiddleware(cfg.Server.ForceHTTPS)(httpHandler)
 
 	// Apply tracing middleware if tracing is enabled
 	if cfg.Tracing.Enabled {

@@ -13,7 +13,7 @@ import (
 )
 
 func TestSecurityHeadersMiddleware(t *testing.T) {
-	handler := SecurityHeadersMiddleware()(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	handler := SecurityHeadersMiddleware(false)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
 
@@ -44,7 +44,7 @@ func TestSecurityHeadersMiddleware(t *testing.T) {
 }
 
 func TestSecurityHeadersMiddleware_TLS(t *testing.T) {
-	handler := SecurityHeadersMiddleware()(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	handler := SecurityHeadersMiddleware(false)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
 
@@ -56,6 +56,43 @@ func TestSecurityHeadersMiddleware_TLS(t *testing.T) {
 	// HSTS should be set for TLS requests
 	if rr.Header().Get("Strict-Transport-Security") == "" {
 		t.Error("HSTS header should be set for TLS requests")
+	}
+}
+
+func TestSecurityHeadersMiddleware_ForceHTTPS(t *testing.T) {
+	// With forceHTTPS=true and no TLS, HSTS should still be set.
+	handlerTrue := SecurityHeadersMiddleware(true)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	req := httptest.NewRequest("GET", "/test", nil)
+	rr := httptest.NewRecorder()
+	handlerTrue.ServeHTTP(rr, req)
+
+	if rr.Header().Get("Strict-Transport-Security") == "" {
+		t.Error("HSTS header should be set when forceHTTPS=true even without TLS")
+	}
+
+	// With forceHTTPS=false and no TLS, HSTS should NOT be set.
+	handlerFalse := SecurityHeadersMiddleware(false)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	rr2 := httptest.NewRecorder()
+	handlerFalse.ServeHTTP(rr2, req)
+
+	if rr2.Header().Get("Strict-Transport-Security") != "" {
+		t.Error("HSTS header should NOT be set when forceHTTPS=false and no TLS")
+	}
+
+	// With forceHTTPS=true and TLS present, HSTS should still be set.
+	reqTLS := httptest.NewRequest("GET", "/test", nil)
+	reqTLS.TLS = &tls.ConnectionState{}
+	rr3 := httptest.NewRecorder()
+	handlerTrue.ServeHTTP(rr3, reqTLS)
+
+	if rr3.Header().Get("Strict-Transport-Security") == "" {
+		t.Error("HSTS header should be set when forceHTTPS=true with TLS")
 	}
 }
 
