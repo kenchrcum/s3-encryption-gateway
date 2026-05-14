@@ -46,6 +46,18 @@ const (
 	// tests (range and multipart throughput/concurrency checks). Providers with
 	// high per-request latency (external/cloud) skip these to keep CI fast.
 	CapLoadTest
+	// CapBucketPolicy indicates support for PutBucketPolicy / GetBucketPolicy.
+	CapBucketPolicy
+	// CapBucketLifecycle indicates support for PutBucketLifecycle / GetBucketLifecycle.
+	CapBucketLifecycle
+	// CapBucketCors indicates support for PutBucketCors / GetBucketCors.
+	CapBucketCors
+	// CapBucketACL indicates support for PutBucketAcl / GetBucketAcl.
+	CapBucketACL
+	// CapObjectACL indicates support for PutObjectAcl / GetObjectAcl.
+	CapObjectACL
+	// CapBucketEncryption indicates support for PutBucketEncryption / GetBucketEncryption.
+	CapBucketEncryption
 )
 
 // capNames maps each bit to a human-readable label for Stringer output.
@@ -66,6 +78,12 @@ var capNames = []struct {
 	{CapInlinePutTagging, "InlinePutTagging"},
 	{CapEncryptedMPU, "EncryptedMPU"},
 	{CapLoadTest, "LoadTest"},
+	{CapBucketPolicy, "BucketPolicy"},
+	{CapBucketLifecycle, "BucketLifecycle"},
+	{CapBucketCors, "BucketCors"},
+	{CapBucketACL, "BucketACL"},
+	{CapObjectACL, "ObjectACL"},
+	{CapBucketEncryption, "BucketEncryption"},
 }
 
 // String returns a human-readable description of the capabilities bitmap.

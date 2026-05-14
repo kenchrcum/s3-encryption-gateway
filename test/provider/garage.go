@@ -31,9 +31,13 @@ func (p *garageProvider) Capabilities() Capabilities {
 	// Object Lock enabled. The conformance bucket here is created without
 	// Object Lock, so CapObjectLock is omitted. Re-enable when we add
 	// opt-in per-test bucket configuration.
+	//
+	// Garage v2.3.x does not implement PutObjectTagging / GetObjectTagging
+	// via the ?tagging subresource (returns 501 NotImplemented). Inline
+	// tagging via x-amz-tagging on PutObject (CapInlinePutTagging) works.
+	// Re-enable CapObjectTagging when a supported Garage version ships.
 	return CapMultipartUpload |
 		CapMultipartCopy |
-		CapObjectTagging |
 		CapInlinePutTagging |
 		CapPresignedURL |
 		CapBatchDelete |
