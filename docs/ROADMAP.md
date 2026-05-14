@@ -112,6 +112,7 @@ This roadmap outlines potential future improvements, grouped by milestones and t
   - Sensitive data zeroization paths; audit for constant-time comparisons where applicable.
 
 - S3 Compatibility
+  - ✅ **V1.0-S3-2**: S3 API Feature Parity — ~35 new operations implemented (all T1/T2/T3 handlers).
   - Broad feature parity: tagging, ACLs, lifecycle headers passthrough.
   - Compatibility certification matrix (SDKs/tools).
 

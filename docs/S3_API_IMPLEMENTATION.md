@@ -134,7 +134,86 @@ The S3 Encryption Gateway must maintain full compatibility with the Amazon S3 AP
 - **Endpoints**: All bucket-level operations (create, delete, policy, etc.)
 - **Implementation**: Pass-through to backend, no encryption concerns
 
-## Request/Response Processing Strategy
+## S3 API Coverage Matrix (V1.0-S3-2)
+
+### New Operations — Tier 1 (Critical)
+
+| # | Method | Route | Operation | Handler | Handling |
+|---|---|---|---|---|---|
+| T1-01 | `DELETE` | `/{bucket}` | **DeleteBucket** | `handleDeleteBucket` | Guarded proxy (+audit) |
+| T1-02 | `GET` | `/` | **ListBuckets** | `handleListBuckets` | Proxy verbatim |
+| T1-03 | `GET` | `/{bucket}?location` | **GetBucketLocation** | `handleGetBucketLocation` | Proxy verbatim |
+| T1-04 | `GET` | `/{bucket}?versioning` | **GetBucketVersioning** | `handleGetBucketVersioning` | Proxy verbatim |
+| T1-05 | `PUT` | `/{bucket}?versioning` | **PutBucketVersioning** | `handlePutBucketVersioning` | Proxy verbatim |
+| T1-06 | `GET` | `/{bucket}?uploads` | **ListMultipartUploads** | `handleListMultipartUploads` | Proxy verbatim |
+| T1-07 | `GET` | `/{bucket}/{key}?tagging` | **GetObjectTagging** | `handleGetObjectTagging` | Proxy verbatim |
+| T1-08 | `PUT` | `/{bucket}/{key}?tagging` | **PutObjectTagging** | `handlePutObjectTagging` | Proxy verbatim |
+| T1-09 | `DELETE` | `/{bucket}/{key}?tagging` | **DeleteObjectTagging** | `handleDeleteObjectTagging` | Proxy verbatim |
+| T1-10 | `GET` | `/{bucket}?acl` | **GetBucketACL** | `handleGetBucketACL` | Proxy verbatim |
+| T1-11 | `PUT` | `/{bucket}?acl` | **PutBucketACL** | `handlePutBucketACL` | Proxy verbatim |
+| T1-12 | `GET` | `/{bucket}/{key}?acl` | **GetObjectACL** | `handleGetObjectACL` | Proxy verbatim |
+| T1-13 | `PUT` | `/{bucket}/{key}?acl` | **PutObjectACL** | `handlePutObjectACL` | Proxy verbatim |
+
+### New Operations — Tier 2 (Common)
+
+| # | Method | Route | Operation | Handler | Handling |
+|---|---|---|---|---|---|
+| T2-01 | `GET` | `/{bucket}?policy` | **GetBucketPolicy** | `handleGetBucketPolicy` | Proxy verbatim |
+| T2-02 | `PUT` | `/{bucket}?policy` | **PutBucketPolicy** | `handlePutBucketPolicy` | Proxy verbatim |
+| T2-03 | `DELETE` | `/{bucket}?policy` | **DeleteBucketPolicy** | `handleDeleteBucketPolicy` | Proxy verbatim |
+| T2-04 | `GET` | `/{bucket}?cors` | **GetBucketCors** | `handleGetBucketCors` | Proxy verbatim |
+| T2-05 | `PUT` | `/{bucket}?cors` | **PutBucketCors** | `handlePutBucketCors` | Proxy verbatim |
+| T2-06 | `DELETE` | `/{bucket}?cors` | **DeleteBucketCors** | `handleDeleteBucketCors` | Proxy verbatim |
+| T2-07 | `GET` | `/{bucket}?lifecycle` | **GetBucketLifecycle** | `handleGetBucketLifecycle` | Proxy verbatim |
+| T2-08 | `PUT` | `/{bucket}?lifecycle` | **PutBucketLifecycle** | `handlePutBucketLifecycle` | Proxy verbatim |
+| T2-09 | `DELETE` | `/{bucket}?lifecycle` | **DeleteBucketLifecycle** | `handleDeleteBucketLifecycle` | Proxy verbatim |
+| T2-10 | `OPTIONS` | `/{bucket}\|/{bucket}/{key}` | **CORS Preflight** | `handleCORSPreflight` | Gateway-handled |
+| T2-11 | `POST` | `/{bucket}/{key}?restore` | **RestoreObject** | `handleRestoreObject` | Proxy verbatim |
+| T2-12 | `GET` | `/{bucket}?encryption` | **GetBucketEncryption** | `handleGetBucketEncryption` | Proxy verbatim |
+| T2-13 | `PUT` | `/{bucket}?encryption` | **PutBucketEncryption** | `handlePutBucketEncryption` | Proxy verbatim |
+| T2-14 | `DELETE` | `/{bucket}?encryption` | **DeleteBucketEncryption** | `handleDeleteBucketEncryption` | Proxy verbatim |
+
+### New Operations — Tier 3 (Specialised)
+
+| # | Method | Route | Operation | Handler | Handling |
+|---|---|---|---|---|---|
+| T3-01 | `GET` | `/{bucket}?notification` | **GetBucketNotification** | `handleGetBucketNotification` | Proxy verbatim |
+| T3-02 | `PUT` | `/{bucket}?notification` | **PutBucketNotification** | `handlePutBucketNotification` | Proxy verbatim |
+| T3-03 | `GET` | `/{bucket}?replication` | **GetBucketReplication** | `handleGetBucketReplication` | Proxy verbatim |
+| T3-04 | `PUT` | `/{bucket}?replication` | **PutBucketReplication** | `handlePutBucketReplication` | Proxy verbatim |
+| T3-05 | `DELETE` | `/{bucket}?replication` | **DeleteBucketReplication** | `handleDeleteBucketReplication` | Proxy verbatim |
+| T3-06 | `GET` | `/{bucket}?logging` | **GetBucketLogging** | `handleGetBucketLogging` | Proxy verbatim |
+| T3-07 | `PUT` | `/{bucket}?logging` | **PutBucketLogging** | `handlePutBucketLogging` | Proxy verbatim |
+| T3-08 | `GET` | `/{bucket}?requestPayment` | **GetBucketRequestPayment** | `handleGetBucketRequestPayment` | Proxy verbatim |
+| T3-09 | `PUT` | `/{bucket}?requestPayment` | **PutBucketRequestPayment** | `handlePutBucketRequestPayment` | Proxy verbatim |
+| T3-10 | `GET` | `/{bucket}?website` | **GetBucketWebsite** | `handleGetBucketWebsite` | Proxy verbatim |
+| T3-11 | `PUT` | `/{bucket}?website` | **PutBucketWebsite** | `handlePutBucketWebsite` | Proxy verbatim |
+| T3-12 | `DELETE` | `/{bucket}?website` | **DeleteBucketWebsite** | `handleDeleteBucketWebsite` | Proxy verbatim |
+| T3-13 | `GET` | `/{bucket}?inventory` | **GetBucketInventory** | `handleGetBucketInventory` | Proxy verbatim |
+| T3-14 | `PUT` | `/{bucket}?inventory` | **PutBucketInventory** | `handlePutBucketInventory` | Proxy verbatim |
+| T3-15 | `DELETE` | `/{bucket}?inventory` | **DeleteBucketInventory** | `handleDeleteBucketInventory` | Proxy verbatim |
+| T3-16 | `GET` | `/{bucket}?analytics` | **GetBucketAnalytics** | `handleGetBucketAnalytics` | Proxy verbatim |
+| T3-17 | `POST` | `/{bucket}/{key}?select` | **SelectObjectContent** | `handleSelectObjectContent` | 501 NotImplemented |
+| T3-18 | `PUT` | `/{bucket}?intelligent-tiering` | **PutBucketIntelligentTiering** | `handlePutBucketIntelligentTiering` | Proxy verbatim |
+
+### Known Limitations (V1.0-S3-2)
+
+| Operation | Reason |
+|---|---|
+| `SelectObjectContent` | Requires server-side SQL evaluation on encrypted data — not feasible in a proxy model |
+| `WriteGetObjectResponse` | S3 Object Lambda integration — proxy model incompatible |
+
+### Helper Infrastructure (V1.0-S3-2)
+
+| Helper | File | Purpose |
+|---|---|---|
+| `copyProxyResponse` | `internal/api/utils.go` | Copies status code, filtered headers, and body from upstream response to client |
+| `forwardToBackend` | `internal/api/utils.go` | Creates and sends a signed request to the configured S3 backend, returns the raw response |
+| `handlePassthrough` | `internal/api/utils.go` | Generic proxy handler wrapper: forward → copy → metric → audit |
+
+All handlers in tiers 1-3 use `handlePassthrough` as their implementation body, reducing each new handler to ~3 lines.
+
+### Request/Response Processing Strategy
 
 ### Request Parsing
 ```go

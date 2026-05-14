@@ -6,7 +6,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
-## [0.8.0] — 2026-05-11
+## [0.8.0] — 2026-05-13
 
 ### Security
 
@@ -130,40 +130,52 @@ run before this release; these changes raise the security floor further.
   in `config.yaml` are rejected at startup rather than silently ignored,
   preventing misconfiguration from going undetected.
 
-#### Metrics, Observability & Containers
+#### Post-RC1 Security Hardening
 
-- **`/metrics` moved to authenticated admin port** (V1.0-SEC-L01):
-  the Prometheus metrics handler is no longer registered on the
-  data-plane listener. It is now served exclusively on the admin mux
-  (`adminServer.Mux().Handle("/metrics", ...)`), inheriting admin
-  bearer-token authentication and TLS. Operators using an external
-  scraper should point it at the admin port.
+- **Token file permission check at startup** (V1.0-SEC-M08): `buildTokenSource()`
+  now calls `os.Stat()` on the admin bearer-token file before reading it and
+  hard-fails startup if the file is group- or world-readable (`perm & 0077 != 0`).
+  Previously only the periodic refresh loop checked permissions, allowing a
+  world-readable token file to be silently accepted on initial load.
 
-- **`/health` route registered on data-plane listener** (V1.0-SEC-L03):
-  `GET /health` is now explicitly registered on the main router,
-  returning `200 OK` with a JSON body. Kubernetes liveness probes
-  pointed at the data-plane port previously received `404`; they now
-  work without requiring an admin-port probe.
+- **Require CA certificate when `InsecureSkipVerify` is enabled**
+  (V1.0-SEC-M09): `buildCosmianTLSConfig()` now returns a hard error when
+  `InsecureSkipVerify=true` but no `ca_cert` is configured. This prevents a
+  fully unverified TLS connection to the KMS endpoint with no pinned trust
+  anchor.
 
-- **Default clock-skew tolerance reduced to 5 minutes** (V1.0-SEC-L05):
-  `auth.sigv4_clock_skew` default is reduced from 15 minutes to
-  5 minutes, matching the AWS SDK and standard SigV4 implementations.
-  Deployments with known clock-drift issues should set the value
-  explicitly.
+- **Harden TLS config in `forwardSignatureV4Request`** (V1.0-SEC-M10):
+  the request-forwarding path used by CopyObject/UploadPartCopy now enforces
+  TLS 1.2 minimum, restricted cipher suites, and curve preferences matching
+  the main S3 client.
 
-- **Default tracing exporter changed to `"none"`** (V1.0-SEC-L06):
-  the default value of `tracing.exporter` is changed from `"stdout"` to
-  `"none"`. The previous default caused every trace span to be written to
-  stdout on installations that had not explicitly configured a tracing
-  backend, polluting container logs with OTLP-format output.
+- **`ForceHTTPS` config for HSTS behind reverse proxies** (V1.0-SEC-M11):
+  a new `server.force_https` setting unconditionally sends the
+  `Strict-Transport-Security` header regardless of `r.TLS`. In deployments
+  behind TLS-terminating reverse proxies, HSTS was previously never emitted
+  because Go sees `r.TLS == nil`, leaving clients vulnerable to SSL-stripping.
 
-- **HEALTHCHECK replaced with compiled Go binary in both Dockerfiles**
-  (V1.0-SEC-L02, V1.0-SEC-L07): the `wget`-based `HEALTHCHECK`
-  instruction has been replaced in both `Dockerfile` and `Dockerfile.fips`
-  with a minimal compiled Go healthcheck binary (`/app/healthcheck`). This
-  removes the dependency on `wget` being present in the container image
-  and provides a consistent, reliable health probe in both standard and
-  FIPS images.
+- **ProxyClient TLS hardening** (V1.0-SEC-M12): `NewProxyClient` replaces
+  the bare `&http.Client{}` with a fully configured transport enforcing TLS 1.2
+  minimum, restricted cipher suites (AES-256-GCM / CHACHA20-POLY1305), X25519/P-256
+  curves, and connection timeouts (60s total, 90s idle, 10s response header).
+  This aligns the proxy transport with the hardened TLS configs used elsewhere.
+
+- **`x-amz-tagging` redacted from traces and logs** (V1.0-SEC-M13): `x-amz-tagging`
+  moved from the safe-headers list to the sensitive-headers list in tracing
+  middleware and added to the sensitive-query-params list in logging middleware.
+  Object tags can contain PII or business-sensitive metadata.
+
+- **SigV2 time-bound validation** (V1.0-SEC-M14): `ValidateSignatureV2` now
+  validates the `Date` header (±5 min clock skew) and `Expires` query parameter
+  against server time, preventing indefinite replay of captured SigV2 requests.
+  Previously SigV2 had no temporal checks at all.
+
+- **Query-param secret-key extraction flagged** (V1.0-SEC-M15): a new
+  `FromQueryParam` field on `ClientCredentials` lets callers detect when the
+  secret key was extracted from the URL query string (Method 1) and log a
+  security warning. Methods 2 (presigned URL) and 3 (Authorization header)
+  set `FromQueryParam=false`.
 
 ### Breaking
 
@@ -180,6 +192,25 @@ run before this release; these changes raise the security floor further.
   `auth.credentials` entries matching your S3-compatible backend credentials.
   See `config.yaml.example` and ADR-0012 for the new format.
 
+### Added
+
+- **Dedicated unauthenticated metrics listener** (V1.0-OBS-2): a new
+  `metrics.addr` configuration key (`METRICS_ADDR`) enables serving `/metrics`
+  on a dedicated HTTP port separate from both the S3 data-plane and the admin
+  port. Access control is delegated to Kubernetes NetworkPolicy. Fallback chain
+  preserved: if `metrics.addr` is empty and admin is enabled, `/metrics` stays on
+  the admin port; if admin is also disabled, it falls back to the S3 port.
+  Helm chart templates (service, ServiceMonitor, PodMonitor, NetworkPolicy)
+  are updated for the dedicated listener.
+
+### Changed
+
+- **Multipart upload encryption now defaults to `true`** (V0.6-SEC-3 follow-up):
+  `EncryptMultipartUploads` changed from `bool` to `*bool` so an omitted field
+  defaults to `true`. Buckets without an explicit policy now require MPU
+  encryption by default; operators must set `encrypt_multipart_uploads: false`
+  to opt out.
+
 ### Fixed
 
 - **XML injection prevention in ListObjects response**: `generateListObjectsXML`
@@ -195,10 +226,23 @@ run before this release; these changes raise the security floor further.
   now handles `OutOfSpace` errors from SeaweedFS gracefully instead of failing
   the entire suite.
 
+- **Orphaned MPU manifest cleanup on object deletion** (#140): `DeleteObject`
+  and `DeleteObjects` now issue a best-effort delete for the companion
+  `<key>.mpu-manifest` file after a successful primary delete. A 404 on the
+  manifest delete is silently ignored; unexpected errors are logged but never
+  propagate as primary delete failures.
+
+- **Backend error body truncation in CopyObject / UploadPartCopy**: backend
+  error response bodies are now truncated to 1 KiB via `io.LimitReader`,
+  preventing unbounded backend internals (stack traces, infrastructure URLs)
+  from leaking into application logs.
+
 ### Dependencies
 
 - Updated `golang.org/x/crypto` to v0.51.0
 - Updated `golang.org/x/sys` to v0.44.0
+- Updated `golang.org/x/perf` digest to 3cf3409
+- Updated `github.com/alicebob/miniredis/v2` to v2.38.0
 
 ### Documentation
 

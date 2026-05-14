@@ -170,6 +170,16 @@ Confirmed capability gaps (full conformance run 2026-04-22):
 All other capabilities pass, including KMS envelope encryption, encrypted MPU,
 UploadPartCopy, tagging, presigned URLs, load tests, and chaos tests.
 
+**Garage note**: Garage v2.3.0 does not implement the `?tagging` subresource
+for `PutObjectTagging` / `GetObjectTagging` (returns 501 `NotImplemented`).
+Inline tagging via `x-amz-tagging` on `PutObject` (`CapInlinePutTagging`) works
+correctly.
+
+Confirmed capability gaps (full conformance run 2026-05-14):
+- **Object tagging** (`CapObjectTagging` absent): `?tagging` subresource not
+  implemented in Garage v2.3.x. Re-enable `CapObjectTagging` when a supported
+  version ships.
+
 **SeaweedFS note**: SeaweedFS uses a blob-store-backed S3 gateway architecture.
 
 Confirmed capability gaps (full conformance run 2026-04-22):
