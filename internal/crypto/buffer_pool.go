@@ -290,6 +290,16 @@ func NewBoundedQueueWithContext(ctx context.Context, maxSize int) *BoundedQueue 
 	}
 	q.notEmpty = sync.NewCond(&q.mu)
 	q.notFull = sync.NewCond(&q.mu)
+
+	// Wake blocked Read/Write waiters when context is cancelled.
+	// sync.Cond.Wait() only returns on Broadcast/Signal, so we need
+	// this goroutine to translate context cancellation into a broadcast.
+	go func() {
+		<-ctx.Done()
+		q.notEmpty.Broadcast()
+		q.notFull.Broadcast()
+	}()
+
 	return q
 }
 
