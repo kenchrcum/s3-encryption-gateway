@@ -225,6 +225,8 @@ func (h *Handler) RegisterRoutes(r *mux.Router) {
 	r.HandleFunc("/live", h.handleLive).Methods("GET")
 	r.HandleFunc("/livez", h.handleLive).Methods("GET") // k8s-convention alias
 
+	r.HandleFunc("/", h.handleListBuckets).Methods("GET")
+
 	// S3 API routes
 	s3Router := r.PathPrefix("/").Subrouter()
 
@@ -245,10 +247,99 @@ func (h *Handler) RegisterRoutes(r *mux.Router) {
 	s3Router.HandleFunc("/{bucket:[^/]+}/{key:.+}", h.handleGetObjectLegalHold).Methods("GET").Queries("legal-hold", "")
 	s3Router.HandleFunc("/{bucket:[^/]+}/{key:.+}", h.handlePutObjectLegalHold).Methods("PUT").Queries("legal-hold", "")
 
+	// Object tagging subresources
+	s3Router.HandleFunc("/{bucket:[^/]+}/{key:.+}", h.handleGetObjectTagging).Methods("GET").Queries("tagging", "")
+	s3Router.HandleFunc("/{bucket:[^/]+}/{key:.+}", h.handlePutObjectTagging).Methods("PUT").Queries("tagging", "")
+	s3Router.HandleFunc("/{bucket:[^/]+}/{key:.+}", h.handleDeleteObjectTagging).Methods("DELETE").Queries("tagging", "")
+
+	// Object ACL subresources
+	s3Router.HandleFunc("/{bucket:[^/]+}/{key:.+}", h.handleGetObjectACL).Methods("GET").Queries("acl", "")
+	s3Router.HandleFunc("/{bucket:[^/]+}/{key:.+}", h.handlePutObjectACL).Methods("PUT").Queries("acl", "")
+
+	// RestoreObject
+	s3Router.HandleFunc("/{bucket:[^/]+}/{key:.+}", h.handleRestoreObject).Methods("POST").Queries("restore", "")
+
+	// SelectObjectContent (501 NotImplemented)
+	s3Router.HandleFunc("/{bucket:[^/]+}/{key:.+}", h.handleSelectObjectContent).Methods("POST").Queries("select", "")
+	s3Router.HandleFunc("/{bucket:[^/]+}/{key:.+}", h.handleSelectObjectContent).Methods("POST").Queries("select-type", "2")
+
 	// Object Lock configuration (bucket-level) — must be registered BEFORE
 	// the generic /{bucket} GET/PUT routes.
 	s3Router.HandleFunc("/{bucket}", h.handleGetObjectLockConfiguration).Methods("GET").Queries("object-lock", "")
 	s3Router.HandleFunc("/{bucket}", h.handlePutObjectLockConfiguration).Methods("PUT").Queries("object-lock", "")
+
+	// CORS preflight
+	s3Router.HandleFunc("/{bucket}", h.handleCORSPreflight).Methods("OPTIONS")
+	s3Router.HandleFunc("/{bucket:[^/]+}/{key:.+}", h.handleCORSPreflight).Methods("OPTIONS")
+
+	s3Router.HandleFunc("/{bucket}", h.handleDeleteBucket).Methods("DELETE")
+
+	// Bucket lifecycle subresources
+	s3Router.HandleFunc("/{bucket}", h.handleGetBucketLifecycle).Methods("GET").Queries("lifecycle", "")
+	s3Router.HandleFunc("/{bucket}", h.handlePutBucketLifecycle).Methods("PUT").Queries("lifecycle", "")
+	s3Router.HandleFunc("/{bucket}", h.handleDeleteBucketLifecycle).Methods("DELETE").Queries("lifecycle", "")
+
+	// Bucket policy subresources
+	s3Router.HandleFunc("/{bucket}", h.handleGetBucketPolicy).Methods("GET").Queries("policy", "")
+	s3Router.HandleFunc("/{bucket}", h.handlePutBucketPolicy).Methods("PUT").Queries("policy", "")
+	s3Router.HandleFunc("/{bucket}", h.handleDeleteBucketPolicy).Methods("DELETE").Queries("policy", "")
+
+	// Bucket CORS subresources
+	s3Router.HandleFunc("/{bucket}", h.handleGetBucketCors).Methods("GET").Queries("cors", "")
+	s3Router.HandleFunc("/{bucket}", h.handlePutBucketCors).Methods("PUT").Queries("cors", "")
+	s3Router.HandleFunc("/{bucket}", h.handleDeleteBucketCors).Methods("DELETE").Queries("cors", "")
+
+	// Bucket versioning subresources
+	s3Router.HandleFunc("/{bucket}", h.handleGetBucketVersioning).Methods("GET").Queries("versioning", "")
+	s3Router.HandleFunc("/{bucket}", h.handlePutBucketVersioning).Methods("PUT").Queries("versioning", "")
+
+	// Bucket encryption subresources
+	s3Router.HandleFunc("/{bucket}", h.handleGetBucketEncryption).Methods("GET").Queries("encryption", "")
+	s3Router.HandleFunc("/{bucket}", h.handlePutBucketEncryption).Methods("PUT").Queries("encryption", "")
+	s3Router.HandleFunc("/{bucket}", h.handleDeleteBucketEncryption).Methods("DELETE").Queries("encryption", "")
+
+	// Bucket ACL subresources
+	s3Router.HandleFunc("/{bucket}", h.handleGetBucketACL).Methods("GET").Queries("acl", "")
+	s3Router.HandleFunc("/{bucket}", h.handlePutBucketACL).Methods("PUT").Queries("acl", "")
+
+	// Bucket location
+	s3Router.HandleFunc("/{bucket}", h.handleGetBucketLocation).Methods("GET").Queries("location", "")
+
+	// Bucket uploads listing (multipart)
+	s3Router.HandleFunc("/{bucket}", h.handleListMultipartUploads).Methods("GET").Queries("uploads", "")
+
+	// Bucket notification subresources
+	s3Router.HandleFunc("/{bucket}", h.handleGetBucketNotification).Methods("GET").Queries("notification", "")
+	s3Router.HandleFunc("/{bucket}", h.handlePutBucketNotification).Methods("PUT").Queries("notification", "")
+
+	// Bucket replication subresources
+	s3Router.HandleFunc("/{bucket}", h.handleGetBucketReplication).Methods("GET").Queries("replication", "")
+	s3Router.HandleFunc("/{bucket}", h.handlePutBucketReplication).Methods("PUT").Queries("replication", "")
+	s3Router.HandleFunc("/{bucket}", h.handleDeleteBucketReplication).Methods("DELETE").Queries("replication", "")
+
+	// Bucket logging subresources
+	s3Router.HandleFunc("/{bucket}", h.handleGetBucketLogging).Methods("GET").Queries("logging", "")
+	s3Router.HandleFunc("/{bucket}", h.handlePutBucketLogging).Methods("PUT").Queries("logging", "")
+
+	// Bucket requestPayment subresources
+	s3Router.HandleFunc("/{bucket}", h.handleGetBucketRequestPayment).Methods("GET").Queries("requestPayment", "")
+	s3Router.HandleFunc("/{bucket}", h.handlePutBucketRequestPayment).Methods("PUT").Queries("requestPayment", "")
+
+	// Bucket website subresources
+	s3Router.HandleFunc("/{bucket}", h.handleGetBucketWebsite).Methods("GET").Queries("website", "")
+	s3Router.HandleFunc("/{bucket}", h.handlePutBucketWebsite).Methods("PUT").Queries("website", "")
+	s3Router.HandleFunc("/{bucket}", h.handleDeleteBucketWebsite).Methods("DELETE").Queries("website", "")
+
+	// Bucket inventory subresources
+	s3Router.HandleFunc("/{bucket}", h.handleGetBucketInventory).Methods("GET").Queries("inventory", "")
+	s3Router.HandleFunc("/{bucket}", h.handlePutBucketInventory).Methods("PUT").Queries("inventory", "")
+	s3Router.HandleFunc("/{bucket}", h.handleDeleteBucketInventory).Methods("DELETE").Queries("inventory", "")
+
+	// Bucket analytics subresources
+	s3Router.HandleFunc("/{bucket}", h.handleGetBucketAnalytics).Methods("GET").Queries("analytics", "")
+
+	// Bucket intelligent-tiering
+	s3Router.HandleFunc("/{bucket}", h.handlePutBucketIntelligentTiering).Methods("PUT").Queries("intelligent-tiering", "")
 
 	// Generic S3 routes
 	s3Router.HandleFunc("/{bucket}", h.handleListObjects).Methods("GET")
@@ -4291,4 +4382,246 @@ func effectiveMaxPartBuffer(cfg *config.Config) int64 {
 		return cfg.Server.MaxPartBuffer
 	}
 	return config.DefaultMaxPartBuffer
+}
+
+// handleListBuckets handles GET / — ListBuckets.
+func (h *Handler) handleListBuckets(w http.ResponseWriter, r *http.Request) {
+	h.handlePassthrough(w, r, "ListBuckets", "", "")
+}
+
+// handleDeleteBucket handles DELETE /{bucket} — DeleteBucket.
+func (h *Handler) handleDeleteBucket(w http.ResponseWriter, r *http.Request) {
+	bucket := mux.Vars(r)["bucket"]
+	if h.policyManager != nil {
+		if policy := h.policyManager.GetPolicyForBucket(bucket); policy != nil {
+			h.logger.WithFields(logrus.Fields{
+				"bucket":    bucket,
+				"policy_id": policy.ID,
+			}).Warn("Deleting bucket with active policy reference")
+		}
+	}
+	h.handlePassthrough(w, r, "DeleteBucket", bucket, "")
+}
+
+// handleGetBucketLocation handles GET /{bucket}?location — GetBucketLocation.
+func (h *Handler) handleGetBucketLocation(w http.ResponseWriter, r *http.Request) {
+	h.handlePassthrough(w, r, "GetBucketLocation", mux.Vars(r)["bucket"], "")
+}
+
+// handleGetBucketVersioning handles GET /{bucket}?versioning — GetBucketVersioning.
+func (h *Handler) handleGetBucketVersioning(w http.ResponseWriter, r *http.Request) {
+	h.handlePassthrough(w, r, "GetBucketVersioning", mux.Vars(r)["bucket"], "")
+}
+
+// handlePutBucketVersioning handles PUT /{bucket}?versioning — PutBucketVersioning.
+func (h *Handler) handlePutBucketVersioning(w http.ResponseWriter, r *http.Request) {
+	h.handlePassthrough(w, r, "PutBucketVersioning", mux.Vars(r)["bucket"], "")
+}
+
+// handleListMultipartUploads handles GET /{bucket}?uploads — ListMultipartUploads.
+func (h *Handler) handleListMultipartUploads(w http.ResponseWriter, r *http.Request) {
+	h.handlePassthrough(w, r, "ListMultipartUploads", mux.Vars(r)["bucket"], "")
+}
+
+// handleGetBucketACL handles GET /{bucket}?acl — GetBucketACL.
+func (h *Handler) handleGetBucketACL(w http.ResponseWriter, r *http.Request) {
+	h.handlePassthrough(w, r, "GetBucketACL", mux.Vars(r)["bucket"], "")
+}
+
+// handlePutBucketACL handles PUT /{bucket}?acl — PutBucketACL.
+func (h *Handler) handlePutBucketACL(w http.ResponseWriter, r *http.Request) {
+	h.handlePassthrough(w, r, "PutBucketACL", mux.Vars(r)["bucket"], "")
+}
+
+// handleGetBucketPolicy handles GET /{bucket}?policy — GetBucketPolicy.
+func (h *Handler) handleGetBucketPolicy(w http.ResponseWriter, r *http.Request) {
+	h.handlePassthrough(w, r, "GetBucketPolicy", mux.Vars(r)["bucket"], "")
+}
+
+// handlePutBucketPolicy handles PUT /{bucket}?policy — PutBucketPolicy.
+func (h *Handler) handlePutBucketPolicy(w http.ResponseWriter, r *http.Request) {
+	h.handlePassthrough(w, r, "PutBucketPolicy", mux.Vars(r)["bucket"], "")
+}
+
+// handleDeleteBucketPolicy handles DELETE /{bucket}?policy — DeleteBucketPolicy.
+func (h *Handler) handleDeleteBucketPolicy(w http.ResponseWriter, r *http.Request) {
+	h.handlePassthrough(w, r, "DeleteBucketPolicy", mux.Vars(r)["bucket"], "")
+}
+
+// handleGetBucketCors handles GET /{bucket}?cors — GetBucketCors.
+func (h *Handler) handleGetBucketCors(w http.ResponseWriter, r *http.Request) {
+	h.handlePassthrough(w, r, "GetBucketCors", mux.Vars(r)["bucket"], "")
+}
+
+// handlePutBucketCors handles PUT /{bucket}?cors — PutBucketCors.
+func (h *Handler) handlePutBucketCors(w http.ResponseWriter, r *http.Request) {
+	h.handlePassthrough(w, r, "PutBucketCors", mux.Vars(r)["bucket"], "")
+}
+
+// handleDeleteBucketCors handles DELETE /{bucket}?cors — DeleteBucketCors.
+func (h *Handler) handleDeleteBucketCors(w http.ResponseWriter, r *http.Request) {
+	h.handlePassthrough(w, r, "DeleteBucketCors", mux.Vars(r)["bucket"], "")
+}
+
+// handleGetBucketLifecycle handles GET /{bucket}?lifecycle — GetBucketLifecycle.
+func (h *Handler) handleGetBucketLifecycle(w http.ResponseWriter, r *http.Request) {
+	h.handlePassthrough(w, r, "GetBucketLifecycle", mux.Vars(r)["bucket"], "")
+}
+
+// handlePutBucketLifecycle handles PUT /{bucket}?lifecycle — PutBucketLifecycle.
+func (h *Handler) handlePutBucketLifecycle(w http.ResponseWriter, r *http.Request) {
+	h.handlePassthrough(w, r, "PutBucketLifecycle", mux.Vars(r)["bucket"], "")
+}
+
+// handleDeleteBucketLifecycle handles DELETE /{bucket}?lifecycle — DeleteBucketLifecycle.
+func (h *Handler) handleDeleteBucketLifecycle(w http.ResponseWriter, r *http.Request) {
+	h.handlePassthrough(w, r, "DeleteBucketLifecycle", mux.Vars(r)["bucket"], "")
+}
+
+// handleGetBucketEncryption handles GET /{bucket}?encryption — GetBucketEncryption.
+func (h *Handler) handleGetBucketEncryption(w http.ResponseWriter, r *http.Request) {
+	h.handlePassthrough(w, r, "GetBucketEncryption", mux.Vars(r)["bucket"], "")
+}
+
+// handlePutBucketEncryption handles PUT /{bucket}?encryption — PutBucketEncryption.
+func (h *Handler) handlePutBucketEncryption(w http.ResponseWriter, r *http.Request) {
+	h.handlePassthrough(w, r, "PutBucketEncryption", mux.Vars(r)["bucket"], "")
+}
+
+// handleDeleteBucketEncryption handles DELETE /{bucket}?encryption — DeleteBucketEncryption.
+func (h *Handler) handleDeleteBucketEncryption(w http.ResponseWriter, r *http.Request) {
+	h.handlePassthrough(w, r, "DeleteBucketEncryption", mux.Vars(r)["bucket"], "")
+}
+
+// handleGetBucketNotification handles GET /{bucket}?notification — GetBucketNotification.
+func (h *Handler) handleGetBucketNotification(w http.ResponseWriter, r *http.Request) {
+	h.handlePassthrough(w, r, "GetBucketNotification", mux.Vars(r)["bucket"], "")
+}
+
+// handlePutBucketNotification handles PUT /{bucket}?notification — PutBucketNotification.
+func (h *Handler) handlePutBucketNotification(w http.ResponseWriter, r *http.Request) {
+	h.handlePassthrough(w, r, "PutBucketNotification", mux.Vars(r)["bucket"], "")
+}
+
+// handleGetBucketReplication handles GET /{bucket}?replication — GetBucketReplication.
+func (h *Handler) handleGetBucketReplication(w http.ResponseWriter, r *http.Request) {
+	h.handlePassthrough(w, r, "GetBucketReplication", mux.Vars(r)["bucket"], "")
+}
+
+// handlePutBucketReplication handles PUT /{bucket}?replication — PutBucketReplication.
+func (h *Handler) handlePutBucketReplication(w http.ResponseWriter, r *http.Request) {
+	h.handlePassthrough(w, r, "PutBucketReplication", mux.Vars(r)["bucket"], "")
+}
+
+// handleDeleteBucketReplication handles DELETE /{bucket}?replication — DeleteBucketReplication.
+func (h *Handler) handleDeleteBucketReplication(w http.ResponseWriter, r *http.Request) {
+	h.handlePassthrough(w, r, "DeleteBucketReplication", mux.Vars(r)["bucket"], "")
+}
+
+// handleGetBucketLogging handles GET /{bucket}?logging — GetBucketLogging.
+func (h *Handler) handleGetBucketLogging(w http.ResponseWriter, r *http.Request) {
+	h.handlePassthrough(w, r, "GetBucketLogging", mux.Vars(r)["bucket"], "")
+}
+
+// handlePutBucketLogging handles PUT /{bucket}?logging — PutBucketLogging.
+func (h *Handler) handlePutBucketLogging(w http.ResponseWriter, r *http.Request) {
+	h.handlePassthrough(w, r, "PutBucketLogging", mux.Vars(r)["bucket"], "")
+}
+
+// handleGetBucketRequestPayment handles GET /{bucket}?requestPayment — GetBucketRequestPayment.
+func (h *Handler) handleGetBucketRequestPayment(w http.ResponseWriter, r *http.Request) {
+	h.handlePassthrough(w, r, "GetBucketRequestPayment", mux.Vars(r)["bucket"], "")
+}
+
+// handlePutBucketRequestPayment handles PUT /{bucket}?requestPayment — PutBucketRequestPayment.
+func (h *Handler) handlePutBucketRequestPayment(w http.ResponseWriter, r *http.Request) {
+	h.handlePassthrough(w, r, "PutBucketRequestPayment", mux.Vars(r)["bucket"], "")
+}
+
+// handleGetBucketWebsite handles GET /{bucket}?website — GetBucketWebsite.
+func (h *Handler) handleGetBucketWebsite(w http.ResponseWriter, r *http.Request) {
+	h.handlePassthrough(w, r, "GetBucketWebsite", mux.Vars(r)["bucket"], "")
+}
+
+// handlePutBucketWebsite handles PUT /{bucket}?website — PutBucketWebsite.
+func (h *Handler) handlePutBucketWebsite(w http.ResponseWriter, r *http.Request) {
+	h.handlePassthrough(w, r, "PutBucketWebsite", mux.Vars(r)["bucket"], "")
+}
+
+// handleDeleteBucketWebsite handles DELETE /{bucket}?website — DeleteBucketWebsite.
+func (h *Handler) handleDeleteBucketWebsite(w http.ResponseWriter, r *http.Request) {
+	h.handlePassthrough(w, r, "DeleteBucketWebsite", mux.Vars(r)["bucket"], "")
+}
+
+// handleGetBucketInventory handles GET /{bucket}?inventory — GetBucketInventory.
+func (h *Handler) handleGetBucketInventory(w http.ResponseWriter, r *http.Request) {
+	h.handlePassthrough(w, r, "GetBucketInventory", mux.Vars(r)["bucket"], "")
+}
+
+// handlePutBucketInventory handles PUT /{bucket}?inventory — PutBucketInventory.
+func (h *Handler) handlePutBucketInventory(w http.ResponseWriter, r *http.Request) {
+	h.handlePassthrough(w, r, "PutBucketInventory", mux.Vars(r)["bucket"], "")
+}
+
+// handleDeleteBucketInventory handles DELETE /{bucket}?inventory — DeleteBucketInventory.
+func (h *Handler) handleDeleteBucketInventory(w http.ResponseWriter, r *http.Request) {
+	h.handlePassthrough(w, r, "DeleteBucketInventory", mux.Vars(r)["bucket"], "")
+}
+
+// handleGetBucketAnalytics handles GET /{bucket}?analytics — GetBucketAnalytics.
+func (h *Handler) handleGetBucketAnalytics(w http.ResponseWriter, r *http.Request) {
+	h.handlePassthrough(w, r, "GetBucketAnalytics", mux.Vars(r)["bucket"], "")
+}
+
+// handlePutBucketIntelligentTiering handles PUT /{bucket}?intelligent-tiering — PutBucketIntelligentTiering.
+func (h *Handler) handlePutBucketIntelligentTiering(w http.ResponseWriter, r *http.Request) {
+	h.handlePassthrough(w, r, "PutBucketIntelligentTiering", mux.Vars(r)["bucket"], "")
+}
+
+// handleGetObjectTagging handles GET /{bucket}/{key}?tagging — GetObjectTagging.
+func (h *Handler) handleGetObjectTagging(w http.ResponseWriter, r *http.Request) {
+	h.handlePassthrough(w, r, "GetObjectTagging", mux.Vars(r)["bucket"], mux.Vars(r)["key"])
+}
+
+// handlePutObjectTagging handles PUT /{bucket}/{key}?tagging — PutObjectTagging.
+func (h *Handler) handlePutObjectTagging(w http.ResponseWriter, r *http.Request) {
+	h.handlePassthrough(w, r, "PutObjectTagging", mux.Vars(r)["bucket"], mux.Vars(r)["key"])
+}
+
+// handleDeleteObjectTagging handles DELETE /{bucket}/{key}?tagging — DeleteObjectTagging.
+func (h *Handler) handleDeleteObjectTagging(w http.ResponseWriter, r *http.Request) {
+	h.handlePassthrough(w, r, "DeleteObjectTagging", mux.Vars(r)["bucket"], mux.Vars(r)["key"])
+}
+
+// handleGetObjectACL handles GET /{bucket}/{key}?acl — GetObjectACL.
+func (h *Handler) handleGetObjectACL(w http.ResponseWriter, r *http.Request) {
+	h.handlePassthrough(w, r, "GetObjectACL", mux.Vars(r)["bucket"], mux.Vars(r)["key"])
+}
+
+// handlePutObjectACL handles PUT /{bucket}/{key}?acl — PutObjectACL.
+func (h *Handler) handlePutObjectACL(w http.ResponseWriter, r *http.Request) {
+	h.handlePassthrough(w, r, "PutObjectACL", mux.Vars(r)["bucket"], mux.Vars(r)["key"])
+}
+
+// handleRestoreObject handles POST /{bucket}/{key}?restore — RestoreObject.
+func (h *Handler) handleRestoreObject(w http.ResponseWriter, r *http.Request) {
+	h.handlePassthrough(w, r, "RestoreObject", mux.Vars(r)["bucket"], mux.Vars(r)["key"])
+}
+
+// handleCORSPreflight handles OPTIONS requests for S3 resources.
+func (h *Handler) handleCORSPreflight(w http.ResponseWriter, r *http.Request) {
+	h.handlePassthrough(w, r, "CORSPreflight", mux.Vars(r)["bucket"], mux.Vars(r)["key"])
+}
+
+// handleSelectObjectContent handles POST /{bucket}/{key}?select or ?select-type=2 — returns 501.
+func (h *Handler) handleSelectObjectContent(w http.ResponseWriter, r *http.Request) {
+	start := time.Now()
+	s3Err := &S3Error{
+		Code:       "NotImplemented",
+		Message:    "SelectObjectContent is not implemented by the S3 Encryption Gateway. Server-side SQL evaluation on encrypted data is not feasible in a proxy model.",
+		Resource:   r.URL.Path,
+		HTTPStatus: http.StatusNotImplemented,
+	}
+	s3Err.WriteXML(w)
+	h.metrics.RecordHTTPRequest(r.Context(), "POST", r.URL.Path, s3Err.HTTPStatus, time.Since(start), 0)
 }

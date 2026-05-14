@@ -201,6 +201,25 @@ func TestConformance(t *testing.T) {
 			{"MGMT2_KDF_FilterKDF_SkipsOtherClasses", 0, testMGMT2_KDF_FilterKDF_SkipsOtherClasses},
 			{"MGMT2_KDF_Mixed_AllClasses", 0, testMGMT2_KDF_Mixed_AllClasses},
 			{"MGMT2_KDF_GoldenPath", 0, testMGMT2_KDF_GoldenPath},
+
+			// V1.0-S3-2 S3 API feature parity
+			{"S3Compat_DeleteBucket", 0, testS3Compat_DeleteBucket},
+			{"S3Compat_ListBuckets", 0, testS3Compat_ListBuckets},
+			{"S3Compat_GetBucketLocation", 0, testS3Compat_GetBucketLocation},
+			{"S3Compat_GetBucketVersioning", provider.CapVersioning, testS3Compat_GetBucketVersioning},
+			{"S3Compat_PutGetBucketVersioning", provider.CapVersioning, testS3Compat_PutGetBucketVersioning},
+			{"S3Compat_ListMultipartUploads", provider.CapMultipartUpload, testS3Compat_ListMultipartUploads},
+			{"S3Compat_GetPutDeleteObjectTagging", provider.CapObjectTagging, testS3Compat_GetPutDeleteObjectTagging},
+			{"S3Compat_GetBucketACL", provider.CapBucketACL, testS3Compat_GetBucketACL},
+			{"S3Compat_PutBucketACL", provider.CapBucketACL, testS3Compat_PutBucketACL},
+			{"S3Compat_GetObjectACL", provider.CapObjectACL, testS3Compat_GetObjectACL},
+			{"S3Compat_PutObjectACL", provider.CapObjectACL, testS3Compat_PutObjectACL},
+			{"S3Compat_GetPutDeleteBucketPolicy", provider.CapBucketPolicy, testS3Compat_GetPutDeleteBucketPolicy},
+			{"S3Compat_GetPutDeleteBucketCors", provider.CapBucketCors, testS3Compat_GetPutDeleteBucketCors},
+			{"S3Compat_GetPutDeleteBucketLifecycle", provider.CapBucketLifecycle, testS3Compat_GetPutDeleteBucketLifecycle},
+			{"S3Compat_CORSPreflight_OPTIONS", 0, testS3Compat_CORSPreflight_OPTIONS},
+			{"S3Compat_GetPutDeleteBucketEncryption", provider.CapBucketEncryption, testS3Compat_GetPutDeleteBucketEncryption},
+			{"S3Compat_SelectObjectContent_501", 0, testS3Compat_SelectObjectContent_501},
 		}
 
 			for _, tc := range cases {

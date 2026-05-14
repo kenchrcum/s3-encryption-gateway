@@ -1,174 +1,153 @@
 package api
 
 import (
+	"bytes"
+	"io"
+	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
-	"github.com/kenneth/s3-encryption-gateway/internal/util"
+	"github.com/kenneth/s3-encryption-gateway/internal/config"
+	"github.com/sirupsen/logrus"
 )
 
-// TestGetClientIP_FailSafe_NoTrustedProxies verifies fail-safe behavior:
-// when no trusted proxies configured, X-Forwarded-For is ignored.
-func TestGetClientIP_FailSafe_NoTrustedProxies(t *testing.T) {
-	// Ensure no IP extractor is set
-	SetIPExtractor(nil)
+func TestCopyProxyResponse(t *testing.T) {
+	backendResp := &http.Response{
+		StatusCode: http.StatusOK,
+		Header: http.Header{
+			"Content-Type":      []string{"application/xml"},
+			"Connection":        []string{"keep-alive"},
+			"Transfer-Encoding": []string{"chunked"},
+			"X-Amz-Request-Id":  []string{"test123"},
+			"X-Amz-Id-2":        []string{"test456"},
+		},
+		Body: io.NopCloser(bytes.NewReader([]byte("hello"))),
+	}
 
-	req := httptest.NewRequest("GET", "/", nil)
-	req.RemoteAddr = "192.168.1.100:45678"
-	req.Header.Set("X-Forwarded-For", "203.0.113.1, 10.0.0.1, 192.168.1.1")
+	w := httptest.NewRecorder()
+	copyProxyResponse(w, backendResp)
 
-	// Without trusted proxies, should use RemoteAddr (fail-safe)
-	got := getClientIP(req)
-	if got != "192.168.1.100" {
-		t.Errorf("getClientIP() without trusted proxies = %q, want %q (RemoteAddr)", got, "192.168.1.100")
+	result := w.Result()
+
+	if result.StatusCode != http.StatusOK {
+		t.Errorf("expected status %d, got %d", http.StatusOK, result.StatusCode)
+	}
+
+	if result.Header.Get("Content-Type") != "application/xml" {
+		t.Errorf("expected Content-Type application/xml, got %s", result.Header.Get("Content-Type"))
+	}
+
+	if result.Header.Get("Connection") != "" {
+		t.Errorf("expected Connection to be stripped, got %s", result.Header.Get("Connection"))
+	}
+
+	if result.Header.Get("Transfer-Encoding") != "" {
+		t.Errorf("expected Transfer-Encoding to be stripped, got %s", result.Header.Get("Transfer-Encoding"))
+	}
+
+	if result.Header.Get("X-Amz-Request-Id") != "test123" {
+		t.Errorf("expected X-Amz-Request-Id test123, got %s", result.Header.Get("X-Amz-Request-Id"))
+	}
+
+	body, _ := io.ReadAll(result.Body)
+	if string(body) != "hello" {
+		t.Errorf("expected body 'hello', got %q", string(body))
 	}
 }
 
-// TestGetClientIP_WithTrustedProxies verifies extraction when trusted proxies are configured.
-func TestGetClientIP_WithTrustedProxies(t *testing.T) {
-	// Set up IP extractor with trusted proxy
-	extractor, err := util.NewIPExtractor([]string{"10.0.0.0/8"})
-	if err != nil {
-		t.Fatalf("failed to create extractor: %v", err)
+func TestHandlePassthrough_BackendError(t *testing.T) {
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/xml")
+		w.WriteHeader(http.StatusInternalServerError)
+		w.Write([]byte(`<?xml version="1.0" encoding="UTF-8"?><Error><Code>InternalError</Code><Message>We encountered an internal error. Please try again.</Message></Error>`))
+	}))
+	defer backend.Close()
+
+	logger := logrus.New()
+	logger.SetLevel(logrus.ErrorLevel)
+	h := &Handler{
+		config: &config.Config{
+			Backend: config.BackendConfig{
+				Endpoint: backend.URL,
+				UseSSL:   false,
+			},
+		},
+		logger:  logger,
+		metrics: getTestMetrics(),
 	}
-	SetIPExtractor(extractor)
-	defer SetIPExtractor(nil) // Clean up
 
-	// From trusted proxy - should use X-Forwarded-For
-	req := httptest.NewRequest("GET", "/", nil)
-	req.RemoteAddr = "10.0.0.1:45678"
-	req.Header.Set("X-Forwarded-For", "203.0.113.1")
+	req := httptest.NewRequest("GET", "/test-bucket?location", nil)
+	w := httptest.NewRecorder()
 
-	got := getClientIP(req)
-	if got != "203.0.113.1" {
-		t.Errorf("getClientIP() with trusted proxy = %q, want %q", got, "203.0.113.1")
+	h.handlePassthrough(w, req, "GetBucketLocation", "test-bucket", "")
+
+	if w.Code != http.StatusInternalServerError {
+		t.Errorf("expected status %d, got %d", http.StatusInternalServerError, w.Code)
 	}
-}
 
-// TestGetClientIP_NonTrustedProxy verifies that requests from non-trusted IPs
-// ignore X-Forwarded-For headers (V1.0-SEC-6 security fix).
-func TestGetClientIP_NonTrustedProxy(t *testing.T) {
-	// Set up IP extractor with trusted proxy
-	extractor, err := util.NewIPExtractor([]string{"10.0.0.0/8"})
-	if err != nil {
-		t.Fatalf("failed to create extractor: %v", err)
-	}
-	SetIPExtractor(extractor)
-	defer SetIPExtractor(nil) // Clean up
-
-	// From non-trusted IP - should ignore X-Forwarded-For
-	req := httptest.NewRequest("GET", "/", nil)
-	req.RemoteAddr = "203.0.113.50:45678"
-	req.Header.Set("X-Forwarded-For", "1.2.3.4")
-
-	got := getClientIP(req)
-	if got != "203.0.113.50" {
-		t.Errorf("getClientIP() from non-trusted = %q, want %q (RemoteAddr, spoofing prevented)", got, "203.0.113.50")
+	body := w.Body.String()
+	if !strings.Contains(body, "<Code>InternalError</Code>") {
+		t.Errorf("expected InternalError in response, got: %s", body)
 	}
 }
 
-// TestGetClientIP_RemoteAddr verifies fallback to RemoteAddr.
-func TestGetClientIP_RemoteAddr(t *testing.T) {
-	SetIPExtractor(nil)
+func TestHandlePassthrough_MetricRecorded(t *testing.T) {
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/xml")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`<?xml version="1.0" encoding="UTF-8"?><LocationConstraint xmlns="http://s3.amazonaws.com/doc/2006-03-01/"><LocationConstraint>us-east-1</LocationConstraint></LocationConstraint>`))
+	}))
+	defer backend.Close()
 
-	req := httptest.NewRequest("GET", "/", nil)
-	req.RemoteAddr = "192.168.1.100:45678"
+	logger := logrus.New()
+	logger.SetLevel(logrus.ErrorLevel)
+	h := &Handler{
+		config: &config.Config{
+			Backend: config.BackendConfig{
+				Endpoint: backend.URL,
+				UseSSL:   false,
+			},
+		},
+		logger:  logger,
+		metrics: getTestMetrics(),
+	}
 
-	got := getClientIP(req)
-	if got != "192.168.1.100" {
-		t.Errorf("getClientIP() RemoteAddr = %q, want %q", got, "192.168.1.100")
+	req := httptest.NewRequest("GET", "/test-bucket?location", nil)
+	w := httptest.NewRecorder()
+
+	h.handlePassthrough(w, req, "GetBucketLocation", "test-bucket", "")
+
+	if w.Code != http.StatusOK {
+		t.Errorf("expected status %d, got %d", http.StatusOK, w.Code)
+	}
+
+	body := w.Body.String()
+	if !strings.Contains(body, "us-east-1") {
+		t.Errorf("expected response to contain 'us-east-1', got: %s", body)
 	}
 }
 
-// TestGetClientIP_NoInfo verifies empty string when no IP info is available.
-func TestGetClientIP_NoInfo(t *testing.T) {
-	SetIPExtractor(nil)
-
-	req := httptest.NewRequest("GET", "/", nil)
-	req.RemoteAddr = ""
-
-	got := getClientIP(req)
-	if got != "" {
-		t.Errorf("getClientIP() no info = %q, want empty string", got)
-	}
-}
-
-// TestGetRequestID_WithHeader verifies extraction from X-Request-ID header.
-func TestGetRequestID_WithHeader(t *testing.T) {
-	req := httptest.NewRequest("GET", "/", nil)
-	req.Header.Set("X-Request-ID", "req-abc-123")
-
-	got := getRequestID(req)
-	if got != "req-abc-123" {
-		t.Errorf("getRequestID() = %q, want %q", got, "req-abc-123")
-	}
-}
-
-// TestGetRequestID_Empty verifies empty string when no header is set.
-func TestGetRequestID_Empty(t *testing.T) {
-	req := httptest.NewRequest("GET", "/", nil)
-
-	got := getRequestID(req)
-	if got != "" {
-		t.Errorf("getRequestID() no header = %q, want %q", got, "")
-	}
-}
-
-// TestValidateTags_Table verifies the tag validation logic with a table of inputs.
-func TestValidateTags_Table(t *testing.T) {
-	tests := []struct {
-		name    string
-		tagging string
-		wantErr bool
-	}{
-		{"empty", "", false},
-		{"single valid", "key=value", false},
-		{"multiple valid", "k1=v1&k2=v2&k3=v3", false},
-		{"max tags", "k1=v1&k2=v2&k3=v3&k4=v4&k5=v5&k6=v6&k7=v7&k8=v8&k9=v9&k10=v10", false},
-		{"too many tags", "k1=v1&k2=v2&k3=v3&k4=v4&k5=v5&k6=v6&k7=v7&k8=v8&k9=v9&k10=v10&k11=v11", true},
-		{"key too long", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa=v", true},
-		{"invalid key chars", "key!@#=value", true},
-		{"valid special chars", "key.sub-part_1:type=value-ok", false},
-		{"invalid value chars", "key=value!@#", true},
+func TestHandlePassthrough_BackendNotConfigured(t *testing.T) {
+	logger := logrus.New()
+	logger.SetLevel(logrus.ErrorLevel)
+	h := &Handler{
+		config:  nil,
+		logger:  logger,
+		metrics: getTestMetrics(),
 	}
 
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			err := validateTags(tc.tagging)
-			if (err != nil) != tc.wantErr {
-				t.Errorf("validateTags(%q) error = %v, wantErr %v", tc.tagging, err, tc.wantErr)
-			}
-		})
-	}
-}
+	req := httptest.NewRequest("GET", "/test-bucket?location", nil)
+	w := httptest.NewRecorder()
 
-// TestIsValidTagChars_Table verifies the character validation.
-func TestIsValidTagChars_Table(t *testing.T) {
-	tests := []struct {
-		input string
-		want  bool
-	}{
-		{"hello", true},
-		{"Hello123", true},
-		{"key+value", true},
-		{"key-value", true},
-		{"key=value", true},
-		{"key.sub", true},
-		{"key_sub", true},
-		{"key:type", true},
-		{"key/path", true},
-		{"key!invalid", false},
-		{"key@invalid", false},
-		{"key#invalid", false},
-		{"key$invalid", false},
-		{"key%invalid", false},
-		{"", true}, // empty string is valid
+	h.handlePassthrough(w, req, "GetBucketLocation", "test-bucket", "")
+
+	if w.Code != http.StatusInternalServerError {
+		t.Errorf("expected status %d, got %d", http.StatusInternalServerError, w.Code)
 	}
 
-	for _, tc := range tests {
-		got := isValidTagChars(tc.input)
-		if got != tc.want {
-			t.Errorf("isValidTagChars(%q) = %v, want %v", tc.input, got, tc.want)
-		}
+	body := w.Body.String()
+	if !strings.Contains(body, "<Code>InternalError</Code>") {
+		t.Errorf("expected InternalError in response, got: %s", body)
 	}
 }

@@ -1688,3 +1688,214 @@ func TestIsS3NotFoundError(t *testing.T) {
 		})
 	}
 }
+
+func TestHandleDeleteBucket(t *testing.T) {
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != "DELETE" {
+			t.Errorf("expected DELETE method, got %s", r.Method)
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer backend.Close()
+
+	logger := logrus.New()
+	logger.SetLevel(logrus.ErrorLevel)
+	mockClient := newMockS3Client()
+	mockEngine, _ := crypto.NewEngine([]byte("test-password-123456"))
+	cfg := &config.Config{
+		Backend: config.BackendConfig{
+			Endpoint: backend.URL,
+			UseSSL:   false,
+		},
+	}
+	handler := NewHandlerWithFeatures(mockClient, mockEngine, logger, getTestMetrics(), nil, nil, nil, cfg, nil)
+
+	router := mux.NewRouter()
+	handler.RegisterRoutes(router)
+
+	req := httptest.NewRequest("DELETE", "/test-bucket", nil)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusNoContent {
+		t.Errorf("expected status %d, got %d", http.StatusNoContent, w.Code)
+	}
+}
+
+func TestHandleDeleteBucket_WithPolicyManager(t *testing.T) {
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer backend.Close()
+
+	logger := logrus.New()
+	logger.SetLevel(logrus.ErrorLevel)
+	mockClient := newMockS3Client()
+	mockEngine, _ := crypto.NewEngine([]byte("test-password-123456"))
+	cfg := &config.Config{
+		Backend: config.BackendConfig{
+			Endpoint: backend.URL,
+			UseSSL:   false,
+		},
+	}
+
+	pm := config.NewPolicyManager()
+	pm.LoadPolicies([]string{})
+
+	handler := NewHandlerWithFeatures(mockClient, mockEngine, logger, getTestMetrics(), nil, nil, nil, cfg, pm)
+
+	router := mux.NewRouter()
+	handler.RegisterRoutes(router)
+
+	req := httptest.NewRequest("DELETE", "/test-bucket", nil)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusNoContent {
+		t.Errorf("expected status %d, got %d", http.StatusNoContent, w.Code)
+	}
+}
+
+func TestHandleListBuckets(t *testing.T) {
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/" {
+			t.Errorf("expected path /, got %s", r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/xml")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`<?xml version="1.0" encoding="UTF-8"?><ListAllMyBucketsResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/"><Buckets><Bucket><Name>test-bucket</Name></Bucket></Buckets></ListAllMyBucketsResult>`))
+	}))
+	defer backend.Close()
+
+	logger := logrus.New()
+	logger.SetLevel(logrus.ErrorLevel)
+	mockClient := newMockS3Client()
+	mockEngine, _ := crypto.NewEngine([]byte("test-password-123456"))
+	cfg := &config.Config{
+		Backend: config.BackendConfig{
+			Endpoint: backend.URL,
+			UseSSL:   false,
+		},
+	}
+	handler := NewHandlerWithFeatures(mockClient, mockEngine, logger, getTestMetrics(), nil, nil, nil, cfg, nil)
+
+	router := mux.NewRouter()
+	handler.RegisterRoutes(router)
+
+	req := httptest.NewRequest("GET", "/", nil)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("expected status %d, got %d", http.StatusOK, w.Code)
+	}
+
+	body := w.Body.String()
+	if !strings.Contains(body, "test-bucket") {
+		t.Errorf("expected response to contain 'test-bucket', got: %s", body)
+	}
+}
+
+func TestHandleSelectObjectContent_501(t *testing.T) {
+	logger := logrus.New()
+	logger.SetLevel(logrus.ErrorLevel)
+	mockClient := newMockS3Client()
+	mockEngine, _ := crypto.NewEngine([]byte("test-password-123456"))
+	handler := NewHandler(mockClient, mockEngine, logger, getTestMetrics())
+
+	router := mux.NewRouter()
+	handler.RegisterRoutes(router)
+
+	req := httptest.NewRequest("POST", "/test-bucket/test-key?select", nil)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusNotImplemented {
+		t.Errorf("expected status %d, got %d", http.StatusNotImplemented, w.Code)
+	}
+
+	body := w.Body.String()
+	if !strings.Contains(body, "<Code>NotImplemented</Code>") {
+		t.Errorf("expected NotImplemented error code, got: %s", body)
+	}
+}
+
+func TestHandleCORSPreflight_OPTIONS(t *testing.T) {
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		w.Header().Set("Access-Control-Allow-Methods", "GET, PUT, DELETE, HEAD, POST")
+		w.Header().Set("Access-Control-Allow-Headers", "*")
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer backend.Close()
+
+	logger := logrus.New()
+	logger.SetLevel(logrus.ErrorLevel)
+	mockClient := newMockS3Client()
+	mockEngine, _ := crypto.NewEngine([]byte("test-password-123456"))
+	cfg := &config.Config{
+		Backend: config.BackendConfig{
+			Endpoint: backend.URL,
+			UseSSL:   false,
+		},
+	}
+	handler := NewHandlerWithFeatures(mockClient, mockEngine, logger, getTestMetrics(), nil, nil, nil, cfg, nil)
+
+	router := mux.NewRouter()
+	handler.RegisterRoutes(router)
+
+	req := httptest.NewRequest("OPTIONS", "/test-bucket", nil)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("expected status %d, got %d", http.StatusOK, w.Code)
+	}
+
+	if w.Header().Get("Access-Control-Allow-Origin") != "*" {
+		t.Errorf("expected Access-Control-Allow-Origin header, got: %s", w.Header().Get("Access-Control-Allow-Origin"))
+	}
+}
+
+func TestHandlePassthrough_Proxy(t *testing.T) {
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/test-bucket" {
+			t.Errorf("expected path /test-bucket, got %s", r.URL.Path)
+		}
+		if r.URL.Query().Get("location") != "" {
+			t.Errorf("expected location query parameter")
+		}
+		w.Header().Set("Content-Type", "application/xml")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`<?xml version="1.0" encoding="UTF-8"?><LocationConstraint xmlns="http://s3.amazonaws.com/doc/2006-03-01/"><LocationConstraint>us-east-1</LocationConstraint></LocationConstraint>`))
+	}))
+	defer backend.Close()
+
+	logger := logrus.New()
+	logger.SetLevel(logrus.ErrorLevel)
+	mockClient := newMockS3Client()
+	mockEngine, _ := crypto.NewEngine([]byte("test-password-123456"))
+	cfg := &config.Config{
+		Backend: config.BackendConfig{
+			Endpoint: backend.URL,
+			UseSSL:   false,
+		},
+	}
+	handler := NewHandlerWithFeatures(mockClient, mockEngine, logger, getTestMetrics(), nil, nil, nil, cfg, nil)
+
+	router := mux.NewRouter()
+	handler.RegisterRoutes(router)
+
+	req := httptest.NewRequest("GET", "/test-bucket?location", nil)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("expected status %d, got %d", http.StatusOK, w.Code)
+	}
+
+	body := w.Body.String()
+	if !strings.Contains(body, "us-east-1") {
+		t.Errorf("expected response to contain 'us-east-1', got: %s", body)
+	}
+}
