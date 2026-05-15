@@ -1899,3 +1899,102 @@ func TestHandlePassthrough_Proxy(t *testing.T) {
 		t.Errorf("expected response to contain 'us-east-1', got: %s", body)
 	}
 }
+
+// TestObjectKeyPassthrough_RoutingVars verifies that every object-level passthrough handler
+// correctly extracts both {bucket} and {key} from the mux route variables and forwards the
+// right path to the backend. A typo of mux.Vars(r)["bucket"] instead of mux.Vars(r)["key"]
+// would cause the key segment to be silently dropped — this test catches that regression.
+func TestObjectKeyPassthrough_RoutingVars(t *testing.T) {
+	cases := []struct {
+		name            string
+		method          string
+		url             string
+		wantBackendPath string
+		wantQuery       string
+	}{
+		{
+			name:            "GetObjectTagging",
+			method:          "GET",
+			url:             "/my-bucket/path/to/object?tagging",
+			wantBackendPath: "/my-bucket/path/to/object",
+			wantQuery:       "tagging",
+		},
+		{
+			name:            "PutObjectTagging",
+			method:          "PUT",
+			url:             "/my-bucket/path/to/object?tagging",
+			wantBackendPath: "/my-bucket/path/to/object",
+			wantQuery:       "tagging",
+		},
+		{
+			name:            "DeleteObjectTagging",
+			method:          "DELETE",
+			url:             "/my-bucket/path/to/object?tagging",
+			wantBackendPath: "/my-bucket/path/to/object",
+			wantQuery:       "tagging",
+		},
+		{
+			name:            "GetObjectACL",
+			method:          "GET",
+			url:             "/my-bucket/path/to/object?acl",
+			wantBackendPath: "/my-bucket/path/to/object",
+			wantQuery:       "acl",
+		},
+		{
+			name:            "PutObjectACL",
+			method:          "PUT",
+			url:             "/my-bucket/path/to/object?acl",
+			wantBackendPath: "/my-bucket/path/to/object",
+			wantQuery:       "acl",
+		},
+		{
+			name:            "RestoreObject",
+			method:          "POST",
+			url:             "/my-bucket/path/to/object?restore",
+			wantBackendPath: "/my-bucket/path/to/object",
+			wantQuery:       "restore",
+		},
+	}
+
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			var gotPath, gotQuery string
+			backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				gotPath = r.URL.Path
+				gotQuery = r.URL.RawQuery
+				w.WriteHeader(http.StatusOK)
+			}))
+			defer backend.Close()
+
+			logger := logrus.New()
+			logger.SetLevel(logrus.ErrorLevel)
+			mockClient := newMockS3Client()
+			mockEngine, _ := crypto.NewEngine([]byte("test-password-123456"))
+			cfg := &config.Config{
+				Backend: config.BackendConfig{
+					Endpoint: backend.URL,
+					UseSSL:   false,
+				},
+			}
+			handler := NewHandlerWithFeatures(mockClient, mockEngine, logger, getTestMetrics(), nil, nil, nil, cfg, nil)
+
+			router := mux.NewRouter()
+			handler.RegisterRoutes(router)
+
+			req := httptest.NewRequest(tc.method, tc.url, nil)
+			w := httptest.NewRecorder()
+			router.ServeHTTP(w, req)
+
+			if w.Code != http.StatusOK {
+				t.Errorf("expected status 200, got %d", w.Code)
+			}
+			if gotPath != tc.wantBackendPath {
+				t.Errorf("backend path: want %q, got %q — likely wrong mux.Vars key in handler", tc.wantBackendPath, gotPath)
+			}
+			if gotQuery != tc.wantQuery {
+				t.Errorf("backend query: want %q, got %q", tc.wantQuery, gotQuery)
+			}
+		})
+	}
+}
