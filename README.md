@@ -10,7 +10,7 @@ Countless applications write data to S3-compatible storage — database backups,
 
 **The real threat isn't a rogue storage provider.** Most people reasonably trust their cloud provider and their server-side encryption (SSE). The much more common and practical risk is a **misconfigured IAM policy, overly broad bucket policy, accidentally public ACL, or compromised access key**. Any mistake at the IAM or policy layer directly exposes your plaintext data — because without client-side encryption, whoever can reach the bucket can read everything in it.
 
-By adding a cryptographic layer at the gateway, a configuration mistake in your cloud account no longer immediately translates into a data breach. An attacker who gains unauthorized S3 access — through a policy misconfiguration, a leaked key, or any other account-level compromise — only retrieves ciphertext. TheyThey would also need to compromise the gateway — which in a typical deployment never leaves your private network.
+By adding a cryptographic layer at the gateway, a configuration mistake in your cloud account no longer immediately translates into a data breach. An attacker who gains unauthorized S3 access — through a policy misconfiguration, a leaked key, or any other account-level compromise — only retrieves ciphertext. They would also need to compromise the gateway — which in a typical deployment never leaves your private network.
 
 This is defense-in-depth for object storage: your cloud account's access controls remain your first line of defense; client-side encryption is the second — and it holds even when the first fails.
 
